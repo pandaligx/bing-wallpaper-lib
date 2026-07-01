@@ -24,7 +24,17 @@
 
 ## 2. 数据源说明（重要）
 
-- 权威数据源：`https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md`
+- 权威数据源：[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 仓库中的 `bing-wallpaper.md`。
+- **多镜像回退策略（自 v0.2.1 起，见 `src/fetcher.rs::SOURCE_URLS`）**：`raw.githubusercontent.com`
+  在中国大陆部分网络环境下经常无法直接访问（需要科学上网），因此 `fetch_all` 现在按顺序依次尝试：
+  1. `https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md`（jsDelivr CDN 镜像，优先）
+  2. `https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md`（jsDelivr 备用节点）
+  3. `https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md`（GitHub 官方原始地址，兜底）
+
+  第一个请求成功的地址即被采用，任何一个失败都只记一条 `log::warn!` 并尝试下一个，全部失败才对外报错。
+  **已知权衡**：jsDelivr 对 GitHub 仓库内容存在数小时级（历史上最长约 12 小时）的 CDN 缓存延迟，但本项目
+  本身只每 30 分钟检查一次是否有新的一天壁纸，这点延迟可以接受，换来的是国内绝大多数网络环境下无需 VPN
+  即可直接使用。若以后 jsDelivr 出现长期不可用/正确性问题，可在 `SOURCE_URLS` 中调整顺序或替换镜像。
 - 该文件是一份纯文本 Markdown，每天一行，格式形如：
 
   ```
@@ -612,6 +622,14 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 - 发现新版本后弹出的 `open_update_dialog` 提供“查看更新内容”（跳转到 Release 页面）、
   “稍后再说”/“立即更新”两个按钮，点击“立即更新”后调用 `start_update` 开始下载，下载完成
   后自动退出并重启。
+
+> **⚠️ 已知遗留问题：自动更新检查在无 VPN 的中国大陆网络环境下可能失败。**
+> `fetcher.rs` 抓取壁纸列表已通过 §2 所述的 jsDelivr 多镜像回退策略解决了 China 可访问性问题，
+> 但 `updater.rs` 目前仍然只请求 `api.github.com`（Releases API）与 GitHub 官方的 release asset
+> 下载地址（`objects.githubusercontent.com`），两者都**没有**镜像回退。`api.github.com` 有时在国内可以
+> 直连，但不稳定；asset 下载地址的可访问性历史上也时好时坏。如果用户反馈“检查更新”/自动更新在关闭
+> VPN 时报错，这是一个独立于壁纸列表抓取的、尚未修复的问题，需要单独设计方案（例如：把 Releases
+> 元数据或 exe 附件同步镜像到 Gitee Releases，或接入一个国内可访问的 GitHub 反向代理）。
 
 **版本号约定**：每次发布新 GitHub Release 时，必须同步带上 `Cargo.toml` 中 `package.version`
 的提升（否则内置的检查更新就会因为“当前编译版本号 = 最新 Release 版本号”而报告为“已是最新

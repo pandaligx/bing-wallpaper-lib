@@ -11,9 +11,18 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// 原始 Markdown 文件地址（GitHub raw，包含从 2021-02-01 至今的全部记录）。
-const SOURCE_URL: &str =
-    "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md";
+/// 候选源地址列表，按顺序依次尝试，第一个成功的即返回。
+///
+/// `raw.githubusercontent.com` 在中国大陆部分网络环境下无法直接访问（需要科学上网），
+/// 因此优先使用 [jsDelivr](https://www.jsdelivr.com/) CDN 镜像 GitHub 仓库内容，绝大多数
+/// 国内网络环境下无需 VPN 即可直接访问（代价是 jsDelivr 对 GitHub 内容有数小时级的
+/// 缓存延迟，考虑到本项目本身每 30 分钟才检查一次更新，这点延迟可以接受）；
+/// GitHub 官方地址作为兼容科学上网用户以及 jsDelivr 自身出现问题时的备选。
+const SOURCE_URLS: &[&str] = &[
+    "https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md",
+    "https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md",
+    "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md",
+];
 
 /// 解析一行形如：
 /// `2026-07-02 | [Dungeon Provincial Park... (© xxx)](https://cn.bing.com/th?id=OHR.xxx_UHD.jpg&...)`
@@ -59,19 +68,35 @@ pub fn dedup_by_date(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
     result
 }
 
-/// 从远端拉取并解析全部壁纸历史（已去重，按日期倒序，即最新的在前）。
+/// 从候选源依次尝试拉取并解析全部壁纸历史（已去重，按日期倒序，即最新的在前）。
 pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>> {
-    let request = Request::get(SOURCE_URL)
+    let mut last_err = None;
+    for &url in SOURCE_URLS {
+        match fetch_text(http.clone(), url).await {
+            Ok(text) => {
+                let mut entries = dedup_by_date(parse_markdown(&text));
+                entries.sort_by_key(|e| std::cmp::Reverse(e.date));
+                return Ok(entries);
+            }
+            Err(err) => {
+                log::warn!("从 {url} 获取壁纸列表失败: {err}");
+                last_err = Some(err);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("没有可用的壁纸数据源")))
+}
+
+/// 请求单个 URL 并返回响应文本内容（不做任何解析，供 `fetch_all` 依次尝试候选源时复用）。
+async fn fetch_text(http: Arc<dyn HttpClient>, url: &str) -> Result<String> {
+    let request = Request::get(url)
         .follow_redirects(http_client::RedirectPolicy::FollowAll)
         .body(Default::default())
         .context("构建请求失败")?;
-    let mut response = http
-        .send(request)
-        .await
-        .context("请求 bing-wallpaper.md 失败")?;
+    let mut response = http.send(request).await.context("请求失败")?;
 
     if !response.status().is_success() {
-        bail!("bing-wallpaper.md 返回了错误状态码: {}", response.status());
+        bail!("返回了错误状态码: {}", response.status());
     }
 
     let mut body = Vec::new();
@@ -80,11 +105,7 @@ pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>>
         .read_to_end(&mut body)
         .await
         .context("读取响应内容失败")?;
-    let text = String::from_utf8(body).context("响应内容不是合法的 UTF-8 文本")?;
-
-    let mut entries = dedup_by_date(parse_markdown(&text));
-    entries.sort_by_key(|e| std::cmp::Reverse(e.date));
-    Ok(entries)
+    String::from_utf8(body).context("响应内容不是合法的 UTF-8 文本")
 }
 
 /// 从本地缓存加载壁纸列表（如果存在）。
