@@ -5,6 +5,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/pandaligx/bing-wallpaper-lib/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/pandaligx/bing-wallpaper-lib"></a>
+  <a href="https://github.com/pandaligx/bing-wallpaper-lib/releases/latest"><img alt="downloads" src="https://img.shields.io/github/downloads/pandaligx/bing-wallpaper-lib/total"></a>
   <a href="#下载使用"><img alt="platform" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white"></a>
   <a href="Cargo.toml"><img alt="language" src="https://img.shields.io/badge/language-Rust-DEA584?logo=rust&logoColor=white"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-GPL--3.0-blue"></a>
@@ -54,8 +56,9 @@
 
 ## 下载使用
 
-直接从 [`dist/必应每日壁纸库.exe`](dist/必应每日壁纸库.exe) 下载即可运行，无需安装任何其他依赖，双击后会自动请求
-管理员权限。
+推荐从 **[Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest)** 页面下载最新的
+`bing-wallpaper-lib-vX.Y.Z-x64.exe`；也可以直接从仓库内的 [`dist/必应每日壁纸库.exe`](dist/必应每日壁纸库.exe)
+下载。下载后双击即可运行，无需安装任何其他依赖，启动时会自动请求管理员权限。
 
 ## 从源码构建
 
