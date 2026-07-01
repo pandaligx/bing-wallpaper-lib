@@ -27,7 +27,7 @@ mod updater;
 mod wallpaper_setter;
 
 use gpui::*;
-use gpui_component::{Theme, Root};
+use gpui_component::{Root, Theme};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -142,24 +142,28 @@ fn main() {
         // 加载抢占带宽/注意力；发现新版本时弹出对话框，未发现或检查失败时静默。
         cx.spawn(async move |cx| {
             cx.background_executor().timer(Duration::from_secs(3)).await;
-            check_update_once(&view_for_update, &window, cx).await;
+            check_update_once(&view_for_update, cx).await;
         })
         .detach();
     });
 }
 
-async fn check_update_once(
-    view: &Entity<WallpaperLibrary>,
-    window: &WindowHandle<Root>,
-    cx: &mut AsyncApp,
-) {
+/// 检查一次更新并在发现新版本时弹出对话框。
+///
+/// 注意：这里必须通过 `view.downgrade().update_in(cx, ...)` 直接更新
+/// `WallpaperLibrary` 这一个实体，而**不能**先用 `window.update(cx, |_, window, app_cx| { view.update(app_cx, ...) })`
+/// 包一层——`window.update` 本身会先对 `Root` 实体加锁，而 `open_update_dialog`
+/// 内部又会调用 `window.open_dialog`，后者同样需要对 `Root` 加锁，两次嵌套加锁
+/// 同一个实体会触发 GPUI 的 `cannot update Root while it is already being updated`
+/// panic（release 构建下 `panic = "abort"`，表现为静默闪退）。`update_in` 通过
+/// `WeakEntity` 直接定位并更新 `WallpaperLibrary` 所在的窗口，不会触碰 `Root`
+/// 的更新锁，因此不会与 `open_dialog` 内部的加锁冲突。
+async fn check_update_once(view: &Entity<WallpaperLibrary>, cx: &mut AsyncApp) {
     let http = cx.update(|app| app.http_client());
     match updater::check_for_update(http).await {
         Ok(Some(release)) => {
-            let _ = window.update(cx, |_, window, app_cx| {
-                view.update(app_cx, |this, cx| {
-                    this.open_update_dialog(release, window, cx);
-                });
+            let _ = view.downgrade().update_in(cx, |this, window, cx| {
+                this.open_update_dialog(release, window, cx);
             });
         }
         Ok(None) => {}

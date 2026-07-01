@@ -1,6 +1,6 @@
 [package]
 name = "bing-wallpaper-lib"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
 default-run = "bing-wallpaper-lib"

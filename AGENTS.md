@@ -592,6 +592,31 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 因为 `Root.active_dialogs` 是 `Vec`（堆栈），从已打开的设置对话框里的按钮再弹出关于对话框完全安全，
 会掌盖在设置对话框之上，关闭后自动回到设置对话框，不需要额外处理堆栈关系。
 
+> **⚠️ 关键坑（自 v0.2.2 修复）：不要为了拿到 `&mut Window` 而先 `window.update(cx, |_, window,
+> app_cx| { view.update(app_cx, ...) })` 包一层。** `WindowHandle<Root>::update` 内部会先对
+> `Root` 这个 Entity 加锁（lease），如果在它的闭包里面又间接调用了任何会再次对 `Root`
+> 加锁的函数（最典型的就是 `window.open_dialog(...)` / `window.push_notification(...)` /
+> `window.close_dialog(...)` 等 `gpui_component::WindowExt` 方法，它们内部都是通过 `Root::update`
+> 实现的），就会触发 GPUI 的同一 Entity 重入锁定 panic（`cannot update
+> gpui_component::root::Root while it is already being updated`），而 release 构建下
+> `panic = "abort"` 会让进程直接静默退出（表现为“卡死闪退”，不会有任何弹窗/日志）。
+>
+> 这个 bug 实际发生在 `main.rs` 的 `check_update_once`（启动 3 秒后自动静默检查更新的那个后台
+> 任务）中：它先用 `window.update(cx, |_, window, app_cx| { view.update(app_cx, |this, cx| {
+> this.open_update_dialog(...) }) })` 拿到 `window`，结果 `open_update_dialog` 内部又调用了
+> `window.open_dialog(...)`，两次嵌套对 `Root` 加锁，只要本地版本号比 GitHub 最新 Release 旧（从而
+> 真的会命中 `Ok(Some(release))` 分支）就必现，与用户是否点击设置按钮无关。**修复方式**：
+> 改为直接对 `view.downgrade()` 得到的 `WeakEntity<WallpaperLibrary>` 调用 `update_in(cx, |this,
+> window, cx| { this.open_update_dialog(...) })`——`WeakEntity::update_in` 内部通过
+> `cx.with_window(entity.entity_id(), ...)` 自行定位 entity 所在的窗口并取得 `&mut Window`，
+> 只会对 `WallpaperLibrary` 自身加锁，不会碰 `Root`，与 `open_dialog` 内部的加锁不会冲突。
+> 这也是 `ui/mod.rs` 里 `check_for_updates`（设置面板里“检查更新”按钮触发的那个，一直没有
+> 这个 bug）已经在用的正确模式：通过 `cx.spawn_in(window, async move |this, cx| { ...;
+> this.update_in(cx, |this, window, cx| ...) })` 拿到的 `this` 本来就是 `WeakEntity<Self>`，从没
+> 先经过 `Root` 就直接更新自己。**经验教训**：任何需要在异步任务中同时拿到 `&mut Window` 与
+> `&mut Context<Self>` 的地方，都应该优先用 `Entity`/`WeakEntity` 自身的 `update_in`，而不是先
+> `WindowHandle<Root>::update`/`Root::update` 拿到 `window` 再嵌套调用另一个会碰 `Root` 的方法。
+
 ### 14.3 自动检测 GitHub 新版本 + 一键下载升级
 
 新增 `src/updater.rs`，不引入任何新的 crates.io 依赖（手写了一个极简的 `parse_version` 解析
