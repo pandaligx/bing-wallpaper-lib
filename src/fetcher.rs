@@ -1,4 +1,4 @@
-//! 抓取并解析 niumoo/bing-wallpaper 仓库中的 `bing-wallpaper.md`，
+//! 抓取并解析 niumoo/bing-wallpaper 仓库中的 `zh-cn/bing-wallpaper.md`（中文标题版本），
 //! 得到完整的历史必应每日壁纸列表，并支持增量检测"是否有新的一天"。
 
 use crate::model::WallpaperEntry;
@@ -13,15 +13,19 @@ use std::sync::Arc;
 
 /// 候选源地址列表，按顺序依次尝试，第一个成功的即返回。
 ///
+/// 自 v0.2.4 起使用中文标题版本 `zh-cn/bing-wallpaper.md`，所有壁纸的标题、地点、
+/// 作者说明均以中文展示，更适合中文用户浏览。中文版文件的每条记录之间会多出一个空行，
+/// 但这并不影响解析——`parse_markdown` 已经会跳过空行与非日期开头的行。
+///
 /// `raw.githubusercontent.com` 在中国大陆部分网络环境下无法直接访问（需要科学上网），
 /// 因此优先使用 [jsDelivr](https://www.jsdelivr.com/) CDN 镜像 GitHub 仓库内容，绝大多数
 /// 国内网络环境下无需 VPN 即可直接访问（代价是 jsDelivr 对 GitHub 内容有数小时级的
 /// 缓存延迟，考虑到本项目本身每 30 分钟才检查一次更新，这点延迟可以接受）；
 /// GitHub 官方地址作为兼容科学上网用户以及 jsDelivr 自身出现问题时的备选。
 const SOURCE_URLS: &[&str] = &[
-    "https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md",
-    "https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md",
-    "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md",
+    "https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md",
+    "https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md",
+    "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/zh-cn/bing-wallpaper.md",
 ];
 
 /// 解析一行形如：
@@ -161,6 +165,30 @@ mod tests {
         let entries = parse_markdown(line);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].url, "https://cn.bing.com/th?id=OHR.NorwayRestArea_EN-US3474268008_UHD.jpg");
+    }
+
+    #[test]
+    fn parses_chinese_line_from_zh_cn_source() {
+        // 来自 zh-cn/bing-wallpaper.md 的真实格式：中文标题 + _ZH-CN 变体的图片 URL。
+        let line = "2026-07-02 | [埃斯纳神庙穹顶天花板, 埃及 (© Nick Brundle Photography/Getty Images)](https://cn.bing.com/th?id=OHR.TempleEsna_ZH-CN9834689523_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4)";
+        let entries = parse_markdown(line);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].date,
+            NaiveDate::from_ymd_opt(2026, 7, 2).unwrap()
+        );
+        assert!(entries[0].title.contains("埃斯纳神庙"));
+        assert!(entries[0].url.contains("_ZH-CN"));
+    }
+
+    #[test]
+    fn parses_zh_cn_file_with_blank_lines_between_entries() {
+        // zh-cn 版本每两条记录之间会多出一个空行，parse_markdown 应能正确跳过。
+        let text = "## Bing Wallpaper\n2026-07-02 | [埃斯纳神庙穹顶天花板, 埃及 (© A/B)](https://cn.bing.com/th?id=OHR.TempleEsna_ZH-CN1_UHD.jpg&w=3840&h=2160)\n\n2026-07-01 | [地牢省立公园, 加拿大 (© C/D)](https://cn.bing.com/th?id=OHR.DungeonPark_ZH-CN2_UHD.jpg&w=3840&h=2160)\n";
+        let entries = parse_markdown(text);
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].title.contains("埃斯纳神庙"));
+        assert!(entries[1].title.contains("地牢省立公园"));
     }
 
     #[test]

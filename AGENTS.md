@@ -24,12 +24,13 @@
 
 ## 2. 数据源说明（重要）
 
-- 权威数据源：[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 仓库中的 `bing-wallpaper.md`。
+- 权威数据源：[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 仓库中的 `zh-cn/bing-wallpaper.md`
+  （中文标题版本，自 v0.2.4 起启用）。同仓库根目录下的 `bing-wallpaper.md` 是英文版，不再使用。
 - **多镜像回退策略（自 v0.2.1 起，见 `src/fetcher.rs::SOURCE_URLS`）**：`raw.githubusercontent.com`
   在中国大陆部分网络环境下经常无法直接访问（需要科学上网），因此 `fetch_all` 现在按顺序依次尝试：
-  1. `https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md`（jsDelivr CDN 镜像，优先）
-  2. `https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md`（jsDelivr 备用节点）
-  3. `https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md`（GitHub 官方原始地址，兜底）
+  1. `https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md`（jsDelivr CDN 镜像，优先）
+  2. `https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md`（jsDelivr 备用节点）
+  3. `https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/zh-cn/bing-wallpaper.md`（GitHub 官方原始地址，兑底）
 
   第一个请求成功的地址即被采用，任何一个失败都只记一条 `log::warn!` 并尝试下一个，全部失败才对外报错。
   **已知权衡**：jsDelivr 对 GitHub 仓库内容存在数小时级（历史上最长约 12 小时）的 CDN 缓存延迟，但本项目
@@ -38,8 +39,14 @@
 - 该文件是一份纯文本 Markdown，每天一行，格式形如：
 
   ```
-  2026-07-02 | [Dungeon Provincial Park, Newfoundland and Labrador, Canada (© Kaitlyn McLachlan/Getty Images)](https://cn.bing.com/th?id=OHR.DungeonPark_EN-US2499621341_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4)
+  2026-07-02 | [埃斯纳神庙穹顶天花板, 埃及 (© Nick Brundle Photography/Getty Images)](https://cn.bing.com/th?id=OHR.TempleEsna_ZH-CN9834689523_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4)
   ```
+
+  与英文版相比有两处区别（均不影响现有解析器）：
+
+  1. 图片 URL 中 OHR 文件名里的语言变体是 `_ZH-CN` 而不是 `_EN-US`，但 Bing CDN 实际返回的图片内容完全相同。
+  2. 中文文件的**相邻两条记录之间多出一个空行**，英文版则不插空行。`parse_markdown` 本来就会过滤
+     `line.is_empty()` 与不以数字开头的行，因此两种格式均能直接兼容。
 
 - 文件按日期**倒序**排列（最新一天在最前面），覆盖从 2021-02-01 至今的完整历史，因此**同一份请求**既可以用于
   首次全量拉取历史，也可以用于"取最上面一条日期，与本地缓存的最新日期比较"来判断是否有新的一天发布。
@@ -48,10 +55,10 @@
     图片 URL 不同。当前策略是**保留同一天中第一条出现的记录**（`fetcher::dedup_by_date`）。
   - 2023-02-09 之前的记录，图片 URL **不带** `&rf=...&pid=hp&w=3840&h=2160&rs=1&c=4` 查询参数，只是一个裸的
     `.jpg` 链接；解析正则必须同时兼容这两种形式（见 `fetcher::line_regex`）。
-  - 2021-02-01 ~ 2021-02-08 这几天的标题是**中文**（`ZH-CN` 语言变体），其余全部是英文标题，解析逻辑无需关心
-    语言，只按 `YYYY-MM-DD | [标题](URL)` 的通用格式解析即可。
-- 解析实现：`src/fetcher.rs` 中的 `parse_markdown` / `dedup_by_date` / `fetch_all`，并附带单元测试覆盖以上三类
-  情况（现代格式、历史无查询参数格式、同日期去重）。
+  - 中文版文件中少量日期（如 `2025-05-15`）的标题里存在上游数据源留下的 UTF-8 替换字符 `�`
+    （部分乱码），不尝试在解析层"修复"，直接展示即可。
+- 解析实现：`src/fetcher.rs` 中的 `parse_markdown` / `dedup_by_date` / `fetch_all`，并附带单元测试覆盖以上各类
+  情况（现代格式、历史无查询参数格式、同日期去重、中文标题、带空行的中文多行样本）。
 
 ## 3. 架构与模块划分
 
