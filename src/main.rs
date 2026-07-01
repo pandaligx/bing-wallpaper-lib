@@ -23,6 +23,7 @@ mod paths;
 mod settings;
 mod single_instance;
 mod ui;
+mod updater;
 mod wallpaper_setter;
 
 use gpui::*;
@@ -117,6 +118,7 @@ fn main() {
         })
         .detach();
 
+        let view_for_update = view.clone();
         cx.spawn(async move |cx| {
             // 优先加载本地缓存，尽快展示已知内容。
             if let Ok(Some(cached)) = fetcher::load_cache() {
@@ -135,7 +137,36 @@ fn main() {
             }
         })
         .detach();
+
+        // 启动数秒后静默检查一次 GitHub 上是否有新版本发布，避免与首屏壁纸列表
+        // 加载抢占带宽/注意力；发现新版本时弹出对话框，未发现或检查失败时静默。
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            check_update_once(&view_for_update, &window, cx).await;
+        })
+        .detach();
     });
+}
+
+async fn check_update_once(
+    view: &Entity<WallpaperLibrary>,
+    window: &WindowHandle<Root>,
+    cx: &mut AsyncApp,
+) {
+    let http = cx.update(|app| app.http_client());
+    match updater::check_for_update(http).await {
+        Ok(Some(release)) => {
+            let _ = window.update(cx, |_, window, app_cx| {
+                view.update(app_cx, |this, cx| {
+                    this.open_update_dialog(release, window, cx);
+                });
+            });
+        }
+        Ok(None) => {}
+        Err(err) => {
+            log::warn!("检查更新失败: {err}");
+        }
+    }
 }
 
 async fn refresh_once(

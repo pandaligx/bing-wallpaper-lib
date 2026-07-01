@@ -56,9 +56,11 @@ src/
 ├── fetcher.rs           抓取 + 解析 bing-wallpaper.md、去重、本地 JSON 缓存、"是否有新一天"检测
 ├── downloader.rs        Aria2Manager：管理内置 aria2c.exe 子进程 + JSON-RPC 客户端（见 §7、§12）
 ├── wallpaper_setter.rs  调用 Win32 SystemParametersInfoW 设置桌面壁纸
+├── updater.rs           检查 GitHub Releases 最新版本，下载 + 自我替换重启（见 §14.3）
 └── ui/
     └── mod.rs           主界面：左侧导航栏（主页 + 按年/月分组，支持折叠）+ 右侧内容区域
-                         （首页网格视图 / 月份列表视图，预览大图弹窗、设置面板、实时进度条）（见 §12）
+                         （首页网格视图 / 月份列表视图，预览大图弹窗、设置面板、关于弹窗、
+                         新版本提醒弹窗、实时进度条）（见 §12、§14）
 
 ico/
 ├── icon.ico             内嵌的多分辨率应用图标（16/24/32/48/64/72/96/128/256px）
@@ -176,8 +178,8 @@ aria2c.exe 文件放在同目录"的方案**，而是：
 4. 之后以子进程方式启动这个释放出来的 `aria2c.exe`，加上 `--enable-rpc` 等参数，仅通过本地 HTTP JSON-RPC
    （`http://127.0.0.1:16800/jsonrpc`）与其通信，调用官方支持的 `aria2.addUri` / `aria2.tellStatus` 等接口。
 
-这样最终交付物依然是**单个 exe 文件**（见 `dist/必应每日壁纸库.exe`），符合"打包成 exe"的要求，同时严格
-通过 aria2 官方 RPC 接口完成下载，没有重新发明下载逻辑。
+这样最终交付物依然是**单个 exe 文件**，符合"打包成 exe"的要求，同时严格通过 aria2 官方 RPC 接口完成下载，
+没有重新发明下载逻辑。发布物通过 GitHub Release 附件分发，详见 §7.3。
 
 **最高速度配置**（在 `Aria2Manager::start` 中通过命令行参数传给 aria2c）：
 
@@ -230,8 +232,11 @@ cargo build --release
 
 产物位于 `target\x86_64-pc-windows-msvc\release\bing-wallpaper-lib.exe`。
 
-`dist/必应每日壁纸库.exe` 是发布时从上述路径复制并重命名后的最终分发文件——**它就是完整的发布物，无需附带
-任何其他 DLL 或文件**，可以直接拷贝给最终用户双击运行。
+**发布物分发方式**：本项目不再把构建产物提交进 Git 仓库（大体积二进制不适合长期存在于 Git 历史中），
+而是把 release 构建出的 exe 重命名为 `bing-wallpaper-lib-vX.Y.Z-x64.exe` 后，作为 **GitHub Release** 的
+附件上传（`gh release create vX.Y.Z <exe路径> --notes ...`）。仓库根目录不再维护 `dist/` 目录；`README.md`
+的"下载使用"一节只指向 Releases 页面的最新版本。应用内置的"检查更新"功能（见 §14.3）也是通过 GitHub
+Releases API 判断版本新旧，因此每次发布都必须走 GitHub Release + 打 tag 的流程，不能只更新仓库文件。
 
 `Cargo.toml` 中 `[profile.release]` 已配置：
 
@@ -540,6 +545,78 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
    `window_control_area(...)` 让 Windows 按系统标准处理这些区域的点击，
    不需要我们自己写点击逻辑）。
 
+## 14. 首页回顶按钮/右侧滚动条、关于弹窗、自动检测更新
+
+本轮新增三项功能的实现方式，供后续维护参考。
+
+### 14.1 首页右侧滚动条 + 回到顶部按钮
+
+`gpui_component::scroll::ScrollableElement`给 `Div`/`Stateful<E>` 提供了 `.vertical_scrollbar(&handle)`
+方法，内部实现为向 `self` 追加一个绝对定位的滚动条子元素，因此调用它的容器自身（或祖先）
+必须处于 `.relative()` 定位上下文中。
+
+`render_home_view` 现在把原来单一的 `#home-scroll` div 包了一层新的 `#home-scroll-wrap`
+（`.relative().flex_1().min_h_0()`），内层仍是原来的滚动容器（改为 `.size_full()`，因为 `.flex_1()`
+现由外层 wrap div 提供），外层 wrap div 再追加两个兄弟元素：
+
+1. `.vertical_scrollbar(&self.home_scroll_handle)` —— 右侧可拖动的滚动条，`ScrollHandle` 本身
+   就实现了 `ScrollbarHandle` trait，无需额外包装。
+2. 一个绝对定位在右下角（`.absolute().bottom_6().right_6()`）的半透明“回到顶部”按钮
+   （`IconName::ArrowUp` + `.ghost().opacity(0.6)`），点击时调用
+   `self.home_scroll_handle.set_offset(point(px(0.), px(0.)))` 将滚动偏移重置为零。
+
+### 14.2 设置面板中的“关于”弹窗
+
+`open_settings_dialog` 的 footer 左侧新增了“检查更新”、“关于”两个按钮（与原有的“在资源
+管理器中打开”同组，通过一个嵌套的 `h_flex().gap_2()` 实现，右侧仍保留“保存”按钮）。点击
+“关于”会调用新增的自由函数 `open_about_dialog(window, cx)`（不需要 `&self`，因此放在
+`impl WallpaperLibrary` 块外面），内部再调用 `window.open_dialog` 弹出另一个独立对话框，展示：
+
+- 软件名称（`paths::APP_NAME`）+ 当前版本号（`updater::CURRENT_VERSION`）；
+- 致谢开源项目一句话 + 一个 `.link()` 样式的 `Button`，点击通过 `cx.open_url(...)` 打开
+  `https://github.com/niumoo/bing-wallpaper`；
+- 版权署名（`COPYRIGHT` 常量）+ 同样方式的 `.link()` 按钮链接到 `updater::REPO_HTML_URL`
+  （`https://github.com/pandaligx/bing-wallpaper-lib`）；
+- 底部 `DialogFooter` 只有一个“关闭”按钮，调用 `window.close_dialog(cx)`。
+
+因为 `Root.active_dialogs` 是 `Vec`（堆栈），从已打开的设置对话框里的按钮再弹出关于对话框完全安全，
+会掌盖在设置对话框之上，关闭后自动回到设置对话框，不需要额外处理堆栈关系。
+
+### 14.3 自动检测 GitHub 新版本 + 一键下载升级
+
+新增 `src/updater.rs`，不引入任何新的 crates.io 依赖（手写了一个极简的 `parse_version` 解析
+`major.minor.patch` 元组并比较大小，不引入 `semver` crate）：
+
+- `CURRENT_VERSION = env!("CARGO_PKG_VERSION")`，在编译时从 `Cargo.toml` 的 `package.version` 取值。
+- `check_for_update(http)` 请求 GitHub 公开 REST API
+  `GET https://api.github.com/repos/pandaligx/bing-wallpaper-lib/releases/latest`（需带
+  `Accept: application/vnd.github+json` 请求头，无需认证），解析 `tag_name`（如 `v0.2.0`）与当前
+  版本比较，找到第一个 `.exe` 结尾的 asset 作为下载目标，返回 `Ok(None)` 表示已是最新。
+- `download_asset(http, release)` 将该 asset 下载到 `%LOCALAPPDATA%\BingWallpaperLib\update\<asset_name>`。
+- `spawn_relaunch(new_exe)` 是整个机制的核心：**Windows 下进程无法覆盖正在运行的自身 exe
+  文件**，因此必须借助一个独立的辅助进程来完成替换。具体做法是写出一个 `apply_update.bat`
+  脚本（与下载到的新 exe 同目录），内容依次为：`ping -n 4` 延迟 ≈ 3 秒（等待旧进程退出）
+  → `copy /Y` 重试循环（最多 15 次，每次间隔 `ping -n 2`）→ `start "" target` 重新启动新 exe →
+  自我删除下载缓存与脚本本身。启动这个脚本时复用了 `downloader.rs` 中已验证过的
+  `CREATE_NO_WINDOW`（`0x0800_0000`）方法避免闪现黑色控制台窗口。调用方在 `spawn_relaunch` 成功
+  后立即调用 `cx.quit()` 优雅退出，由脚本接管完成实际替换与重启。
+
+集成到 UI 与启动流程：
+
+- `main.rs` 在首屏壁纸列表后台刷新循环启动后，另外 `cx.spawn` 一个**一次性**任务：延迟 3 秒
+  后调用 `check_update_once`，静默检查一次更新，发现新版本时弹出对话框，未发现或失败时只
+  记一条 `log::warn!`，不打扰用户。
+- 设置面板中的“检查更新”按钮调用 `WallpaperLibrary::check_for_updates(manual: true, ...)`，
+  `manual` 为 `true` 时会用 `window.push_notification(...)` 提示“已是最新版本”/“检查失败”，
+  而启动时的自动检查（`manual = false`）不会。
+- 发现新版本后弹出的 `open_update_dialog` 提供“查看更新内容”（跳转到 Release 页面）、
+  “稍后再说”/“立即更新”两个按钮，点击“立即更新”后调用 `start_update` 开始下载，下载完成
+  后自动退出并重启。
+
+**版本号约定**：每次发布新 GitHub Release 时，必须同步带上 `Cargo.toml` 中 `package.version`
+的提升（否则内置的检查更新就会因为“当前编译版本号 = 最新 Release 版本号”而报告为“已是最新
+版本”），且 Release 附件中必须包含一个 `.exe` 文件供 `check_for_update` 自动识别下载。
+
 ## 13. 关键文件速查
 
 | 文件 | 作用 |
@@ -560,5 +637,5 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 | `src/fetcher.rs` | 抓取/解析/缓存/增量检测 |
 | `src/downloader.rs` | aria2 子进程管理 + JSON-RPC 客户端 |
 | `src/wallpaper_setter.rs` | Win32 设置桌面壁纸 |
+| `src/updater.rs` | 检查 GitHub Releases 最新版本 + 下载 + 自我替换重启（见 §14.3） |
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |
-| `dist/必应每日壁纸库.exe` | 最终发布物（单文件，可直接分发） |

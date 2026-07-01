@@ -20,6 +20,7 @@ use gpui_component::button::ButtonVariants as _;
 use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputState};
 use gpui_component::progress::Progress;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::sidebar::{
     Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
     SidebarToggleButton,
@@ -265,6 +266,7 @@ impl WallpaperLibrary {
             let input_for_explorer = input.clone();
             let input_for_save = input.clone();
             let view_for_save = view.clone();
+            let view_for_check = view.clone();
 
             dialog
                 .title("设置")
@@ -286,13 +288,36 @@ impl WallpaperLibrary {
                     DialogFooter::new()
                         .justify_between()
                         .child(
-                            Button::new("open-download-dir")
-                                .label("在资源管理器中打开")
-                                .outline()
-                                .on_click(move |_, _, cx| {
-                                    let path = input_for_explorer.read(cx).value().to_string();
-                                    open_in_explorer(&path);
-                                }),
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("open-download-dir")
+                                        .label("在资源管理器中打开")
+                                        .outline()
+                                        .on_click(move |_, _, cx| {
+                                            let path =
+                                                input_for_explorer.read(cx).value().to_string();
+                                            open_in_explorer(&path);
+                                        }),
+                                )
+                                .child(
+                                    Button::new("check-update")
+                                        .label("检查更新")
+                                        .outline()
+                                        .on_click(move |_, window, cx| {
+                                            view_for_check.update(cx, |this, cx| {
+                                                this.check_for_updates(true, window, cx);
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("open-about")
+                                        .label("关于")
+                                        .outline()
+                                        .on_click(|_, window, cx| {
+                                            open_about_dialog(window, cx);
+                                        }),
+                                ),
                         )
                         .child(
                             Button::new("save-settings")
@@ -375,6 +400,173 @@ impl WallpaperLibrary {
                 )
         });
     }
+
+    /// 检查 GitHub 上是否有新版本。`manual` 为 `true` 时表示由用户主动点击
+    /// “检查更新”触发，会用通知提示“已是最新版本”/“检查失败”；为 `false` 表示
+    /// 启动时自动静默检查，未发现更新或检查失败时不打扰用户。
+    fn check_for_updates(&mut self, manual: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let http = self.http.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = crate::updater::check_for_update(http).await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(Some(release)) => this.open_update_dialog(release, window, cx),
+                Ok(None) => {
+                    if manual {
+                        window.push_notification("当前已是最新版本", cx);
+                    }
+                }
+                Err(err) => {
+                    if manual {
+                        window.push_notification(format!("检查更新失败: {err}"), cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 展示“发现新版本”对话框，供用户选择立即更新或稍后再说。
+    pub fn open_update_dialog(
+        &self,
+        release: crate::updater::ReleaseInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let view_for_update = view.clone();
+            let release_for_link = release.clone();
+            let release_for_update = release.clone();
+            let version = release.version.clone();
+
+            dialog
+                .title("发现新版本")
+                .w(px(440.))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .p_4()
+                        .child(div().text_sm().child(format!(
+                            "发现新版本 v{version}（当前 v{}），是否立即下载并更新？",
+                            crate::updater::CURRENT_VERSION
+                        )))
+                        .child(
+                            Button::new("update-view-release")
+                                .label("查看更新内容")
+                                .link()
+                                .on_click(move |_, _, cx| {
+                                    cx.open_url(&release_for_link.html_url);
+                                }),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("update-later")
+                                .label("稍后再说")
+                                .outline()
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("update-now")
+                                .label("立即更新")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let release = release_for_update.clone();
+                                    view_for_update.update(cx, |this, cx| {
+                                        this.start_update(release, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
+    }
+
+    /// 下载新版本并启动“替换 + 重启”辅助脚本，随后退出当前进程。
+    fn start_update(&mut self, release: crate::updater::ReleaseInfo, cx: &mut Context<Self>) {
+        self.set_status(format!("正在下载新版本 v{} ...", release.version), cx);
+        let http = self.http.clone();
+        cx.spawn(async move |this, cx| {
+            let result = crate::updater::download_asset(http, &release).await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(path) => match crate::updater::spawn_relaunch(&path) {
+                    Ok(()) => {
+                        this.set_status("下载完成，即将重启以完成更新...", cx);
+                        cx.quit();
+                    }
+                    Err(err) => {
+                        this.set_status(format!("启动更新程序失败: {err}"), cx);
+                    }
+                },
+                Err(err) => {
+                    this.set_status(format!("下载新版本失败: {err}"), cx);
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// 打开“关于”对话框：展示版本信息、致谢开源项目与本项目的仓库链接。
+fn open_about_dialog(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        dialog
+            .title("关于")
+            .w(px(420.))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .p_4()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_bold()
+                            .child(crate::paths::APP_NAME),
+                    )
+                    .child(div().text_sm().child(format!(
+                        "当前版本 v{}",
+                        crate::updater::CURRENT_VERSION
+                    )))
+                    .child(
+                        div()
+                            .text_sm()
+                            .child("壁纸数据来源于开源项目 bing-wallpaper，感谢其长期维护："),
+                    )
+                    .child(
+                        Button::new("about-bing-wallpaper")
+                            .label("https://github.com/niumoo/bing-wallpaper")
+                            .link()
+                            .on_click(|_, _, cx| {
+                                cx.open_url("https://github.com/niumoo/bing-wallpaper");
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(_cx.theme().muted_foreground)
+                            .child(COPYRIGHT),
+                    )
+                    .child(
+                        Button::new("about-repo")
+                            .label(crate::updater::REPO_HTML_URL)
+                            .link()
+                            .on_click(|_, _, cx| {
+                                cx.open_url(crate::updater::REPO_HTML_URL);
+                            }),
+                    ),
+            )
+            .footer(DialogFooter::new().child(
+                Button::new("about-close").label("关闭").primary().on_click(
+                    |_, window, cx| {
+                        window.close_dialog(cx);
+                    },
+                ),
+            ))
+    });
 }
 
 /// 打开系统资源管理器窗口指向给定路径；路径为空时回退到默认下载目录。
@@ -627,18 +819,39 @@ impl WallpaperLibrary {
             )
             .child(
                 div()
-                    .id("home-scroll")
+                    .id("home-scroll-wrap")
+                    .relative()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.home_scroll_handle)
-                    .on_scroll_wheel(cx.listener(|this, _event: &ScrollWheelEvent, _window, cx| {
-                        this.maybe_load_more_home(cx);
-                    }))
+                    .min_h_0()
                     .child(
-                        div().flex().flex_wrap().gap_4().children(
-                            entries
-                                .into_iter()
-                                .map(|entry| self.render_home_card(entry, cx)),
+                        div()
+                            .id("home-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.home_scroll_handle)
+                            .on_scroll_wheel(cx.listener(|this, _event: &ScrollWheelEvent, _window, cx| {
+                                this.maybe_load_more_home(cx);
+                            }))
+                            .child(
+                                div().flex().flex_wrap().gap_4().pr_2().children(
+                                    entries
+                                        .into_iter()
+                                        .map(|entry| self.render_home_card(entry, cx)),
+                                ),
+                            ),
+                    )
+                    .vertical_scrollbar(&self.home_scroll_handle)
+                    .child(
+                        div().absolute().bottom_6().right_6().child(
+                            Button::new("home-back-to-top")
+                                .icon(IconName::ArrowUp)
+                                .ghost()
+                                .opacity(0.6)
+                                .tooltip("回到顶部")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.home_scroll_handle.set_offset(point(px(0.), px(0.)));
+                                    cx.notify();
+                                })),
                         ),
                     ),
             )

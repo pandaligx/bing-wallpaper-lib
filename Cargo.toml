@@ -1,6 +1,6 @@
 [package]
 name = "bing-wallpaper-lib"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
 default-run = "bing-wallpaper-lib"
@@ -10,49 +10,71 @@ name = "bing-wallpaper-lib"
 path = "src/main.rs"
 
 [dependencies]
-# GPUI UI 框架 (来自 Zed 项目)
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
-  "font-kit",
-] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
-reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-http_client = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 futures = "0.3"
+# GPUI UI 框架 (来自 Zed 项目)
+gpui = {
+  git = "https://github.com/zed-industries/zed",
+  rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe"
+}
+gpui-component = {
+  git = "https://github.com/longbridge/gpui-component",
+  rev = "1505b1487131adbb443f6c69e87847db35bfa2d1"
+}
+gpui-component-assets = {
+  git = "https://github.com/longbridge/gpui-component",
+  rev = "1505b1487131adbb443f6c69e87847db35bfa2d1"
+}
+gpui_platform = {
+  git = "https://github.com/zed-industries/zed",
+  rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe",
+  features = [
+    "font-kit",
+  ]
+}
+http_client = {
+  git = "https://github.com/zed-industries/zed",
+  rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe"
+}
+reqwest_client = {
+  git = "https://github.com/zed-industries/zed",
+  rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe"
+}
 
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+env_logger = "0.11"
+log = "0.4"
+rand = "0.8"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-regex = "1"
-anyhow = "1"
-log = "0.4"
-env_logger = "0.11"
-dirs = "5"
-uuid = { version = "1", features = ["v4"] }
-rand = "0.8"
 smol = "2"
+uuid = { version = "1", features = ["v4"] }
 
 # Windows 系统 API：设置壁纸、UAC 提权、单实例互斥体等
-windows = { version = "0.58", features = [
-  "Win32_Foundation",
-  "Win32_UI_Shell",
-  "Win32_UI_WindowsAndMessaging",
-  "Win32_System_Registry",
-  "Win32_System_Threading",
-  "Win32_System_LibraryLoader",
-  "Win32_Security",
-] }
+windows = {
+  version = "0.58",
+  features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+  ]
+}
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"
+[build-dependencies]
+embed-resource = "3.0"
 
 [lints.clippy]
 too_many_arguments = "allow"
 
-[build-dependencies]
-embed-resource = "3.0"
+[profile.release]
+opt-level = 3
+strip = true
+lto = true
+panic = "abort"
+codegen-units = 1
