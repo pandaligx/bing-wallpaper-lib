@@ -1,0 +1,38 @@
+// 必应每日壁纸库 —— Windows 资源脚本：应用图标 + 版本信息。
+//
+// 使用 UTF-8 代码页，以便直接在字符串字面量中使用中文与版权符号 (c)。
+#pragma code_page(65001)
+
+// 应用图标：gpui 在 Windows 上按固定的数字资源 ID `1` 查找窗口/任务栏图标
+// （见 gpui_windows::platform::load_icon()，详见 AGENTS.md）。
+1 ICON "icon.ico"
+
+// 版本信息资源：显示在 Windows 资源管理器 exe 属性对话框的"详细信息"标签页中。
+1 VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "小南瓜"
+            VALUE "FileDescription", "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "bing-wallpaper-lib"
+            VALUE "LegalCopyright", "© 2023-2026 小南瓜"
+            VALUE "OriginalFilename", "必应每日壁纸库.exe"
+            VALUE "ProductName", "必应每日壁纸库"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

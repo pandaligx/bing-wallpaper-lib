@@ -1,0 +1,5 @@
+/target
+
+# Local app data / logs generated while running or testing
+*.log
+smoke_*.log
