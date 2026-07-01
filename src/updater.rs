@@ -3,11 +3,16 @@
 //! 检测逻辑：请求 GitHub 公开 REST API `GET /repos/{owner}/{repo}/releases/latest`，
 //! 解析其中的 `tag_name`（形如 `v0.1.0`）与当前编译时版本号（`CARGO_PKG_VERSION`）比较。
 //!
-//! 更新逻辑：下载最新 Release 中第一个 `.exe` 资源到本地临时目录，写出一个小的
-//! `.bat` 脚本负责"等待本进程退出 → 覆盖当前 exe → 重新启动 → 自我清理"，
-//! 以 `CREATE_NO_WINDOW` 方式启动该脚本后，调用 `App::quit()` 优雅退出，
-//! 由脚本接管完成实际的文件替换与重启（Windows 下无法在进程运行时覆盖自身的
-//! exe 文件，因此必须借助一个独立的辅助进程）。
+//! 实际下载 **不**在本模块中用 `http_client` 直接 GET（GitHub 的 release asset URL 会
+//! 302 重定向到一个带签名参数的 `release-assets.githubusercontent.com` 地址，而 reqwest 处理
+//! 这个重定向链时会经常返回 400 Bad Request），而是复用项目内置的 `aria2c.exe`，由 UI 层
+//! （`ui/mod.rs::run_update_download`）通过 `Aria2Manager::add_uri_to_dir` 提交任务并轮询进度，
+//! 同时推送实时下载进度条、已下/总大小、速度与剩余时间到弹窗。
+//!
+//! 更新逻辑：下载到本地临时目录后，写出一个小的 `.bat` 脚本负责“等待本进程退出 → 覆盖
+//! 当前 exe → 重新启动 → 自我清理”，以 `CREATE_NO_WINDOW` 方式启动该脚本后，调用
+//! `App::quit()` 优雅退出，由脚本接管完成实际的文件替换与重启（Windows 下无法在进程运行
+//! 时覆盖自身的 exe 文件，因此必须借助一个独立的辅助进程）。
 
 use anyhow::{bail, Context, Result};
 use futures::AsyncReadExt;
@@ -120,34 +125,12 @@ pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<Releas
 }
 
 /// 下载更新资源目录：`%LOCALAPPDATA%\BingWallpaperLib\update`。
-fn update_dir() -> Result<PathBuf> {
+///
+/// 公开给 UI 层（`ui/mod.rs`）使用，作为 aria2 下载新版本时的 `--dir` 目标目录。
+pub fn update_dir() -> Result<PathBuf> {
     let dir = crate::paths::app_data_dir()?.join("update");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
-}
-
-/// 下载指定 Release 资源到本地临时目录，返回下载后的完整路径。
-pub async fn download_asset(http: Arc<dyn HttpClient>, release: &ReleaseInfo) -> Result<PathBuf> {
-    let request = Request::get(&release.download_url)
-        .follow_redirects(http_client::RedirectPolicy::FollowAll)
-        .body(Default::default())
-        .context("构建更新下载请求失败")?;
-
-    let mut response = http.send(request).await.context("下载新版本失败")?;
-    if !response.status().is_success() {
-        bail!("下载新版本返回错误状态码: {}", response.status());
-    }
-
-    let mut body = Vec::new();
-    response
-        .body_mut()
-        .read_to_end(&mut body)
-        .await
-        .context("读取新版本内容失败")?;
-
-    let dest = update_dir()?.join(&release.asset_name);
-    std::fs::write(&dest, &body).context("写入新版本文件失败")?;
-    Ok(dest)
 }
 
 /// 生成负责"等待旧进程退出 → 覆盖旧 exe → 重新启动 → 自我清理"的批处理脚本内容。

@@ -149,6 +149,30 @@ impl Aria2Manager {
             .context("aria2.addUri 未返回任务 GID")
     }
 
+    /// 同 `add_uri`，但额外针对本次任务指定一个下载目录（不影响全局默认目录与其他任务）。
+    /// 用于“壁纸下载”之外的场景（如自动更新包下载到 `%LOCALAPPDATA%\BingWallpaperLib\update`），
+    /// 避免把非壁纸文件下载到用户配置的壁纸目录下。
+    pub async fn add_uri_to_dir(
+        &self,
+        url: &str,
+        dir: &std::path::Path,
+        out_filename: &str,
+    ) -> Result<String> {
+        let params = json!([
+            self.secret_token(),
+            [url],
+            {
+                "dir": dir.display().to_string(),
+                "out": out_filename,
+            }
+        ]);
+        let result = self.rpc_call("aria2.addUri", params).await?;
+        result
+            .as_str()
+            .map(str::to_string)
+            .context("aria2.addUri 未返回任务 GID")
+    }
+
     /// 查询任务状态（`status`/`completedLength`/`totalLength` 等字段）。
     pub async fn tell_status(&self, gid: &str) -> Result<Value> {
         let params = json!([self.secret_token(), gid]);

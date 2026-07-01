@@ -627,7 +627,22 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
   `GET https://api.github.com/repos/pandaligx/bing-wallpaper-lib/releases/latest`（需带
   `Accept: application/vnd.github+json` 请求头，无需认证），解析 `tag_name`（如 `v0.2.0`）与当前
   版本比较，找到第一个 `.exe` 结尾的 asset 作为下载目标，返回 `Ok(None)` 表示已是最新。
-- `download_asset(http, release)` 将该 asset 下载到 `%LOCALAPPDATA%\BingWallpaperLib\update\<asset_name>`。
+- **下载新版本改走 aria2（自 v0.2.3）**：之前的 `download_asset(http, release)` 直接用 `http_client` 发 GET
+  的写法已经删除。GitHub 的 release asset URL 会 302 重定向到一个带签名参数的
+  `release-assets.githubusercontent.com` 地址，reqwest 处理这个重定向链经常直接返回
+  400 Bad Request（开不开 VPN 都一样）。现在都交给 UI 层的 `ui/mod.rs::run_update_download`
+  通过 `Aria2Manager::add_uri_to_dir(url, dir, filename)` 提交给内置的 `aria2c.exe`，后者处理重定向
+  链的健壮性高很多。`downloader.rs` 为此新增了 `add_uri_to_dir` 方法（相对 `add_uri` 额外
+  接受 `dir` 参数），避免把非壁纸文件下载到用户配置的壁纸目录。`updater::update_dir()`
+  目录则变成 `pub`（仍为 `%LOCALAPPDATA%\BingWallpaperLib\update`），供 UI 层拼 `--dir` 参数使用。
+- **下载进度弹窗（自 v0.2.3）**：`ui/mod.rs::open_update_progress_dialog` 在点击“立即更新”后
+  弹出一个新的对话框，展示 `Progress` 进度条 + 已下/总字节（`format_bytes` 二进制前缀） +
+  百分比 + 实时速度 + 剩余时间（`format_duration`）。后台任务 `run_update_download` 每 300ms 拉
+  aria2 的 `tellStatus`，把 `completedLength`/`totalLength`/`downloadSpeed` 写入共享的
+  `WallpaperLibrary::update_progress: Rc<RefCell<Option<UpdateProgress>>>`，并 `cx.notify()`
+  触发重新渲染；弹窗 builder 闭包每次重渲染从同一份 `Rc<RefCell<_>>` 引用里读取最新值。
+  弹窗内部**切勿**直接 `.read()` `WallpaperLibrary` 自身（会触发 GPUI entity 重入锁定 panic），
+  这也是为什么进度状态采用一个 **独立于 `WallpaperLibrary` 之外**的共享句柄来传递。
 - `spawn_relaunch(new_exe)` 是整个机制的核心：**Windows 下进程无法覆盖正在运行的自身 exe
   文件**，因此必须借助一个独立的辅助进程来完成替换。具体做法是写出一个 `apply_update.bat`
   脚本（与下载到的新 exe 同目录），内容依次为：`ping -n 4` 延迟 ≈ 3 秒（等待旧进程退出）

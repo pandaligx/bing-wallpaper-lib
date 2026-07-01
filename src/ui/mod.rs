@@ -25,11 +25,8 @@ use gpui_component::sidebar::{
     Sidebar, SidebarCollapsible, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
     SidebarToggleButton,
 };
-use gpui_component::{
-    button::Button,
-    Root, WindowExt as _,
-};
 use gpui_component::*;
+use gpui_component::{button::Button, Root};
 use http_client::HttpClient;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -54,6 +51,21 @@ enum ViewMode {
     MonthDetail,
 }
 
+/// 当前自动更新下载任务的实时进度快照。
+///
+/// 由后台异步任务（`run_update_download`）每 300ms 从 aria2 `tellStatus` 拉取一次并写入
+/// `WallpaperLibrary::update_progress`（`Rc<RefCell<Option<_>>>`），同时 `cx.notify()` 触发重新
+/// 渲染使弹窗读取最新值。
+#[derive(Clone, Copy, Debug, Default)]
+struct UpdateProgress {
+    /// 已下载字节数。
+    completed: u64,
+    /// 总字节数（抓到第一次之前为 0，渲染时展示为“--”）。
+    total: u64,
+    /// 当前下载速度（字节/秒），时为 0 时 ETA 显示为“--”。
+    speed: u64,
+}
+
 /// 应用主视图。
 pub struct WallpaperLibrary {
     groups: Vec<MonthGroup>,
@@ -67,6 +79,11 @@ pub struct WallpaperLibrary {
     http: Arc<dyn HttpClient>,
     /// 正在下载中的条目的实时进度（百分比 0.0~100.0），按日期索引。
     progress: HashMap<NaiveDate, f32>,
+    /// 当前自动更新下载任务的实时进度（字节级）；`None` 表示当前没有在下载。
+    /// 使用 `Rc<RefCell<_>>` 是为了让“下载进度弹窗”的 `build` 闭包能在每次重新渲染时
+    /// 读到最新值，而不需要在弹窗 builder 内部反向 `.read()` 主视图（后者会触发
+    /// GPUI 的 entity 重入锁定 panic，见 AGENTS.md §12.3）。
+    update_progress: Rc<RefCell<Option<UpdateProgress>>>,
     /// 首页网格当前已展示的壁纸数量（初始 [`HOME_PAGE_SIZE`] 张，滚动到底部后递增）。
     home_loaded_count: usize,
     /// 首页网格滚动容器的滚动状态句柄，用于判断是否已接近底部。
@@ -105,6 +122,7 @@ impl WallpaperLibrary {
             aria2: Rc::new(RefCell::new(None)),
             http: cx.http_client(),
             progress: HashMap::new(),
+            update_progress: Rc::new(RefCell::new(None)),
             home_loaded_count: HOME_PAGE_SIZE,
             home_scroll_handle: ScrollHandle::new(),
             sidebar_collapsed: false,
@@ -310,14 +328,11 @@ impl WallpaperLibrary {
                                             });
                                         }),
                                 )
-                                .child(
-                                    Button::new("open-about")
-                                        .label("关于")
-                                        .outline()
-                                        .on_click(|_, window, cx| {
-                                            open_about_dialog(window, cx);
-                                        }),
-                                ),
+                                .child(Button::new("open-about").label("关于").outline().on_click(
+                                    |_, window, cx| {
+                                        open_about_dialog(window, cx);
+                                    },
+                                )),
                         )
                         .child(
                             Button::new("save-settings")
@@ -342,7 +357,12 @@ impl WallpaperLibrary {
     /// `render_dialog_layer` 是在 `WallpaperLibrary::render` 自身的渲染过程中被调用的，
     /// 此时本 Entity 正处于"正在被更新"状态，重入读取会触发 GPUI 的
     /// `cannot read ... while it is already being updated` panic（应用直接崩溃）。
-    fn open_preview_dialog(&self, entry: WallpaperEntry, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_preview_dialog(
+        &self,
+        entry: WallpaperEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let view = cx.entity();
         let date_str = entry.date.format("%Y-%m-%d").to_string();
         let title = entry.title.clone();
@@ -362,12 +382,7 @@ impl WallpaperLibrary {
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(
-                            img(url.clone())
-                                .w(px(800.))
-                                .h(px(450.))
-                                .rounded(px(6.)),
-                        )
+                        .child(img(url.clone()).w(px(800.)).h(px(450.)).rounded(px(6.)))
                         .child(div().text_sm().child(title.clone())),
                 )
                 .footer(
@@ -477,9 +492,8 @@ impl WallpaperLibrary {
                                 .on_click(move |_, window, cx| {
                                     let release = release_for_update.clone();
                                     view_for_update.update(cx, |this, cx| {
-                                        this.start_update(release, cx);
+                                        this.start_update(release, window, cx);
                                     });
-                                    window.close_dialog(cx);
                                 }),
                         ),
                 )
@@ -487,27 +501,130 @@ impl WallpaperLibrary {
     }
 
     /// 下载新版本并启动“替换 + 重启”辅助脚本，随后退出当前进程。
-    fn start_update(&mut self, release: crate::updater::ReleaseInfo, cx: &mut Context<Self>) {
+    ///
+    /// 下载本身通过项目内置的 `aria2c.exe`（而不是 `http_client` 的直接 GET）完成：
+    /// GitHub 的 release asset 地址会 302 重定向到一个带签名参数的
+    /// `release-assets.githubusercontent.com` 地址，reqwest 处理这个重定向链经常直接返回
+    /// 400 Bad Request；aria2 则处理得很好，同时还能提供下载进度/已下字节/总字节/速度
+    /// 等信息供弹窗实时展示。
+    fn start_update(
+        &mut self,
+        release: crate::updater::ReleaseInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 先关闭“发现新版本”弹窗，避免与新弹出的“下载中”弹窗重叠。
+        window.close_dialog(cx);
+
+        // 初始化进度为全零，并弹出一个新的“正在下载新版本”弹窗（引用同一份
+        // `update_progress` 共享句柄，将在后台下载进度更新时自动重新渲染）。
+        *self.update_progress.borrow_mut() = Some(UpdateProgress::default());
         self.set_status(format!("正在下载新版本 v{} ...", release.version), cx);
+        self.open_update_progress_dialog(release.clone(), window, cx);
+
+        let aria2 = self.aria2.clone();
         let http = self.http.clone();
+        let progress = self.update_progress.clone();
+
         cx.spawn(async move |this, cx| {
-            let result = crate::updater::download_asset(http, &release).await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(path) => match crate::updater::spawn_relaunch(&path) {
-                    Ok(()) => {
-                        this.set_status("下载完成，即将重启以完成更新...", cx);
-                        cx.quit();
-                    }
+            let result = run_update_download(&aria2, &http, &release, &progress, &this, cx).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                *this.update_progress.borrow_mut() = None;
+                window.close_dialog(cx);
+                match result {
+                    Ok(path) => match crate::updater::spawn_relaunch(&path) {
+                        Ok(()) => {
+                            this.set_status("下载完成，即将重启以完成更新...", cx);
+                            cx.quit();
+                        }
+                        Err(err) => {
+                            this.set_status(format!("启动更新程序失败: {err}"), cx);
+                        }
+                    },
                     Err(err) => {
-                        this.set_status(format!("启动更新程序失败: {err}"), cx);
+                        this.set_status(format!("下载新版本失败: {err}"), cx);
                     }
-                },
-                Err(err) => {
-                    this.set_status(format!("下载新版本失败: {err}"), cx);
                 }
             });
         })
         .detach();
+    }
+
+    /// 弹出“正在下载新版本”对话框：展示实时进度条 + 已下/总字节 + 百分比 + 速度 + 剩余时间。
+    ///
+    /// 对话框 builder 闭包每次重新渲染时都会重新读取共享的 `Rc<RefCell<Option<UpdateProgress>>>`
+    /// 拿到最新值，而后台下载任务每次写入新进度后会 `cx.notify()` 触发一次重渲染，
+    /// 从而实现实时更新。**不能**在 builder 内部反向 `.read()` `WallpaperLibrary` 自身（会触发
+    /// GPUI 的 entity 重入锁定 panic，见 AGENTS.md §12.3），因此不能直接从 `self.progress` 读取。
+    fn open_update_progress_dialog(
+        &self,
+        release: crate::updater::ReleaseInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let progress_handle = self.update_progress.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let snapshot = progress_handle.borrow().unwrap_or_default();
+            let (completed, total, speed) = (snapshot.completed, snapshot.total, snapshot.speed);
+            let percent = if total > 0 {
+                (completed as f64 / total as f64 * 100.0) as f32
+            } else {
+                0.0
+            };
+            let size_text = if total > 0 {
+                format!("{} / {}", format_bytes(completed), format_bytes(total))
+            } else {
+                format!("{} / --", format_bytes(completed))
+            };
+            let speed_text = if speed > 0 {
+                format!("{}/s", format_bytes(speed))
+            } else {
+                "--".to_string()
+            };
+            let eta_text = if speed > 0 && total > completed {
+                format_duration((total - completed) / speed)
+            } else {
+                "--".to_string()
+            };
+
+            dialog
+                .title(format!("正在下载新版本 v{}", release.version))
+                .w(px(460.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .p_4()
+                        .child(Progress::new("update-progress").value(percent))
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(div().text_sm().child(size_text))
+                                .child(div().text_sm().child(format!("{percent:.1}%"))),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .opacity(0.7)
+                                        .child(format!("速度：{speed_text}")),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .opacity(0.7)
+                                        .child(format!("剩余：{eta_text}")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .opacity(0.6)
+                                .child("下载完成后应用会自动重启完成更新，请勿关闭。"),
+                        ),
+                )
+        });
     }
 }
 
@@ -521,16 +638,12 @@ fn open_about_dialog(window: &mut Window, cx: &mut App) {
                 v_flex()
                     .gap_3()
                     .p_4()
+                    .child(div().text_lg().font_bold().child(crate::paths::APP_NAME))
                     .child(
                         div()
-                            .text_lg()
-                            .font_bold()
-                            .child(crate::paths::APP_NAME),
+                            .text_sm()
+                            .child(format!("当前版本 v{}", crate::updater::CURRENT_VERSION)),
                     )
-                    .child(div().text_sm().child(format!(
-                        "当前版本 v{}",
-                        crate::updater::CURRENT_VERSION
-                    )))
                     .child(
                         div()
                             .text_sm()
@@ -559,13 +672,16 @@ fn open_about_dialog(window: &mut Window, cx: &mut App) {
                             }),
                     ),
             )
-            .footer(DialogFooter::new().child(
-                Button::new("about-close").label("关闭").primary().on_click(
-                    |_, window, cx| {
-                        window.close_dialog(cx);
-                    },
+            .footer(
+                DialogFooter::new().child(
+                    Button::new("about-close")
+                        .label("关闭")
+                        .primary()
+                        .on_click(|_, window, cx| {
+                            window.close_dialog(cx);
+                        }),
                 ),
-            ))
+            )
     });
 }
 
@@ -657,6 +773,106 @@ async fn run_download(
     }
 }
 
+/// 下载指定 Release 的 exe 资源到本地 `update` 目录并实时上报进度/速度。
+///
+/// 与 `run_download` 共享同一份内置 aria2 常驻进程（若尚未启动会自动启动），但为本次任务
+/// 针对性地指定了 `updater::update_dir()` 目录（即 `%LOCALAPPDATA%\BingWallpaperLib\update`），
+/// 避免混进用户配置的壁纸目录。下载中通过 `Rc<RefCell<Option<UpdateProgress>>>` 将最新
+/// 已下/总字节/速度推送到“下载中”弹窗的 builder 闭包，同时 `cx.notify()` 触发重新渲染。
+async fn run_update_download(
+    aria2: &Rc<RefCell<Option<Rc<Aria2Manager>>>>,
+    http: &Arc<dyn HttpClient>,
+    release: &crate::updater::ReleaseInfo,
+    progress: &Rc<RefCell<Option<UpdateProgress>>>,
+    this: &WeakEntity<WallpaperLibrary>,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<std::path::PathBuf> {
+    let manager = ensure_aria2(aria2, http).await?;
+    let dir = crate::updater::update_dir()?;
+    let filename = release.asset_name.clone();
+    let gid = manager
+        .add_uri_to_dir(&release.download_url, &dir, &filename)
+        .await?;
+
+    loop {
+        let status = manager.tell_status(&gid).await?;
+        let state = status
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        let completed: u64 = status
+            .get("completedLength")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let total: u64 = status
+            .get("totalLength")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let speed: u64 = status
+            .get("downloadSpeed")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        *progress.borrow_mut() = Some(UpdateProgress {
+            completed,
+            total,
+            speed,
+        });
+        let _ = this.update(cx, |_this, cx| cx.notify());
+
+        match state.as_str() {
+            "complete" => return Ok(dir.join(&filename)),
+            "error" => {
+                let msg = status
+                    .get("errorMessage")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("未知错误")
+                    .to_string();
+                anyhow::bail!("aria2 下载失败: {msg}");
+            }
+            _ => {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+            }
+        }
+    }
+}
+
+/// 人类可读的字节尺寸格式化：`1234567` → `"1.18 MiB"`。
+///
+/// 采用二进制前缀（KiB/MiB/GiB）而非十进制 KB/MB/GB，与大多数下载器的展示习惯一致。
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * 1024 * 1024;
+    if bytes >= GIB {
+        format!("{:.2} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.2} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// 人类可读的时长格式化（秒→中文“时分秒”形式）：`75` → `"1分12秒"`；`3720` → `"1时02分"`。
+fn format_duration(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}时{:02}分", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{}分{:02}秒", secs / 60, secs % 60)
+    } else {
+        format!("{secs}秒")
+    }
+}
+
 impl Render for WallpaperLibrary {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let years = self.years();
@@ -675,8 +891,8 @@ impl Render for WallpaperLibrary {
             for month in months {
                 let key = month.key.clone();
                 let label = format!("{:02} 月 ({} 张)", month.month, month.entries.len());
-                let is_active =
-                    view_mode == ViewMode::MonthDetail && selected_key.as_deref() == Some(month.key.as_str());
+                let is_active = view_mode == ViewMode::MonthDetail
+                    && selected_key.as_deref() == Some(month.key.as_str());
                 month_children.push(
                     SidebarMenuItem::new(SharedString::from(label))
                         .active(is_active)
@@ -829,9 +1045,11 @@ impl WallpaperLibrary {
                             .size_full()
                             .overflow_y_scroll()
                             .track_scroll(&self.home_scroll_handle)
-                            .on_scroll_wheel(cx.listener(|this, _event: &ScrollWheelEvent, _window, cx| {
-                                this.maybe_load_more_home(cx);
-                            }))
+                            .on_scroll_wheel(cx.listener(
+                                |this, _event: &ScrollWheelEvent, _window, cx| {
+                                    this.maybe_load_more_home(cx);
+                                },
+                            ))
                             .child(
                                 div().flex().flex_wrap().gap_4().pr_2().children(
                                     entries
@@ -876,17 +1094,12 @@ impl WallpaperLibrary {
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .font_bold()
-                            .text_lg()
-                            .child(match &content {
-                                Some(group) => {
-                                    format!("{}年{:02}月", group.year, group.month)
-                                }
-                                None => "请选择左侧月份".to_string(),
-                            }),
-                    )
+                    .child(div().font_bold().text_lg().child(match &content {
+                        Some(group) => {
+                            format!("{}年{:02}月", group.year, group.month)
+                        }
+                        None => "请选择左侧月份".to_string(),
+                    }))
                     .child(
                         div()
                             .text_sm()
@@ -949,9 +1162,15 @@ impl WallpaperLibrary {
                                 .label("预览图片")
                                 .small()
                                 .w_full()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_preview_dialog(entry_for_preview.clone(), window, cx);
-                                })),
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.open_preview_dialog(
+                                            entry_for_preview.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -968,11 +1187,7 @@ impl WallpaperLibrary {
             )
     }
 
-    fn render_entry_card(
-        &self,
-        entry: WallpaperEntry,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_entry_card(&self, entry: WallpaperEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let entry_for_download = entry.clone();
         let entry_for_preview = entry.clone();
         let entry_for_wallpaper = entry.clone();
