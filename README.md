@@ -65,6 +65,10 @@ cargo build --release                        # 发布构建
 
 更详细的架构设计、关键实现决策与开发注意事项见 [`AGENTS.md`](AGENTS.md)。
 
+## 许可证
+
+本项目遵循仓库根目录下的 [`LICENSE`](LICENSE)（GPL-3.0）开源协议发布。
+
 ## 版权
 
 © 2023-2026 小南瓜
