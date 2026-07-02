@@ -11,7 +11,7 @@
 
 use crate::downloader::Aria2Manager;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
-use crate::settings::{AppSettings, ThemePreference};
+use crate::settings::{AppSettings, ThemePreference, WallpaperTarget};
 use crate::wallpaper_setter;
 use chrono::NaiveDate;
 use gpui::prelude::FluentBuilder;
@@ -51,6 +51,15 @@ enum ViewMode {
     Favorites,
     /// 点击左侧某个年/月条目后展示的旧版列表视图。
     MonthDetail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSection {
+    DownloadDir,
+    Appearance,
+    WallpaperTarget,
+    BatchDownload,
+    Maintenance,
 }
 
 /// 当前自动更新下载任务的实时进度快照。
@@ -93,6 +102,8 @@ pub struct WallpaperLibrary {
     favorites: HashSet<NaiveDate>,
     /// 当前批量下载任务进度；`None` 表示当前没有批量下载。
     batch_progress: Option<BatchProgress>,
+    /// 当前可单独设置桌面壁纸的显示器列表。
+    monitors: Vec<wallpaper_setter::MonitorInfo>,
     /// 当前自动更新下载任务的实时进度（字节级）；`None` 表示当前没有在下载。
     /// 使用 `Rc<RefCell<_>>` 是为了让“下载进度弹窗”的 `build` 闭包能在每次重新渲染时
     /// 读到最新值，而不需要在弹窗 builder 内部反向 `.read()` 主视图（后者会触发
@@ -106,10 +117,16 @@ pub struct WallpaperLibrary {
     sidebar_collapsed: bool,
     /// 设置浮层是否展开（左下角，类似抖音侧边栏设置菜单）。
     settings_panel_open: bool,
+    /// 设置浮层当前展开的分组；`None` 表示只显示分组标题。
+    settings_section: Option<SettingsSection>,
     /// 持久化的应用设置。
     settings: AppSettings,
     /// 设置面板中"下载路径"输入框的状态。
     settings_dir_input: Entity<InputState>,
+    /// 批量下载日期范围：开始日期输入框。
+    batch_start_input: Entity<InputState>,
+    /// 批量下载日期范围：结束日期输入框。
+    batch_end_input: Entity<InputState>,
 }
 
 impl WallpaperLibrary {
@@ -128,6 +145,11 @@ impl WallpaperLibrary {
                 .placeholder(format!("默认: {default_dir_display}"))
                 .default_value(initial_dir_text)
         });
+        let batch_start_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("开始日期 YYYY-MM-DD"));
+        let batch_end_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("结束日期 YYYY-MM-DD"));
+        let monitors = wallpaper_setter::list_monitors().unwrap_or_default();
 
         Self {
             groups: Vec::new(),
@@ -140,13 +162,17 @@ impl WallpaperLibrary {
             progress: HashMap::new(),
             favorites: crate::favorites::load(),
             batch_progress: None,
+            monitors,
             update_progress: Rc::new(RefCell::new(None)),
             home_loaded_count: HOME_PAGE_SIZE,
             home_scroll_handle: ScrollHandle::new(),
             sidebar_collapsed: false,
             settings_panel_open: false,
+            settings_section: Some(SettingsSection::DownloadDir),
             settings,
             settings_dir_input,
+            batch_start_input,
+            batch_end_input,
         }
     }
 
@@ -229,6 +255,120 @@ impl WallpaperLibrary {
             }
             Err(err) => self.set_status(format!("保存收藏失败: {err}"), cx),
         }
+    }
+
+    fn wallpaper_target_label(&self) -> String {
+        match &self.settings.wallpaper_target {
+            WallpaperTarget::All => "全部显示器".to_string(),
+            WallpaperTarget::Monitor(id) => self
+                .monitors
+                .iter()
+                .find(|monitor| &monitor.id == id)
+                .map(|monitor| monitor.label.clone())
+                .unwrap_or_else(|| "选定显示器".to_string()),
+        }
+    }
+
+    fn toggle_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+        self.settings_section = if self.settings_section == Some(section) {
+            None
+        } else {
+            Some(section)
+        };
+        cx.notify();
+    }
+
+    fn set_wallpaper_target(&mut self, target: WallpaperTarget, cx: &mut Context<Self>) {
+        self.settings.wallpaper_target = target;
+        if let Err(err) = self.settings.save() {
+            self.set_status(format!("保存显示器设置失败: {err}"), cx);
+            return;
+        }
+        self.set_status(
+            format!("设置壁纸目标已切换为{}", self.wallpaper_target_label()),
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn refresh_monitors(&mut self, cx: &mut Context<Self>) {
+        match wallpaper_setter::list_monitors() {
+            Ok(monitors) => {
+                let count = monitors.len();
+                self.monitors = monitors;
+                if let WallpaperTarget::Monitor(id) = &self.settings.wallpaper_target {
+                    if !self.monitors.iter().any(|monitor| &monitor.id == id) {
+                        self.settings.wallpaper_target = WallpaperTarget::All;
+                        let _ = self.settings.save();
+                    }
+                }
+                self.set_status(format!("已刷新显示器列表：{count} 个"), cx);
+                cx.notify();
+            }
+            Err(err) => self.set_status(format!("刷新显示器列表失败: {err}"), cx),
+        }
+    }
+
+    fn start_date_range_batch_download(
+        &mut self,
+        start_text: String,
+        end_text: String,
+        cx: &mut Context<Self>,
+    ) {
+        let parse_bound = |label: &str, value: &str| -> Option<Result<NaiveDate, String>> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(
+                    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+                        .map_err(|_| format!("{label}格式不正确，请使用 YYYY-MM-DD")),
+                )
+            }
+        };
+
+        let start = match parse_bound("开始日期", &start_text) {
+            Some(Ok(date)) => Some(date),
+            Some(Err(err)) => {
+                self.set_status(err, cx);
+                return;
+            }
+            None => None,
+        };
+        let end = match parse_bound("结束日期", &end_text) {
+            Some(Ok(date)) => Some(date),
+            Some(Err(err)) => {
+                self.set_status(err, cx);
+                return;
+            }
+            None => None,
+        };
+
+        if start.is_none() && end.is_none() {
+            self.set_status("请输入批量下载的开始日期或结束日期", cx);
+            return;
+        }
+        if let (Some(start), Some(end)) = (start, end) {
+            if start > end {
+                self.set_status("开始日期不能晚于结束日期", cx);
+                return;
+            }
+        }
+
+        let entries: Vec<WallpaperEntry> = self
+            .flat_entries
+            .iter()
+            .filter(|entry| start.is_none_or(|date| entry.date >= date))
+            .filter(|entry| end.is_none_or(|date| entry.date <= date))
+            .cloned()
+            .collect();
+        let label = match (start, end) {
+            (Some(start), Some(end)) => format!("日期范围 {start} 至 {end}"),
+            (Some(start), None) => format!("日期范围 {start} 至今"),
+            (None, Some(end)) => format!("日期范围 截止 {end}"),
+            (None, None) => unreachable!(),
+        };
+        self.start_batch_download(label, entries, cx);
     }
 
     /// 首页网格滚动条即将触底时，追加下一页壁纸（无限滚动）。
@@ -357,19 +497,28 @@ impl WallpaperLibrary {
         let aria2 = self.aria2.clone();
         let http = self.http.clone();
         let date = entry.date;
-        self.status = format!("正在设置 {} 的壁纸...", entry.date).into();
+        let target = self.settings.wallpaper_target.clone();
+        let target_label = self.wallpaper_target_label();
+        self.status = format!("正在将 {} 设置为{}壁纸...", entry.date, target_label).into();
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = run_download(&aria2, &http, &entry, &this, cx).await;
             let outcome = match result {
-                Ok(path) => wallpaper_setter::set_wallpaper(&path),
+                Ok(path) => match &target {
+                    WallpaperTarget::All => wallpaper_setter::set_wallpaper_for_all_monitors(&path),
+                    WallpaperTarget::Monitor(monitor_id) => {
+                        wallpaper_setter::set_wallpaper_for_monitor(&path, monitor_id)
+                    }
+                },
                 Err(err) => Err(err),
             };
             let _ = this.update(cx, |this, cx| {
                 this.progress.remove(&date);
                 match outcome {
-                    Ok(()) => this.set_status(format!("已将 {} 设置为桌面壁纸", date), cx),
+                    Ok(()) => {
+                        this.set_status(format!("已将 {} 设置为{}壁纸", date, target_label), cx)
+                    }
                     Err(err) => this.set_status(format!("设置壁纸失败: {err}"), cx),
                 }
             });
@@ -1053,7 +1202,7 @@ impl Render for WallpaperLibrary {
                 .items_center()
                 .gap_2()
                 .font_bold()
-                .child("Bing Daily Wallpaper (4K)"),
+                .child(crate::paths::APP_NAME),
         );
 
         let main_row = h_flex()
@@ -1151,7 +1300,9 @@ impl Render for WallpaperLibrary {
                     div()
                         .absolute()
                         .left_3()
+                        .top_3()
                         .bottom_3()
+                        .w(px(340.))
                         .child(self.render_settings_panel(cx)),
                 )
             });
@@ -1167,12 +1318,56 @@ impl Render for WallpaperLibrary {
 }
 
 impl WallpaperLibrary {
+    fn render_settings_section_header(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        section: SettingsSection,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let opened = self.settings_section == Some(section);
+        let view = cx.entity();
+
+        h_flex()
+            .id(id)
+            .justify_between()
+            .items_center()
+            .w_full()
+            .p_2()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                view.update(cx, |this, cx| {
+                    this.toggle_settings_section(section, cx);
+                });
+            })
+            .child(div().text_sm().font_bold().child(title))
+            .child(
+                Icon::new(if opened {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .size_4()
+                .text_color(cx.theme().muted_foreground),
+            )
+    }
+
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let input_for_field = self.settings_dir_input.clone();
         let input_for_open = self.settings_dir_input.clone();
         let input_for_choose = self.settings_dir_input.clone();
+        let batch_start_field = self.batch_start_input.clone();
+        let batch_end_field = self.batch_end_input.clone();
+        let batch_start_for_read = self.batch_start_input.clone();
+        let batch_end_for_read = self.batch_end_input.clone();
         let view = cx.entity();
         let theme_preference = self.settings.theme_preference;
+        let wallpaper_target = self.settings.wallpaper_target.clone();
+        let monitors = self.monitors.clone();
 
         let view_for_save = view.clone();
         let view_for_clear = view.clone();
@@ -1180,9 +1375,12 @@ impl WallpaperLibrary {
         let view_for_system = view.clone();
         let view_for_light = view.clone();
         let view_for_dark = view.clone();
+        let view_for_wallpaper_all = view.clone();
+        let view_for_wallpaper_refresh = view.clone();
         let view_for_batch_all = view.clone();
         let view_for_batch_month = view.clone();
         let view_for_batch_favorites = view.clone();
+        let view_for_batch_range = view.clone();
 
         let all_entries = self.flat_entries.clone();
         let month_entries = self
@@ -1193,8 +1391,9 @@ impl WallpaperLibrary {
         let batch_progress = self.batch_progress;
 
         v_flex()
-            .w(px(308.))
-            .max_h(px(560.))
+            .w_full()
+            .h_full()
+            .min_h_0()
             .overflow_y_scrollbar()
             .gap_3()
             .p_3()
@@ -1207,239 +1406,452 @@ impl WallpaperLibrary {
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().font_bold().child("壁纸下载保存路径"))
-                    .child(Input::new(&input_for_field))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("留空则使用默认目录；保存后若路径不存在会自动创建。"),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("settings-open-dir")
-                                    .label("打开目录")
-                                    .outline()
-                                    .small()
-                                    .on_click(move |_, _, cx| {
-                                        let path = input_for_open.read(cx).value().to_string();
-                                        open_in_explorer(&path);
-                                    }),
-                            )
-                            .child(
-                                Button::new("settings-save-dir")
-                                    .label("选择并保存")
-                                    .primary()
-                                    .small()
-                                    .on_click(move |_, window, cx| {
-                                        match crate::folder_picker::pick_folder() {
-                                            Ok(Some(path)) => {
-                                                let path_text = path.display().to_string();
-                                                input_for_choose.update(cx, |input, cx| {
-                                                    input.set_value(path_text.clone(), window, cx);
-                                                });
-                                                view_for_save.update(cx, |this, cx| {
-                                                    this.apply_download_dir(path_text, cx);
-                                                });
-                                            }
-                                            Ok(None) => {}
-                                            Err(err) => {
-                                                view_for_save.update(cx, |this, cx| {
-                                                    this.set_status(
-                                                        format!("选择下载目录失败: {err}"),
-                                                        cx,
-                                                    );
-                                                });
-                                            }
-                                        }
-                                    }),
-                            ),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().font_bold().child("外观模式"))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("theme-system")
-                                    .label("跟随")
-                                    .small()
-                                    .when(theme_preference == ThemePreference::System, |this| {
-                                        this.primary()
-                                    })
-                                    .when(theme_preference != ThemePreference::System, |this| {
-                                        this.outline()
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        view_for_system.update(cx, |this, cx| {
-                                            this.set_theme_preference(
-                                                ThemePreference::System,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new("theme-light")
-                                    .label("白天")
-                                    .small()
-                                    .when(theme_preference == ThemePreference::Light, |this| {
-                                        this.primary()
-                                    })
-                                    .when(theme_preference != ThemePreference::Light, |this| {
-                                        this.outline()
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        view_for_light.update(cx, |this, cx| {
-                                            this.set_theme_preference(
-                                                ThemePreference::Light,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new("theme-dark")
-                                    .label("夜间")
-                                    .small()
-                                    .when(theme_preference == ThemePreference::Dark, |this| {
-                                        this.primary()
-                                    })
-                                    .when(theme_preference != ThemePreference::Dark, |this| {
-                                        this.outline()
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        view_for_dark.update(cx, |this, cx| {
-                                            this.set_theme_preference(
-                                                ThemePreference::Dark,
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("手动选择后不会再被系统主题变化覆盖。"),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().font_bold().child("批量下载"))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("batch-all")
-                                    .label("全部历史")
-                                    .outline()
-                                    .small()
-                                    .disabled(batch_progress.is_some())
-                                    .on_click(move |_, _, cx| {
-                                        let entries = all_entries.clone();
-                                        view_for_batch_all.update(cx, |this, cx| {
-                                            this.start_batch_download("全部历史壁纸", entries, cx);
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new("batch-month")
-                                    .label("当前月份")
-                                    .outline()
-                                    .small()
-                                    .disabled(batch_progress.is_some())
-                                    .on_click(move |_, _, cx| {
-                                        let entries = month_entries.clone();
-                                        view_for_batch_month.update(cx, |this, cx| {
-                                            this.start_batch_download("当前月份", entries, cx);
-                                        });
-                                    }),
-                            )
-                            .child(
-                                Button::new("batch-favorites")
-                                    .label("收藏")
-                                    .outline()
-                                    .small()
-                                    .disabled(batch_progress.is_some())
-                                    .on_click(move |_, _, cx| {
-                                        let entries = favorite_entries.clone();
-                                        view_for_batch_favorites.update(cx, |this, cx| {
-                                            this.start_batch_download("我的收藏", entries, cx);
-                                        });
-                                    }),
-                            ),
-                    )
-                    .when_some(batch_progress, |this, progress| {
-                        this.child(
-                            v_flex()
-                                .gap_1()
-                                .child(Progress::new("batch-progress").value(
-                                    if progress.total == 0 {
-                                        0.0
-                                    } else {
-                                        progress.completed as f32 / progress.total as f32 * 100.0
-                                    },
-                                ))
+                    .child(self.render_settings_section_header(
+                        "settings-section-download",
+                        "壁纸下载保存路径",
+                        SettingsSection::DownloadDir,
+                        cx,
+                    ))
+                    .when(
+                        self.settings_section == Some(SettingsSection::DownloadDir),
+                        |this| {
+                            this.child(Input::new(&input_for_field))
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "{}/{}，跳过 {}，失败 {}",
-                                            progress.completed,
-                                            progress.total,
-                                            progress.skipped,
-                                            progress.failed
-                                        )),
-                                ),
-                        )
-                    }),
+                                        .child(
+                                            "留空则使用默认目录；保存后若路径不存在会自动创建。",
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            Button::new("settings-open-dir")
+                                                .label("打开目录")
+                                                .outline()
+                                                .small()
+                                                .on_click(move |_, _, cx| {
+                                                    let path =
+                                                        input_for_open.read(cx).value().to_string();
+                                                    open_in_explorer(&path);
+                                                }),
+                                        )
+                                        .child(
+                                            Button::new("settings-save-dir")
+                                                .label("选择并保存")
+                                                .primary()
+                                                .small()
+                                                .on_click(move |_, window, cx| {
+                                                    match crate::folder_picker::pick_folder() {
+                                                        Ok(Some(path)) => {
+                                                            let path_text =
+                                                                path.display().to_string();
+                                                            input_for_choose.update(
+                                                                cx,
+                                                                |input, cx| {
+                                                                    input.set_value(
+                                                                        path_text.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            );
+                                                            view_for_save.update(cx, |this, cx| {
+                                                                this.apply_download_dir(
+                                                                    path_text, cx,
+                                                                );
+                                                            });
+                                                        }
+                                                        Ok(None) => {}
+                                                        Err(err) => {
+                                                            view_for_save.update(cx, |this, cx| {
+                                                                this.set_status(
+                                                                    format!(
+                                                                        "选择下载目录失败: {err}"
+                                                                    ),
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    }
+                                                }),
+                                        ),
+                                )
+                        },
+                    ),
             )
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_sm().font_bold().child("维护"))
-                    .child(
-                        Button::new("settings-clear-cache")
-                            .label("清空壁纸缓存")
-                            .outline()
-                            .w_full()
-                            .on_click(move |_, _, cx| {
-                                view_for_clear.update(cx, |this, cx| {
-                                    this.clear_cache(cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new("settings-check-update")
-                            .label("检查更新")
-                            .outline()
-                            .w_full()
-                            .on_click(move |_, window, cx| {
-                                view_for_check.update(cx, |this, cx| {
-                                    this.check_for_updates(true, window, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        Button::new("settings-about")
-                            .label("关于软件")
-                            .outline()
-                            .w_full()
-                            .on_click(|_, window, cx| {
-                                open_about_dialog(window, cx);
-                            }),
+                    .child(self.render_settings_section_header(
+                        "settings-section-appearance",
+                        "外观模式",
+                        SettingsSection::Appearance,
+                        cx,
+                    ))
+                    .when(
+                        self.settings_section == Some(SettingsSection::Appearance),
+                        |this| {
+                            this.child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("theme-system")
+                                            .label("跟随")
+                                            .small()
+                                            .when(
+                                                theme_preference == ThemePreference::System,
+                                                |this| this.primary(),
+                                            )
+                                            .when(
+                                                theme_preference != ThemePreference::System,
+                                                |this| this.outline(),
+                                            )
+                                            .on_click(move |_, window, cx| {
+                                                view_for_system.update(cx, |this, cx| {
+                                                    this.set_theme_preference(
+                                                        ThemePreference::System,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("theme-light")
+                                            .label("白天")
+                                            .small()
+                                            .when(
+                                                theme_preference == ThemePreference::Light,
+                                                |this| this.primary(),
+                                            )
+                                            .when(
+                                                theme_preference != ThemePreference::Light,
+                                                |this| this.outline(),
+                                            )
+                                            .on_click(move |_, window, cx| {
+                                                view_for_light.update(cx, |this, cx| {
+                                                    this.set_theme_preference(
+                                                        ThemePreference::Light,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("theme-dark")
+                                            .label("夜间")
+                                            .small()
+                                            .when(
+                                                theme_preference == ThemePreference::Dark,
+                                                |this| this.primary(),
+                                            )
+                                            .when(
+                                                theme_preference != ThemePreference::Dark,
+                                                |this| this.outline(),
+                                            )
+                                            .on_click(move |_, window, cx| {
+                                                view_for_dark.update(cx, |this, cx| {
+                                                    this.set_theme_preference(
+                                                        ThemePreference::Dark,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("手动选择后不会再被系统主题变化覆盖。"),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.render_settings_section_header(
+                        "settings-section-wallpaper-target",
+                        "多显示器壁纸",
+                        SettingsSection::WallpaperTarget,
+                        cx,
+                    ))
+                    .when(
+                        self.settings_section == Some(SettingsSection::WallpaperTarget),
+                        |this| {
+                            this.child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("wallpaper-target-all")
+                                            .label("同步全部")
+                                            .small()
+                                            .when(
+                                                wallpaper_target == WallpaperTarget::All,
+                                                |this| this.primary(),
+                                            )
+                                            .when(
+                                                wallpaper_target != WallpaperTarget::All,
+                                                |this| this.outline(),
+                                            )
+                                            .on_click(move |_, _, cx| {
+                                                view_for_wallpaper_all.update(cx, |this, cx| {
+                                                    this.set_wallpaper_target(
+                                                        WallpaperTarget::All,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("wallpaper-refresh-monitors")
+                                            .label("刷新")
+                                            .outline()
+                                            .small()
+                                            .on_click(move |_, _, cx| {
+                                                view_for_wallpaper_refresh.update(
+                                                    cx,
+                                                    |this, cx| {
+                                                        this.refresh_monitors(cx);
+                                                    },
+                                                );
+                                            }),
+                                    ),
+                            )
+                            .when(monitors.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            "未检测到可单独设置的显示器；将使用同步全部显示器。",
+                                        ),
+                                )
+                            })
+                            .when(!monitors.is_empty(), |this| {
+                                this.child(div().flex().flex_wrap().gap_2().children(
+                                    monitors.into_iter().enumerate().map(|(index, monitor)| {
+                                        let selected = wallpaper_target.monitor_id()
+                                            == Some(monitor.id.as_str());
+                                        let view_for_monitor = view.clone();
+                                        let monitor_id = monitor.id.clone();
+                                        Button::new(SharedString::from(format!(
+                                            "wallpaper-monitor-{index}"
+                                        )))
+                                        .label(monitor.label)
+                                        .small()
+                                        .when(selected, |this| this.primary())
+                                        .when(!selected, |this| this.outline())
+                                        .on_click(
+                                            move |_, _, cx| {
+                                                let monitor_id = monitor_id.clone();
+                                                view_for_monitor.update(cx, |this, cx| {
+                                                    this.set_wallpaper_target(
+                                                        WallpaperTarget::Monitor(monitor_id),
+                                                        cx,
+                                                    );
+                                                });
+                                            },
+                                        )
+                                    }),
+                                ))
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("选择后，所有“设为桌面壁纸”按钮都会按此目标生效。"),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.render_settings_section_header(
+                        "settings-section-batch",
+                        "批量下载",
+                        SettingsSection::BatchDownload,
+                        cx,
+                    ))
+                    .when(
+                        self.settings_section == Some(SettingsSection::BatchDownload),
+                        |this| {
+                            this.child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("batch-all")
+                                            .label("全部历史")
+                                            .outline()
+                                            .small()
+                                            .disabled(batch_progress.is_some())
+                                            .on_click(move |_, _, cx| {
+                                                let entries = all_entries.clone();
+                                                view_for_batch_all.update(cx, |this, cx| {
+                                                    this.start_batch_download(
+                                                        "全部历史壁纸",
+                                                        entries,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("batch-month")
+                                            .label("当前月份")
+                                            .outline()
+                                            .small()
+                                            .disabled(batch_progress.is_some())
+                                            .on_click(move |_, _, cx| {
+                                                let entries = month_entries.clone();
+                                                view_for_batch_month.update(cx, |this, cx| {
+                                                    this.start_batch_download(
+                                                        "当前月份",
+                                                        entries,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("batch-favorites")
+                                            .label("收藏")
+                                            .outline()
+                                            .small()
+                                            .disabled(batch_progress.is_some())
+                                            .on_click(move |_, _, cx| {
+                                                let entries = favorite_entries.clone();
+                                                view_for_batch_favorites.update(cx, |this, cx| {
+                                                    this.start_batch_download(
+                                                        "我的收藏",
+                                                        entries,
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(Input::new(&batch_start_field).flex_1())
+                                            .child(Input::new(&batch_end_field).flex_1()),
+                                    )
+                                    .child(
+                                        Button::new("batch-date-range")
+                                            .label("下载日期范围")
+                                            .outline()
+                                            .small()
+                                            .w_full()
+                                            .disabled(batch_progress.is_some())
+                                            .on_click(move |_, _, cx| {
+                                                let start = batch_start_for_read
+                                                    .read(cx)
+                                                    .value()
+                                                    .to_string();
+                                                let end =
+                                                    batch_end_for_read.read(cx).value().to_string();
+                                                view_for_batch_range.update(cx, |this, cx| {
+                                                    this.start_date_range_batch_download(
+                                                        start, end, cx,
+                                                    );
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("可只填开始或结束日期；日期格式：2026-07-02。"),
+                                    ),
+                            )
+                            .when_some(
+                                batch_progress,
+                                |this, progress| {
+                                    this.child(
+                                        v_flex()
+                                            .gap_1()
+                                            .child(Progress::new("batch-progress").value(
+                                                if progress.total == 0 {
+                                                    0.0
+                                                } else {
+                                                    progress.completed as f32
+                                                        / progress.total as f32
+                                                        * 100.0
+                                                },
+                                            ))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!(
+                                                        "{}/{}，跳过 {}，失败 {}",
+                                                        progress.completed,
+                                                        progress.total,
+                                                        progress.skipped,
+                                                        progress.failed
+                                                    )),
+                                            ),
+                                    )
+                                },
+                            )
+                        },
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.render_settings_section_header(
+                        "settings-section-maintenance",
+                        "维护",
+                        SettingsSection::Maintenance,
+                        cx,
+                    ))
+                    .when(
+                        self.settings_section == Some(SettingsSection::Maintenance),
+                        |this| {
+                            this.child(
+                                Button::new("settings-clear-cache")
+                                    .label("清空壁纸缓存")
+                                    .outline()
+                                    .w_full()
+                                    .on_click(move |_, _, cx| {
+                                        view_for_clear.update(cx, |this, cx| {
+                                            this.clear_cache(cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("settings-check-update")
+                                    .label("检查更新")
+                                    .outline()
+                                    .w_full()
+                                    .on_click(move |_, window, cx| {
+                                        view_for_check.update(cx, |this, cx| {
+                                            this.check_for_updates(true, window, cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("settings-about")
+                                    .label("关于软件")
+                                    .outline()
+                                    .w_full()
+                                    .on_click(|_, window, cx| {
+                                        open_about_dialog(window, cx);
+                                    }),
+                            )
+                        },
                     ),
             )
     }

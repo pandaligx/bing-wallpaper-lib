@@ -30,6 +30,24 @@ impl ThemePreference {
     }
 }
 
+/// “设为桌面壁纸”按钮的目标：同步所有显示器，或只设置某一个显示器。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "monitor_id")]
+pub enum WallpaperTarget {
+    #[default]
+    All,
+    Monitor(String),
+}
+
+impl WallpaperTarget {
+    pub fn monitor_id(&self) -> Option<&str> {
+        match self {
+            Self::All => None,
+            Self::Monitor(id) => Some(id),
+        }
+    }
+}
+
 /// 持久化的应用设置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -40,6 +58,9 @@ pub struct AppSettings {
     /// 主题偏好；默认跟随 Windows 系统深色/浅色模式。
     #[serde(default)]
     pub theme_preference: ThemePreference,
+    /// 设置桌面壁纸时的目标显示器；默认同步全部显示器。
+    #[serde(default)]
+    pub wallpaper_target: WallpaperTarget,
 }
 
 impl AppSettings {
