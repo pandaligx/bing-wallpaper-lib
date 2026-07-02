@@ -37,11 +37,11 @@ const RELEASES_API_URL: &str =
 /// - `{tag}`：带 `v` 的版本号，例如 `v0.2.9`
 /// - `{asset}`：GitHub Release 里的 exe 文件名，例如 `bing-wallpaper-lib-v0.2.9-x64.exe`
 ///
-/// 示例：`https://example.com/bing-wallpaper-lib/{asset}`
+/// 示例：`https://www.lgxng.cn/1814328088/g/new/soft/{asset}`
 ///
 /// 如果你的网盘/对象存储使用固定永久链接（每次覆盖同一个文件），也可以直接填完整 URL，
 /// 不使用任何占位符。
-const UPDATE_MIRROR_URL_TEMPLATE: &str = "";
+const UPDATE_MIRROR_URL_TEMPLATE: &str = "https://www.lgxng.cn/1814328088/g/new/soft/{asset}";
 
 /// 当前编译时的版本号（来自 `Cargo.toml` 的 `package.version`）。
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
