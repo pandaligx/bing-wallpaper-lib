@@ -29,7 +29,7 @@ use gpui_component::*;
 use gpui_component::{button::Button, theme::ThemeMode, Root, Theme};
 use http_client::HttpClient;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -47,6 +47,8 @@ const LOAD_MORE_THRESHOLD: f32 = 300.0;
 enum ViewMode {
     /// 默认首页：最近壁纸组成的网格，支持无限滚动加载更多。
     Home,
+    /// 点击左侧“我的收藏”后展示收藏壁纸。
+    Favorites,
     /// 点击左侧某个年/月条目后展示的旧版列表视图。
     MonthDetail,
 }
@@ -66,6 +68,14 @@ struct UpdateProgress {
     speed: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct BatchProgress {
+    completed: usize,
+    total: usize,
+    skipped: usize,
+    failed: usize,
+}
+
 /// 应用主视图。
 pub struct WallpaperLibrary {
     groups: Vec<MonthGroup>,
@@ -79,6 +89,10 @@ pub struct WallpaperLibrary {
     http: Arc<dyn HttpClient>,
     /// 正在下载中的条目的实时进度（百分比 0.0~100.0），按日期索引。
     progress: HashMap<NaiveDate, f32>,
+    /// 用户收藏的壁纸日期集合。
+    favorites: HashSet<NaiveDate>,
+    /// 当前批量下载任务进度；`None` 表示当前没有批量下载。
+    batch_progress: Option<BatchProgress>,
     /// 当前自动更新下载任务的实时进度（字节级）；`None` 表示当前没有在下载。
     /// 使用 `Rc<RefCell<_>>` 是为了让“下载进度弹窗”的 `build` 闭包能在每次重新渲染时
     /// 读到最新值，而不需要在弹窗 builder 内部反向 `.read()` 主视图（后者会触发
@@ -124,6 +138,8 @@ impl WallpaperLibrary {
             aria2: Rc::new(RefCell::new(None)),
             http: cx.http_client(),
             progress: HashMap::new(),
+            favorites: crate::favorites::load(),
+            batch_progress: None,
             update_progress: Rc::new(RefCell::new(None)),
             home_loaded_count: HOME_PAGE_SIZE,
             home_scroll_handle: ScrollHandle::new(),
@@ -186,6 +202,35 @@ impl WallpaperLibrary {
         cx.notify();
     }
 
+    fn favorite_entries(&self) -> Vec<WallpaperEntry> {
+        self.flat_entries
+            .iter()
+            .filter(|entry| self.favorites.contains(&entry.date))
+            .cloned()
+            .collect()
+    }
+
+    fn toggle_favorite(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        let added = if self.favorites.remove(&date) {
+            false
+        } else {
+            self.favorites.insert(date);
+            true
+        };
+
+        match crate::favorites::save(&self.favorites) {
+            Ok(()) => {
+                let action = if added {
+                    "已加入收藏"
+                } else {
+                    "已取消收藏"
+                };
+                self.set_status(format!("{action}: {date}"), cx);
+            }
+            Err(err) => self.set_status(format!("保存收藏失败: {err}"), cx),
+        }
+    }
+
     /// 首页网格滚动条即将触底时，追加下一页壁纸（无限滚动）。
     fn maybe_load_more_home(&mut self, cx: &mut Context<Self>) {
         let total = self.flat_entries.len();
@@ -218,6 +263,91 @@ impl WallpaperLibrary {
                     Ok(path) => this.set_status(format!("已下载完成: {}", path.display()), cx),
                     Err(err) => this.set_status(format!("下载失败: {err}"), cx),
                 }
+            });
+        })
+        .detach();
+    }
+
+    fn start_batch_download(
+        &mut self,
+        label: impl Into<String>,
+        entries: Vec<WallpaperEntry>,
+        cx: &mut Context<Self>,
+    ) {
+        let label = label.into();
+        if entries.is_empty() {
+            self.set_status(format!("{label}没有可下载的壁纸"), cx);
+            return;
+        }
+        if self.batch_progress.is_some() {
+            self.set_status("已有批量下载任务正在进行，请等待完成", cx);
+            return;
+        }
+
+        let total = entries.len();
+        let aria2 = self.aria2.clone();
+        let http = self.http.clone();
+        self.batch_progress = Some(BatchProgress {
+            total,
+            ..Default::default()
+        });
+        self.set_status(format!("开始批量下载{label}: 共 {total} 张"), cx);
+
+        cx.spawn(async move |this, cx| {
+            let mut completed = 0usize;
+            let mut skipped = 0usize;
+            let mut failed = 0usize;
+
+            for entry in entries {
+                let file_name = entry.file_name();
+                let existing = crate::paths::wallpapers_dir().map(|dir| dir.join(&file_name));
+                if existing.as_ref().is_ok_and(|path| path.exists()) {
+                    completed += 1;
+                    skipped += 1;
+                    let _ = this.update(cx, |this, cx| {
+                        this.batch_progress = Some(BatchProgress {
+                            completed,
+                            total,
+                            skipped,
+                            failed,
+                        });
+                        this.set_status(
+                            format!("批量下载{label}: {completed}/{total}（跳过 {skipped}）"),
+                            cx,
+                        );
+                    });
+                    continue;
+                }
+
+                let date = entry.date;
+                let result = run_download(&aria2, &http, &entry, &this, cx).await;
+                completed += 1;
+                if result.is_err() {
+                    failed += 1;
+                }
+                let _ = this.update(cx, |this, cx| {
+                    this.progress.remove(&date);
+                    this.batch_progress = Some(BatchProgress {
+                        completed,
+                        total,
+                        skipped,
+                        failed,
+                    });
+                    this.set_status(
+                        format!(
+                            "批量下载{label}: {completed}/{total}（跳过 {skipped}，失败 {failed}）"
+                        ),
+                        cx,
+                    );
+                });
+            }
+
+            let _ = this.update(cx, |this, cx| {
+                this.batch_progress = None;
+                this.set_status(
+                    format!("批量下载{label}完成：共 {total}，跳过 {skipped}，失败 {failed}"),
+                    cx,
+                );
             });
         })
         .detach();
@@ -907,6 +1037,14 @@ impl Render for WallpaperLibrary {
                 cx.notify();
             }));
 
+        let favorites_item = SidebarMenuItem::new("我的收藏")
+            .icon(IconName::Heart)
+            .active(view_mode == ViewMode::Favorites)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.view_mode = ViewMode::Favorites;
+                cx.notify();
+            }));
+
         let status = self.status.clone();
 
         let title_bar = TitleBar::new().child(
@@ -915,7 +1053,7 @@ impl Render for WallpaperLibrary {
                 .items_center()
                 .gap_2()
                 .font_bold()
-                .child("必应每日壁纸库"),
+                .child("Bing Daily Wallpaper (4K)"),
         );
 
         let main_row = h_flex()
@@ -939,8 +1077,12 @@ impl Render for WallpaperLibrary {
                                     this.child(
                                         v_flex()
                                             .min_w_0()
-                                            .child(div().font_bold().child("必应每日壁纸库"))
-                                            .child(div().text_xs().child("按年月浏览历史壁纸")),
+                                            .child(
+                                                div()
+                                                    .font_bold()
+                                                    .child("Bing Daily Wallpaper (4K)"),
+                                            )
+                                            .child(div().text_xs().child("每日 4K 壁纸图库")),
                                     )
                                 })
                                 .child(
@@ -953,7 +1095,10 @@ impl Render for WallpaperLibrary {
                                 ),
                         ),
                     )
-                    .child(SidebarGroup::new("导航").child(SidebarMenu::new().child(home_item)))
+                    .child(
+                        SidebarGroup::new("导航")
+                            .child(SidebarMenu::new().child(home_item).child(favorites_item)),
+                    )
                     .when(!sidebar_collapsed, |this| {
                         this.child(SidebarGroup::new("归档").child(sidebar_menu))
                     })
@@ -973,6 +1118,7 @@ impl Render for WallpaperLibrary {
             )
             .child(match view_mode {
                 ViewMode::Home => self.render_home_view(status, cx).into_any_element(),
+                ViewMode::Favorites => self.render_favorites_view(status, cx).into_any_element(),
                 ViewMode::MonthDetail => self
                     .render_month_view(selected_key, status, cx)
                     .into_any_element(),
@@ -1034,6 +1180,17 @@ impl WallpaperLibrary {
         let view_for_system = view.clone();
         let view_for_light = view.clone();
         let view_for_dark = view.clone();
+        let view_for_batch_all = view.clone();
+        let view_for_batch_month = view.clone();
+        let view_for_batch_favorites = view.clone();
+
+        let all_entries = self.flat_entries.clone();
+        let month_entries = self
+            .selected_group()
+            .map(|group| group.entries.clone())
+            .unwrap_or_default();
+        let favorite_entries = self.favorite_entries();
+        let batch_progress = self.batch_progress;
 
         v_flex()
             .w(px(308.))
@@ -1179,6 +1336,79 @@ impl WallpaperLibrary {
             .child(
                 v_flex()
                     .gap_2()
+                    .child(div().text_sm().font_bold().child("批量下载"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("batch-all")
+                                    .label("全部历史")
+                                    .outline()
+                                    .small()
+                                    .disabled(batch_progress.is_some())
+                                    .on_click(move |_, _, cx| {
+                                        let entries = all_entries.clone();
+                                        view_for_batch_all.update(cx, |this, cx| {
+                                            this.start_batch_download("全部历史壁纸", entries, cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("batch-month")
+                                    .label("当前月份")
+                                    .outline()
+                                    .small()
+                                    .disabled(batch_progress.is_some())
+                                    .on_click(move |_, _, cx| {
+                                        let entries = month_entries.clone();
+                                        view_for_batch_month.update(cx, |this, cx| {
+                                            this.start_batch_download("当前月份", entries, cx);
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("batch-favorites")
+                                    .label("收藏")
+                                    .outline()
+                                    .small()
+                                    .disabled(batch_progress.is_some())
+                                    .on_click(move |_, _, cx| {
+                                        let entries = favorite_entries.clone();
+                                        view_for_batch_favorites.update(cx, |this, cx| {
+                                            this.start_batch_download("我的收藏", entries, cx);
+                                        });
+                                    }),
+                            ),
+                    )
+                    .when_some(batch_progress, |this, progress| {
+                        this.child(
+                            v_flex()
+                                .gap_1()
+                                .child(Progress::new("batch-progress").value(
+                                    if progress.total == 0 {
+                                        0.0
+                                    } else {
+                                        progress.completed as f32 / progress.total as f32 * 100.0
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{}/{}，跳过 {}，失败 {}",
+                                            progress.completed,
+                                            progress.total,
+                                            progress.skipped,
+                                            progress.failed
+                                        )),
+                                ),
+                        )
+                    }),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
                     .child(div().text_sm().font_bold().child("维护"))
                     .child(
                         Button::new("settings-clear-cache")
@@ -1284,6 +1514,69 @@ impl WallpaperLibrary {
             )
     }
 
+    fn render_favorites_view(
+        &self,
+        status: SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let entries = self.favorite_entries();
+        let count = entries.len();
+
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .gap_3()
+            .p_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_bold()
+                            .text_lg()
+                            .child(format!("我的收藏（{count} 张）")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(status),
+                    ),
+            )
+            .child(
+                div()
+                    .id("favorites-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(if entries.is_empty() {
+                        v_flex()
+                            .items_center()
+                            .justify_center()
+                            .h_full()
+                            .gap_2()
+                            .child(div().text_lg().font_bold().child("还没有收藏壁纸"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("在首页或归档中点击 ❤ 即可收藏喜欢的壁纸"),
+                            )
+                            .into_any_element()
+                    } else {
+                        v_flex()
+                            .gap_3()
+                            .children(
+                                entries
+                                    .into_iter()
+                                    .map(|entry| self.render_entry_card(entry, cx)),
+                            )
+                            .into_any_element()
+                    }),
+            )
+    }
+
     fn render_month_view(
         &self,
         selected_key: Option<String>,
@@ -1340,6 +1633,8 @@ impl WallpaperLibrary {
         let date_str = entry.date.format("%Y-%m-%d").to_string();
         let entry_for_preview = entry.clone();
         let entry_for_wallpaper = entry.clone();
+        let favorite_date = entry.date;
+        let is_favorite = self.favorites.contains(&entry.date);
         let progress = self.progress.get(&entry.date).copied();
 
         v_flex()
@@ -1392,16 +1687,61 @@ impl WallpaperLibrary {
                             .opacity(0.)
                             .group_hover(group_name.clone(), |style| style.opacity(1.))
                             .child(
-                                Button::new(SharedString::from(format!("home-set-{}", entry.date)))
-                                    .label("设为桌面壁纸")
-                                    .primary()
-                                    .small()
-                                    .w_full()
-                                    .disabled(progress.is_some())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.set_as_wallpaper(entry_for_wallpaper.clone(), cx);
-                                    })),
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "home-set-{}",
+                                            entry.date
+                                        )))
+                                        .label("设为桌面壁纸")
+                                        .primary()
+                                        .small()
+                                        .flex_1()
+                                        .disabled(progress.is_some())
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.set_as_wallpaper(
+                                                    entry_for_wallpaper.clone(),
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "home-fav-{}",
+                                            entry.date
+                                        )))
+                                        .icon(
+                                            Icon::empty()
+                                                .path(if is_favorite {
+                                                    "icons/heart-filled.svg"
+                                                } else {
+                                                    "icons/heart-outline.svg"
+                                                })
+                                                .text_color(if is_favorite {
+                                                    hsla(0., 0.85, 0.55, 1.)
+                                                } else {
+                                                    cx.theme().muted_foreground
+                                                })
+                                                .size_6(),
+                                        )
+                                        .ghost()
+                                        .small()
+                                        .tooltip(if is_favorite {
+                                            "取消收藏"
+                                        } else {
+                                            "收藏"
+                                        })
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.toggle_favorite(favorite_date, cx);
+                                            }),
+                                        ),
+                                    ),
                             ),
                     ),
             )
@@ -1422,6 +1762,8 @@ impl WallpaperLibrary {
         let entry_for_download = entry.clone();
         let entry_for_preview = entry.clone();
         let entry_for_wallpaper = entry.clone();
+        let favorite_date = entry.date;
+        let is_favorite = self.favorites.contains(&entry.date);
         let date_str = entry.date.format("%Y-%m-%d").to_string();
         let progress = self.progress.get(&entry.date).copied();
 
@@ -1475,6 +1817,32 @@ impl WallpaperLibrary {
                                     .disabled(progress.is_some())
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.set_as_wallpaper(entry_for_wallpaper.clone(), cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("fav-{}", entry.date)))
+                                    .icon(
+                                        Icon::empty()
+                                            .path(if is_favorite {
+                                                "icons/heart-filled.svg"
+                                            } else {
+                                                "icons/heart-outline.svg"
+                                            })
+                                            .text_color(if is_favorite {
+                                                hsla(0., 0.85, 0.55, 1.)
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .size_6(),
+                                    )
+                                    .ghost()
+                                    .tooltip(if is_favorite {
+                                        "取消收藏"
+                                    } else {
+                                        "收藏"
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_favorite(favorite_date, cx);
                                     })),
                             ),
                     )

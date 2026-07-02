@@ -14,9 +14,14 @@ pub struct WallpaperEntry {
 }
 
 impl WallpaperEntry {
-    /// 用于本地文件名，形如 `2026-07-01.jpg`。
+    /// 用于本地文件名，形如 `2026-07-01_地牢省立公园.jpg`。
     pub fn file_name(&self) -> String {
-        format!("{}.jpg", self.date.format("%Y-%m-%d"))
+        let title = filename_title_part(&self.title);
+        if title.is_empty() {
+            format!("{}.jpg", self.date.format("%Y-%m-%d"))
+        } else {
+            format!("{}_{}.jpg", self.date.format("%Y-%m-%d"), title)
+        }
     }
 
     /// 用于列表/网格展示的缩略图地址。
@@ -35,6 +40,35 @@ impl WallpaperEntry {
             self.url.clone()
         }
     }
+}
+
+fn filename_title_part(title: &str) -> String {
+    let prefix = title
+        .split([',', '，'])
+        .next()
+        .unwrap_or(title)
+        .split("(©")
+        .next()
+        .unwrap_or(title)
+        .trim();
+
+    let mut result = String::new();
+    for ch in prefix.chars() {
+        let safe = match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        };
+        if safe.is_whitespace() {
+            result.push(' ');
+        } else {
+            result.push(safe);
+        }
+        if result.chars().count() >= 60 {
+            break;
+        }
+    }
+    result.trim().trim_matches('.').to_string()
 }
 
 /// 按 "年-月" 分组后的壁纸列表，用于左侧导航栏。
@@ -74,4 +108,29 @@ pub fn group_by_month(entries: &[WallpaperEntry]) -> Vec<MonthGroup> {
 
     groups.sort_by_key(|g| std::cmp::Reverse((g.year, g.month)));
     groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_name_uses_date_and_title_before_location() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+            title: "埃斯纳神庙穹顶天花板, 埃及 (© Nick Brundle/Getty Images)".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(entry.file_name(), "2026-07-02_埃斯纳神庙穹顶天花板.jpg");
+    }
+
+    #[test]
+    fn file_name_sanitizes_windows_invalid_chars() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+            title: "A/B:C*D?E, Somewhere".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(entry.file_name(), "2026-07-02_A_B_C_D_E.jpg");
+    }
 }

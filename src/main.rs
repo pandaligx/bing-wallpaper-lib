@@ -15,8 +15,10 @@
 //! 详见 AGENTS.md）。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assets;
 mod downloader;
 mod elevate;
+mod favorites;
 mod fetcher;
 mod folder_picker;
 mod model;
@@ -53,7 +55,7 @@ fn main() {
 
     env_logger::init();
 
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_platform::application().with_assets(crate::assets::Assets);
 
     app.run(move |cx: &mut App| {
         let http_client = reqwest_client::ReqwestClient::user_agent(paths::APP_NAME)

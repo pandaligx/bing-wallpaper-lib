@@ -33,6 +33,11 @@ pub fn cache_file() -> Result<PathBuf> {
     Ok(app_data_dir()?.join("wallpapers_cache.json"))
 }
 
+/// 收藏壁纸日期列表路径。
+pub fn favorites_file() -> Result<PathBuf> {
+    Ok(app_data_dir()?.join("favorites.json"))
+}
+
 /// 内部工具目录：`%LOCALAPPDATA%\BingWallpaperLib\bin`，用于释放内嵌的 aria2c.exe。
 pub fn tools_dir() -> Result<PathBuf> {
     let dir = app_data_dir()?.join("bin");
