@@ -827,4 +827,19 @@ v0.2.17 修复方式：
 优先且只访问镜像 URL。因此如果希望这些旧版本也能通过内置更新升到最新版本，必须保证最新 release 附件名对应的
 镜像直链（例如 `bing-wallpaper-lib-v0.2.17-x64.exe`）可用；否则用户需要手动从 GitHub Release 或 123 云盘下载新版。
 
+## 18. 批量下载日期选择器限制云端数据范围 + 中文显示
+
+批量下载页的“按日期范围下载”日期选择器需要和当前已加载的壁纸列表保持一致，只允许用户选择云端/缓存中真实存在的日期区间。
+
+实现方式：
+
+1. `WallpaperLibrary` 新增 `batch_date_limits: Arc<Mutex<Option<(NaiveDate, NaiveDate)>>>`，保存当前已加载壁纸的最早/最新日期。
+   `DatePickerState::disabled_matcher` 要求闭包满足 `'static + Send + Sync`，因此不能直接捕获 `Rc<RefCell<_>>`，这里使用
+   `Arc<Mutex<_>>` 让禁用规则闭包可以随列表刷新读取最新范围。
+2. `set_entries` 每次刷新壁纸列表时，遍历 `entries` 计算 `(earliest, latest)` 并写入 `batch_date_limits`；同时调用
+   `batch_range_picker.update(... set_year_range((earliest.year(), latest.year() + 1), ...))` 限制年份选择范围。
+3. `DatePickerState::range(...).date_format("%Y年%m月%d日")` 让输入框中选中的日期范围显示为中文年月日格式；`main.rs` 在
+   `gpui_component::init(cx)` 后调用 `gpui_component::set_locale("zh-CN")`，让 `gpui-component` 自带的 Calendar 月份/星期翻译也使用中文。
+4. `start_date_range_batch_download` 保留业务层二次校验：即使 UI 层选择器异常或未来组件行为变化，也不会提交早于最早壁纸日期或晚于最新壁纸日期的批量下载任务。
+
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |

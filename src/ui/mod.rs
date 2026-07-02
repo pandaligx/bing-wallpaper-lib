@@ -13,7 +13,7 @@ use crate::downloader::Aria2Manager;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
 use crate::settings::{AppSettings, ThemePreference, WallpaperTarget};
 use crate::wallpaper_setter;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::ButtonVariants as _;
@@ -33,7 +33,7 @@ use http_client::HttpClient;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// 软件版权/作者署名，展示于“关于”信息中。
 const COPYRIGHT: &str = "© 2023-2026 小南瓜";
@@ -130,6 +130,10 @@ pub struct WallpaperLibrary {
     settings_dir_input: Entity<InputState>,
     /// 批量下载日期范围选择器（点击展开日历直接选日期，不需要手动输入数字）。
     batch_range_picker: Entity<DatePickerState>,
+    /// 当前已从云端/缓存加载到的壁纸日期范围（最早日期、最新日期）。
+    /// `DatePickerState::disabled_matcher` 需要 `'static + Send + Sync` 的闭包，
+    /// 因此用 `Arc<Mutex<_>>` 让闭包能随列表刷新读取最新范围。
+    batch_date_limits: Arc<Mutex<Option<(NaiveDate, NaiveDate)>>>,
     /// 已下载壁纸画廊中当前选中的文件路径集合，用于批量删除。
     downloaded_selected: HashSet<std::path::PathBuf>,
 }
@@ -150,8 +154,19 @@ impl WallpaperLibrary {
                 .placeholder(format!("默认: {default_dir_display}"))
                 .default_value(initial_dir_text)
         });
-        let batch_range_picker =
-            cx.new(|cx| DatePickerState::range(window, cx).date_format("%Y-%m-%d"));
+        let batch_date_limits = Arc::new(Mutex::new(None::<(NaiveDate, NaiveDate)>));
+        let limits_for_picker = batch_date_limits.clone();
+        let batch_range_picker = cx.new(|cx| {
+            DatePickerState::range(window, cx)
+                .date_format("%Y年%m月%d日")
+                .disabled_matcher(move |date: &NaiveDate| {
+                    limits_for_picker
+                        .lock()
+                        .ok()
+                        .and_then(|limits| *limits)
+                        .is_some_and(|(earliest, latest)| *date < earliest || *date > latest)
+                })
+        });
         let monitors = wallpaper_setter::list_monitors().unwrap_or_default();
 
         Self {
@@ -175,6 +190,7 @@ impl WallpaperLibrary {
             settings,
             settings_dir_input,
             batch_range_picker,
+            batch_date_limits,
             downloaded_selected: HashSet::new(),
         }
     }
@@ -186,6 +202,23 @@ impl WallpaperLibrary {
 
     /// 使用最新抓取到的壁纸条目刷新界面状态。
     pub fn set_entries(&mut self, entries: Vec<WallpaperEntry>, cx: &mut Context<Self>) {
+        let date_limits =
+            entries
+                .iter()
+                .map(|entry| entry.date)
+                .fold(None, |acc, date| match acc {
+                    None => Some((date, date)),
+                    Some((earliest, latest)) => Some((earliest.min(date), latest.max(date))),
+                });
+        if let Ok(mut limits) = self.batch_date_limits.lock() {
+            *limits = date_limits;
+        }
+        if let Some((earliest, latest)) = date_limits {
+            self.batch_range_picker.update(cx, |picker, cx| {
+                picker.set_year_range((earliest.year(), latest.year() + 1), cx);
+            });
+        }
+
         self.groups = group_by_month(&entries);
         if self.selected_key.is_none() {
             self.selected_key = self.groups.first().map(|g| g.key.clone());
@@ -323,6 +356,24 @@ impl WallpaperLibrary {
         if let (Some(start), Some(end)) = (start, end) {
             if start > end {
                 self.set_status("开始日期不能晚于结束日期", cx);
+                return;
+            }
+        }
+        if let Some((earliest, latest)) = self
+            .batch_date_limits
+            .lock()
+            .ok()
+            .and_then(|limits| *limits)
+        {
+            if start.is_some_and(|date| date < earliest) || end.is_some_and(|date| date > latest) {
+                self.set_status(
+                    format!(
+                        "请选择 {} 至 {} 之间的日期",
+                        format_date_cn(earliest),
+                        format_date_cn(latest)
+                    ),
+                    cx,
+                );
                 return;
             }
         }
@@ -1173,6 +1224,10 @@ async fn run_update_download(
     );
 }
 
+fn format_date_cn(date: NaiveDate) -> String {
+    date.format("%Y年%m月%d日").to_string()
+}
+
 /// 人类可读的字节尺寸格式化：`1234567` → `"1.18 MiB"`。
 ///
 /// 采用二进制前缀（KiB/MiB/GiB）而非十进制 KB/MB/GB，与大多数下载器的展示习惯一致。
@@ -1920,6 +1975,20 @@ impl WallpaperLibrary {
             .unwrap_or_default();
         let favorite_entries = self.favorite_entries();
         let batch_progress = self.batch_progress;
+        let date_limits = self
+            .batch_date_limits
+            .lock()
+            .ok()
+            .and_then(|limits| *limits);
+        let date_range_hint: SharedString = match date_limits {
+            Some((earliest, latest)) => format!(
+                "可选范围：{} 至 {}；超出范围的日期会自动禁用。",
+                format_date_cn(earliest),
+                format_date_cn(latest)
+            )
+            .into(),
+            None => "壁纸列表加载完成后才能选择日期范围。".into(),
+        };
 
         v_flex()
             .flex_1()
@@ -2009,12 +2078,18 @@ impl WallpaperLibrary {
                         v_flex()
                             .gap_2()
                             .child(div().text_sm().font_bold().child("按日期范围下载"))
-                            .child(DatePicker::new(&batch_range_picker).w(px(320.)))
+                            .child(
+                                DatePicker::new(&batch_range_picker)
+                                    .placeholder("请选择日期范围")
+                                    .cleanable(true)
+                                    .disabled(date_limits.is_none())
+                                    .w(px(360.)),
+                            )
                             .child(
                                 Button::new("batch-center-date-range")
                                     .label("下载日期范围")
                                     .outline()
-                                    .disabled(batch_progress.is_some())
+                                    .disabled(batch_progress.is_some() || date_limits.is_none())
                                     .on_click(move |_, _, cx| {
                                         let date = batch_range_picker_for_read.read(cx).date();
                                         let start = date.start();
@@ -2028,7 +2103,7 @@ impl WallpaperLibrary {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("点击日历选择日期范围，可只选开始或结束日期。"),
+                                    .child(date_range_hint),
                             ),
                     )
                     .when_some(batch_progress, |this, progress| {

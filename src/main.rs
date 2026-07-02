@@ -63,6 +63,7 @@ fn main() {
         cx.set_http_client(Arc::new(http_client));
 
         gpui_component::init(cx);
+        gpui_component::set_locale("zh-CN");
 
         // `appears_transparent: true` 关闭 Windows 原生标题栏绘制，改为由
         // `gpui_component::TitleBar`（见 ui/mod.rs）自行绘制沉浸式标题栏，
