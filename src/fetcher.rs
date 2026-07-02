@@ -1,5 +1,8 @@
-//! 抓取并解析 niumoo/bing-wallpaper 仓库中的 `zh-cn/bing-wallpaper.md`（中文标题版本），
-//! 得到完整的历史必应每日壁纸列表，并支持增量检测"是否有新的一天"。
+//! 抓取并解析 niumoo/bing-wallpaper 仓库中的壁纸列表。
+//!
+//! 默认优先使用 `zh-cn/bing-wallpaper.md`（中文标题版本），并用根目录下的英文版
+//! `bing-wallpaper.md` 补齐中文版缺失的历史日期，最终得到完整的历史必应每日壁纸列表，
+//! 同时支持增量检测"是否有新的一天"。
 
 use crate::model::WallpaperEntry;
 use crate::paths::cache_file;
@@ -13,19 +16,28 @@ use std::sync::Arc;
 
 /// 候选源地址列表，按顺序依次尝试，第一个成功的即返回。
 ///
-/// 自 v0.2.4 起使用中文标题版本 `zh-cn/bing-wallpaper.md`，所有壁纸的标题、地点、
-/// 作者说明均以中文展示，更适合中文用户浏览。中文版文件的每条记录之间会多出一个空行，
+/// 自 v0.2.4 起优先使用中文标题版本 `zh-cn/bing-wallpaper.md`，所有壁纸的标题、地点、
+/// 作者说明均尽量以中文展示，更适合中文用户浏览。中文版文件的每条记录之间会多出一个空行，
 /// 但这并不影响解析——`parse_markdown` 已经会跳过空行与非日期开头的行。
 ///
+/// 自 v0.2.5 起会额外拉取英文版 `bing-wallpaper.md` 作为补全集：同一日期优先保留中文记录，
+/// 只有中文版缺失的日期才使用英文记录，从而避免同一张图在中英文两个源之间重复出现。
+///
 /// `raw.githubusercontent.com` 在中国大陆部分网络环境下无法直接访问（需要科学上网），
-/// 因此优先使用 [jsDelivr](https://www.jsdelivr.com/) CDN 镜像 GitHub 仓库内容，绝大多数
-/// 国内网络环境下无需 VPN 即可直接访问（代价是 jsDelivr 对 GitHub 内容有数小时级的
+/// 因此两组源地址都优先使用 [jsDelivr](https://www.jsdelivr.com/) CDN 镜像 GitHub 仓库内容，
+/// 绝大多数国内网络环境下无需 VPN 即可直接访问（代价是 jsDelivr 对 GitHub 内容有数小时级的
 /// 缓存延迟，考虑到本项目本身每 30 分钟才检查一次更新，这点延迟可以接受）；
 /// GitHub 官方地址作为兼容科学上网用户以及 jsDelivr 自身出现问题时的备选。
-const SOURCE_URLS: &[&str] = &[
+const CHINESE_SOURCE_URLS: &[&str] = &[
     "https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md",
     "https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md",
     "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/zh-cn/bing-wallpaper.md",
+];
+
+const ENGLISH_SOURCE_URLS: &[&str] = &[
+    "https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md",
+    "https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/bing-wallpaper.md",
+    "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md",
 ];
 
 /// 解析一行形如：
@@ -72,23 +84,64 @@ pub fn dedup_by_date(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
     result
 }
 
-/// 从候选源依次尝试拉取并解析全部壁纸历史（已去重，按日期倒序，即最新的在前）。
-pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>> {
+/// 合并两份壁纸列表：同一日期优先保留 primary 中的记录，fallback 只补齐缺失日期。
+fn merge_entries_prefer_primary(
+    primary: Vec<WallpaperEntry>,
+    fallback: Vec<WallpaperEntry>,
+) -> Vec<WallpaperEntry> {
+    let mut entries = dedup_by_date(primary);
+    let mut seen_dates: HashSet<NaiveDate> = entries.iter().map(|entry| entry.date).collect();
+
+    for entry in dedup_by_date(fallback) {
+        if seen_dates.insert(entry.date) {
+            entries.push(entry);
+        }
+    }
+
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.date));
+    entries
+}
+
+/// 从一组候选源依次尝试拉取并解析壁纸历史（已去重，保持源文件原始顺序）。
+async fn fetch_entries_from_sources(
+    http: Arc<dyn HttpClient>,
+    source_name: &str,
+    urls: &[&str],
+) -> Result<Vec<WallpaperEntry>> {
     let mut last_err = None;
-    for &url in SOURCE_URLS {
+    for &url in urls {
         match fetch_text(http.clone(), url).await {
-            Ok(text) => {
-                let mut entries = dedup_by_date(parse_markdown(&text));
-                entries.sort_by_key(|e| std::cmp::Reverse(e.date));
-                return Ok(entries);
-            }
+            Ok(text) => return Ok(dedup_by_date(parse_markdown(&text))),
             Err(err) => {
-                log::warn!("从 {url} 获取壁纸列表失败: {err}");
+                log::warn!("从 {source_name}源 {url} 获取壁纸列表失败: {err}");
                 last_err = Some(err);
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("没有可用的壁纸数据源")))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("没有可用的{source_name}壁纸数据源")))
+}
+
+/// 从候选源依次尝试拉取并解析全部壁纸历史（已去重，按日期倒序，即最新的在前）。
+pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>> {
+    let chinese = fetch_entries_from_sources(http.clone(), "中文", CHINESE_SOURCE_URLS).await;
+    let english = fetch_entries_from_sources(http, "英文", ENGLISH_SOURCE_URLS).await;
+
+    match (chinese, english) {
+        (Ok(chinese), Ok(english)) => Ok(merge_entries_prefer_primary(chinese, english)),
+        (Ok(mut chinese), Err(err)) => {
+            log::warn!("英文补全集不可用，仅使用中文壁纸列表: {err}");
+            chinese.sort_by_key(|entry| std::cmp::Reverse(entry.date));
+            Ok(chinese)
+        }
+        (Err(err), Ok(mut english)) => {
+            log::warn!("中文壁纸列表不可用，退回英文壁纸列表: {err}");
+            english.sort_by_key(|entry| std::cmp::Reverse(entry.date));
+            Ok(english)
+        }
+        (Err(chinese_err), Err(english_err)) => Err(anyhow::anyhow!(
+            "没有可用的壁纸数据源；中文源错误: {chinese_err}; 英文源错误: {english_err}"
+        )),
+    }
 }
 
 /// 请求单个 URL 并返回响应文本内容（不做任何解析，供 `fetch_all` 依次尝试候选源时复用）。
@@ -156,7 +209,9 @@ mod tests {
             entries[0].date,
             NaiveDate::from_ymd_opt(2026, 7, 2).unwrap()
         );
-        assert!(entries[0].url.starts_with("https://cn.bing.com/th?id=OHR.DungeonPark"));
+        assert!(entries[0]
+            .url
+            .starts_with("https://cn.bing.com/th?id=OHR.DungeonPark"));
     }
 
     #[test]
@@ -164,7 +219,10 @@ mod tests {
         let line = "2023-02-09 | [Ureddplassen, a rest area on the Helgelandskysten scenic route, Norway (© Eyesite/Alamy)](https://cn.bing.com/th?id=OHR.NorwayRestArea_EN-US3474268008_UHD.jpg) ";
         let entries = parse_markdown(line);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].url, "https://cn.bing.com/th?id=OHR.NorwayRestArea_EN-US3474268008_UHD.jpg");
+        assert_eq!(
+            entries[0].url,
+            "https://cn.bing.com/th?id=OHR.NorwayRestArea_EN-US3474268008_UHD.jpg"
+        );
     }
 
     #[test]
@@ -189,6 +247,30 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries[0].title.contains("埃斯纳神庙"));
         assert!(entries[1].title.contains("地牢省立公园"));
+    }
+
+    #[test]
+    fn merges_chinese_entries_with_english_fallback_by_date() {
+        let chinese = parse_markdown(
+            "2026-07-02 | [中文标题](https://cn.bing.com/th?id=OHR.Today_ZH-CN_UHD.jpg)\n",
+        );
+        let english = parse_markdown(
+            "2026-07-02 | [English title](https://cn.bing.com/th?id=OHR.Today_EN-US_UHD.jpg)\n2021-02-01 | [Old English title](https://cn.bing.com/th?id=OHR.Old_EN-US_UHD.jpg)\n",
+        );
+
+        let entries = merge_entries_prefer_primary(chinese, english);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].date,
+            NaiveDate::from_ymd_opt(2026, 7, 2).unwrap()
+        );
+        assert_eq!(entries[0].title, "中文标题");
+        assert!(entries[0].url.contains("_ZH-CN"));
+        assert_eq!(
+            entries[1].date,
+            NaiveDate::from_ymd_opt(2021, 2, 1).unwrap()
+        );
+        assert_eq!(entries[1].title, "Old English title");
     }
 
     #[test]

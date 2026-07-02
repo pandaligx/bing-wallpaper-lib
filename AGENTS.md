@@ -24,18 +24,22 @@
 
 ## 2. 数据源说明（重要）
 
-- 权威数据源：[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 仓库中的 `zh-cn/bing-wallpaper.md`
-  （中文标题版本，自 v0.2.4 起启用）。同仓库根目录下的 `bing-wallpaper.md` 是英文版，不再使用。
-- **多镜像回退策略（自 v0.2.1 起，见 `src/fetcher.rs::SOURCE_URLS`）**：`raw.githubusercontent.com`
-  在中国大陆部分网络环境下经常无法直接访问（需要科学上网），因此 `fetch_all` 现在按顺序依次尝试：
+- 权威数据源：[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 仓库中的两份 Markdown：
+  - `zh-cn/bing-wallpaper.md`：中文标题版本，自 v0.2.4 起作为主数据源。
+  - `bing-wallpaper.md`：英文标题版本，自 v0.2.5 起作为补全集，用于补齐中文版缺失的历史日期。
+- **多镜像回退策略（自 v0.2.1 起，见 `src/fetcher.rs::CHINESE_SOURCE_URLS` / `ENGLISH_SOURCE_URLS`）**：
+  `raw.githubusercontent.com` 在中国大陆部分网络环境下经常无法直接访问（需要科学上网），因此中文、英文两组源
+  都按顺序依次尝试 jsDelivr CDN 镜像、jsDelivr Fastly 节点、GitHub 官方原始地址。中文主源为：
   1. `https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md`（jsDelivr CDN 镜像，优先）
   2. `https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md`（jsDelivr 备用节点）
-  3. `https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/zh-cn/bing-wallpaper.md`（GitHub 官方原始地址，兑底）
+  3. `https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/zh-cn/bing-wallpaper.md`（GitHub 官方原始地址，兜底）
 
-  第一个请求成功的地址即被采用，任何一个失败都只记一条 `log::warn!` 并尝试下一个，全部失败才对外报错。
+  英文补全集使用同样顺序，但路径为仓库根目录下的 `bing-wallpaper.md`。每组源第一个请求成功的地址即被采用，
+  任何一个失败都只记一条 `log::warn!` 并尝试下一个；若中文源成功但英文源失败，则只展示中文源已有范围，
+  若中文源失败但英文源成功，则退回英文列表，只有两组源全部失败才对外报错。
   **已知权衡**：jsDelivr 对 GitHub 仓库内容存在数小时级（历史上最长约 12 小时）的 CDN 缓存延迟，但本项目
   本身只每 30 分钟检查一次是否有新的一天壁纸，这点延迟可以接受，换来的是国内绝大多数网络环境下无需 VPN
-  即可直接使用。若以后 jsDelivr 出现长期不可用/正确性问题，可在 `SOURCE_URLS` 中调整顺序或替换镜像。
+  即可直接使用。若以后 jsDelivr 出现长期不可用/正确性问题，可在两组 `*_SOURCE_URLS` 中调整顺序或替换镜像。
 - 该文件是一份纯文本 Markdown，每天一行，格式形如：
 
   ```
@@ -48,8 +52,10 @@
   2. 中文文件的**相邻两条记录之间多出一个空行**，英文版则不插空行。`parse_markdown` 本来就会过滤
      `line.is_empty()` 与不以数字开头的行，因此两种格式均能直接兼容。
 
-- 文件按日期**倒序**排列（最新一天在最前面），覆盖从 2021-02-01 至今的完整历史，因此**同一份请求**既可以用于
-  首次全量拉取历史，也可以用于"取最上面一条日期，与本地缓存的最新日期比较"来判断是否有新的一天发布。
+- 两份文件都按日期**倒序**排列（最新一天在最前面）。`fetch_all` 会先对各自列表按日期去重，再合并：同一日期
+  永远优先保留中文记录，只有中文版缺失的日期才追加英文记录，最后再统一按日期倒序排序。因此不会因为同时拉取
+  中英文两份列表而让同一天/同一张图片重复出现在界面里。合并后的列表既可以用于首次全量拉取历史，也可以用于
+  "取最上面一条日期，与本地缓存的最新日期比较"来判断是否有新的一天发布。
 - **已知数据质量问题（解析时必须容错）：**
   - 个别日期存在**两条重复记录**（如 `2025-04-10`、`2025-01-17`、`2024-07-19`、`2024-04-24` 等），
     图片 URL 不同。当前策略是**保留同一天中第一条出现的记录**（`fetcher::dedup_by_date`）。
@@ -57,8 +63,9 @@
     `.jpg` 链接；解析正则必须同时兼容这两种形式（见 `fetcher::line_regex`）。
   - 中文版文件中少量日期（如 `2025-05-15`）的标题里存在上游数据源留下的 UTF-8 替换字符 `�`
     （部分乱码），不尝试在解析层"修复"，直接展示即可。
-- 解析实现：`src/fetcher.rs` 中的 `parse_markdown` / `dedup_by_date` / `fetch_all`，并附带单元测试覆盖以上各类
-  情况（现代格式、历史无查询参数格式、同日期去重、中文标题、带空行的中文多行样本）。
+- 解析实现：`src/fetcher.rs` 中的 `parse_markdown` / `dedup_by_date` / `merge_entries_prefer_primary` /
+  `fetch_all`，并附带单元测试覆盖以上各类情况（现代格式、历史无查询参数格式、同日期去重、中文标题、带空行的
+  中文多行样本、中文优先 + 英文补全集合并）。
 
 ## 3. 架构与模块划分
 
@@ -70,7 +77,7 @@ src/
 ├── paths.rs             应用数据目录、内置 aria2c.exe 的释放逻辑、默认/生效下载目录（见 §6、§12）
 ├── settings.rs          持久化应用设置（自定义下载路径），JSON 读写（见 §12）
 ├── model.rs             WallpaperEntry / MonthGroup 数据结构，按年月分组算法，缩略图 URL 转换
-├── fetcher.rs           抓取 + 解析 bing-wallpaper.md、去重、本地 JSON 缓存、"是否有新一天"检测
+├── fetcher.rs           抓取 + 解析中英文 bing-wallpaper.md、中文优先合并、去重、本地 JSON 缓存、"是否有新一天"检测
 ├── downloader.rs        Aria2Manager：管理内置 aria2c.exe 子进程 + JSON-RPC 客户端（见 §7、§12）
 ├── wallpaper_setter.rs  调用 Win32 SystemParametersInfoW 设置桌面壁纸
 ├── updater.rs           检查 GitHub Releases 最新版本，下载 + 自我替换重启（见 §14.3）
