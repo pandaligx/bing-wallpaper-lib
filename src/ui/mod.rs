@@ -1089,58 +1089,88 @@ async fn run_update_download(
     let manager = ensure_aria2(aria2, http).await?;
     let dir = crate::updater::update_dir()?;
     let filename = release.asset_name.clone();
-    let gid = manager
-        .add_uri_to_dir(&release.download_url, &dir, &filename)
-        .await?;
+    let mut download_urls = vec![release.download_url.clone()];
+    if let Some(fallback) = &release.fallback_download_url {
+        download_urls.push(fallback.clone());
+    }
 
-    loop {
-        let status = manager.tell_status(&gid).await?;
-        let state = status
-            .get("status")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        let completed: u64 = status
-            .get("completedLength")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let total: u64 = status
-            .get("totalLength")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let speed: u64 = status
-            .get("downloadSpeed")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-
-        *progress.borrow_mut() = Some(UpdateProgress {
-            completed,
-            total,
-            speed,
-        });
-        let _ = this.update(cx, |_this, cx| cx.notify());
-
-        match state.as_str() {
-            "complete" => return Ok(dir.join(&filename)),
-            "error" => {
-                let msg = status
-                    .get("errorMessage")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("未知错误")
-                    .to_string();
-                anyhow::bail!("aria2 下载失败: {msg}");
+    let mut last_error = None;
+    for (index, url) in download_urls.iter().enumerate() {
+        let _ = std::fs::remove_file(dir.join(&filename));
+        let _ = std::fs::remove_file(dir.join(format!("{filename}.aria2")));
+        *progress.borrow_mut() = Some(UpdateProgress::default());
+        let _ = this.update(cx, |this, cx| {
+            if index == 0 {
+                this.set_status(format!("正在下载新版本 v{} ...", release.version), cx);
+            } else {
+                this.set_status("镜像下载失败，正在尝试 GitHub 官方地址...", cx);
             }
-            _ => {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(300))
-                    .await;
+            cx.notify();
+        });
+
+        let gid = match manager.add_uri_to_dir(url, &dir, &filename).await {
+            Ok(gid) => gid,
+            Err(err) => {
+                last_error = Some(err.to_string());
+                continue;
+            }
+        };
+
+        loop {
+            let status = manager.tell_status(&gid).await?;
+            let state = status
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+
+            let completed: u64 = status
+                .get("completedLength")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let total: u64 = status
+                .get("totalLength")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let speed: u64 = status
+                .get("downloadSpeed")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            *progress.borrow_mut() = Some(UpdateProgress {
+                completed,
+                total,
+                speed,
+            });
+            let _ = this.update(cx, |_this, cx| cx.notify());
+
+            match state.as_str() {
+                "complete" => return Ok(dir.join(&filename)),
+                "error" => {
+                    let msg = status
+                        .get("errorMessage")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("未知错误")
+                        .to_string();
+                    last_error = Some(format!("aria2 下载失败: {msg}"));
+                    break;
+                }
+                _ => {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(300))
+                        .await;
+                }
             }
         }
     }
+
+    anyhow::bail!(
+        "所有更新下载地址均失败: {}",
+        last_error.unwrap_or_else(|| "未知错误".to_string())
+    );
 }
 
 /// 人类可读的字节尺寸格式化：`1234567` → `"1.18 MiB"`。

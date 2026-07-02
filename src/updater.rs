@@ -53,8 +53,10 @@ pub struct ReleaseInfo {
     pub version: String,
     /// Release 在网页上的地址，供"查看详情"跳转。
     pub html_url: String,
-    /// 可直接下载的 `.exe` 资源地址。
+    /// 优先尝试的 `.exe` 资源地址（通常是镜像直链；无镜像时为 GitHub 官方地址）。
     pub download_url: String,
+    /// 当优先地址失败时回退使用的 GitHub 官方 Release asset 地址。
+    pub fallback_download_url: Option<String>,
     /// 资源文件名（用于本地临时文件命名）。
     pub asset_name: String,
 }
@@ -154,13 +156,17 @@ pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<Releas
     };
 
     let version = release.tag_name.trim_start_matches('v').to_string();
-    let download_url = mirror_download_url(&version, &asset.name)
-        .unwrap_or_else(|| asset.browser_download_url.clone());
+    let github_download_url = asset.browser_download_url.clone();
+    let download_url =
+        mirror_download_url(&version, &asset.name).unwrap_or_else(|| github_download_url.clone());
+    let fallback_download_url =
+        (download_url != github_download_url).then_some(github_download_url);
 
     Ok(Some(ReleaseInfo {
         version,
         html_url: release.html_url,
         download_url,
+        fallback_download_url,
         asset_name: asset.name,
     }))
 }
