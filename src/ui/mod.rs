@@ -1356,6 +1356,7 @@ impl WallpaperLibrary {
                                 .opacity(0.)
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
+                                        cx.stop_propagation();
                                         this.open_preview_dialog(
                                             entry_for_preview.clone(),
                                             window,
@@ -1381,6 +1382,7 @@ impl WallpaperLibrary {
                                     .w_full()
                                     .disabled(progress.is_some())
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
                                         this.set_as_wallpaper(entry_for_wallpaper.clone(), cx);
                                     })),
                             ),
