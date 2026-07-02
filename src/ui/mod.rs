@@ -1045,6 +1045,7 @@ impl WallpaperLibrary {
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().font_bold().child("设置"))
             .child(
                 v_flex()
