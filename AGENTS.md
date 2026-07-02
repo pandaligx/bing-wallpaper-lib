@@ -728,4 +728,37 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 | `src/downloader.rs` | aria2 子进程管理 + JSON-RPC 客户端 |
 | `src/wallpaper_setter.rs` | Windows 设置桌面壁纸，支持全部显示器/指定显示器 |
 | `src/updater.rs` | 检查 GitHub Releases 最新版本 + 下载 + 自我替换重启（见 §14.3） |
+
+## 15. 设置面板改为有边界的双栏布局 + 新增下载中心（v0.2.15）
+
+### 15.1 根因：v0.2.14 多层 `.absolute()` 悬浮层导致点击穿透 + 重入面板闪退
+
+v0.2.14“悬停右侧展开”的设置面板实现，为每个设置分组（下载路径/外观模式/多显示器壁纸/批量下载/维护）
+都单独写了一个 `v_flex().absolute().left(px(232.)).top_0()...` 的悬浮详情块，堆叠在左侧列表右侧。用户实际使用后反馈了三个问题：
+
+1. 设置浮层位置跑到了左上角（预期应该在左下角）；
+2. 点击展开后详情面板里的按钮会直接关闭整个设置面板（而不是执行对应操作并保持打开）；
+3. 点击那些按钮时，如果下方恰好有壁纸卡片，还会意外弹出那张卡片的预览大图弹窗。
+
+根因是 GPUI 对这种多层独立 `.absolute()` 元素堆叠的命中测试（hit-testing）并不会可靠地阻止点击穿透到同一棵元素树中位于下方/后方的其他元素（比如关闭整个面板的全屏透明捕获层，以及首页网格卡片上那个隐藏的全卡片预览按钮）；多个悬浮块都各自独立调用 `.on_mouse_down(..., stop_propagation)` 或根本没有调用，而且绝对定位的层次关系与预期不符，最终表现为上述三种不同形式的“穿透”。
+
+### 15.2 修复：单个有边界的双栏布局，不再堆叠多个 `.absolute()` 悬浮层
+
+`WallpaperLibrary::render_settings_panel`（`src/ui/mod.rs`）重写为一个**普通（非 `.absolute()`）的 `h_flex()`**，内部只有两个子元素：
+
+- 左侧固定宽度（`w(px(200.))`）的 `v_flex()` 列表，逐个渲染 `render_settings_section_header`（完全不变，via `.on_hover()` 设置 `settings_section`）；
+- 右侧 `.flex_1()` 的详情区，内容通过 `match self.settings_section.unwrap_or(SettingsSection::DownloadDir) { ... }` 选择单一一个 `AnyElement`，而不是为每个分组各自弹一个独立的悬浮块。
+
+`.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())` 现在**只写在最外层的 `h_flex()` 上一次**，不再有任何子元素重复设置，也不再有子元素处于 `.absolute()` 定位。整个面板外层包裹 div 从 `.left_3().top_3().bottom_3().w(px(760.))`（拉伸到满屏高度）改回最初设计的 `.left_3().bottom_3()`（不指定宽/高，尺寸由 `render_settings_panel` 自己的 `.w(px(620.)).max_h(px(420.))` 决定），重新回到左下角锚点。
+
+**经验教训**：当一个浮层/面板需要多个内部可切换的“页面”时，优先用 **一个有边界的容器 + `match` 选择内容**，而不是把每个页面都写成独立的 `.absolute()` 悬浮块堆叠在同一个父容器里面。后者不仅代码更复杂，而且 GPUI 的命中测试/事件传播语义对多个并列的绝对定位元素支持得并不好（本次修复前的三个 bug 皆根源于此）。
+
+### 15.3 新增“下载中心”：批量下载从设置面板移出，独立成为一个顶级导航项
+
+为了避免设置面板因功能过多而膨胀，批量下载功能从设置面板中完全移除，改为左侧导航栏中“我的收藏”下方的独立一级项“下载中心”（`IconName::FolderClosed`，与年份展开/收起的子项用同一个 `SidebarMenuItem.children(...)` 模式），包含两个子项：
+
+- **批量下载**（`ViewMode::DownloadBatch` → `WallpaperLibrary::render_batch_download_view`）：全页面展示快速下载（全部历史/当前月份/收藏）+ 日期范围输入框 + 下载进度，逻辑完全复用原来已有的 `start_batch_download` / `start_date_range_batch_download`，只是将 UI 从设置面板搬到了一个独立页面。
+- **已下载的图**（`ViewMode::Downloaded` → `WallpaperLibrary::render_downloaded_view`）：新增 `downloaded_files()` 扫描 `paths::wallpapers_dir()` 下的 `.jpg/.jpeg/.png/.webp` 文件并按文件名倒序（文件名以日期开头，因此倒序即最新在前），页面展示本地缩略图画廊 + 打开下载目录/刷新按钮。
+
+设置面板自身只保留下载路径 / 外观模式 / 多显示器壁纸 / 维护四个分组，`SettingsSection::BatchDownload` 变体已删除。
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |
