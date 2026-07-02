@@ -27,7 +27,9 @@ mod updater;
 mod wallpaper_setter;
 
 use gpui::*;
+use gpui_component::theme::ThemeMode;
 use gpui_component::{Root, Theme};
+use settings::ThemePreference;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -72,6 +74,7 @@ fn main() {
                 traffic_light_position: Some(point(px(9.0), px(9.0))),
             }),
             window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
+            window_min_size: Some(size(px(200.), px(200.))),
             ..Default::default()
         };
 
@@ -84,12 +87,13 @@ fn main() {
                 let view = cx.new(|cx| WallpaperLibrary::new(window, cx));
                 *view_holder_for_window.borrow_mut() = Some(view.clone());
 
-                // 主题：默认浅色（白天），启动时以及此后系统主题变化时都自动跟随系统
-                // 深色/浅色模式切换（见 AGENTS.md「主题」一节）。
-                Theme::sync_system_appearance(Some(window), cx);
+                // 主题：默认跟随系统，也允许用户在设置中手动固定白天/夜间模式。
+                apply_theme_preference(ThemePreference::from_settings(), Some(window), cx);
                 window
                     .observe_window_appearance(|window, cx| {
-                        Theme::sync_system_appearance(Some(window), cx);
+                        if ThemePreference::from_settings() == ThemePreference::System {
+                            Theme::sync_system_appearance(Some(window), cx);
+                        }
                     })
                     .detach();
 
@@ -146,6 +150,14 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn apply_theme_preference(preference: ThemePreference, window: Option<&mut Window>, cx: &mut App) {
+    match preference {
+        ThemePreference::System => Theme::sync_system_appearance(window, cx),
+        ThemePreference::Light => Theme::change(ThemeMode::Light, window, cx),
+        ThemePreference::Dark => Theme::change(ThemeMode::Dark, window, cx),
+    }
 }
 
 /// 检查一次更新并在发现新版本时弹出对话框。

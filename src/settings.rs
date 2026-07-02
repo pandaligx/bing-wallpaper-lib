@@ -1,14 +1,34 @@
-//! 应用设置：目前只有"自定义下载保存路径"，以 JSON 形式持久化到
-//! `%LOCALAPPDATA%\BingWallpaperLib\settings.json`。
+//! 应用设置，以 JSON 形式持久化到 `%LOCALAPPDATA%\BingWallpaperLib\settings.json`。
 //!
-//! 设计上刻意保持简单——用户暂时也想不到还需要哪些设置项，所以只暴露一个
-//! "下载路径"字段，未来如果需要新增设置（例如开机自启、主题手动覆盖等），
-//! 只需在 [`AppSettings`] 结构体中新增字段（并保证 `#[serde(default)]`
-//! 以兼容旧版本写入的配置文件）。
+//! 每个新增字段都应使用 `#[serde(default)]`，以兼容旧版本写入的配置文件。
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// 主题偏好：默认跟随系统，也允许用户手动固定为白天/夜间。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePreference {
+    pub fn from_settings() -> Self {
+        AppSettings::load().theme_preference
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "跟随系统",
+            Self::Light => "白天模式",
+            Self::Dark => "夜间模式",
+        }
+    }
+}
 
 /// 持久化的应用设置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -17,6 +37,9 @@ pub struct AppSettings {
     /// （`%LOCALAPPDATA%\BingWallpaperLib\Wallpapers`）。
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
+    /// 主题偏好；默认跟随 Windows 系统深色/浅色模式。
+    #[serde(default)]
+    pub theme_preference: ThemePreference,
 }
 
 impl AppSettings {

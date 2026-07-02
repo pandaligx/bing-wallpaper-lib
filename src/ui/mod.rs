@@ -11,7 +11,7 @@
 
 use crate::downloader::Aria2Manager;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, ThemePreference};
 use crate::wallpaper_setter;
 use chrono::NaiveDate;
 use gpui::prelude::FluentBuilder;
@@ -26,14 +26,14 @@ use gpui_component::sidebar::{
     SidebarToggleButton,
 };
 use gpui_component::*;
-use gpui_component::{button::Button, Root};
+use gpui_component::{button::Button, theme::ThemeMode, Root, Theme};
 use http_client::HttpClient;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-/// 软件版权/作者署名，展示于侧边栏底部。
+/// 软件版权/作者署名，展示于“关于”信息中。
 const COPYRIGHT: &str = "© 2023-2026 小南瓜";
 
 /// 首页网格视图每次展示/加载的壁纸数量。
@@ -90,7 +90,9 @@ pub struct WallpaperLibrary {
     home_scroll_handle: ScrollHandle,
     /// 侧边导航栏是否处于折叠（仅图标）状态。
     sidebar_collapsed: bool,
-    /// 持久化的应用设置（目前只有自定义下载路径）。
+    /// 设置浮层是否展开（左下角，类似抖音侧边栏设置菜单）。
+    settings_panel_open: bool,
+    /// 持久化的应用设置。
     settings: AppSettings,
     /// 设置面板中"下载路径"输入框的状态。
     settings_dir_input: Entity<InputState>,
@@ -126,6 +128,7 @@ impl WallpaperLibrary {
             home_loaded_count: HOME_PAGE_SIZE,
             home_scroll_handle: ScrollHandle::new(),
             sidebar_collapsed: false,
+            settings_panel_open: false,
             settings,
             settings_dir_input,
         }
@@ -274,80 +277,38 @@ impl WallpaperLibrary {
         }
     }
 
-    /// 打开"设置"对话框：目前只支持配置壁纸下载保存路径。
-    fn open_settings_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.settings_dir_input.clone();
-        let view = cx.entity();
+    fn set_theme_preference(
+        &mut self,
+        preference: ThemePreference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.theme_preference = preference;
+        if let Err(err) = self.settings.save() {
+            self.set_status(format!("保存主题设置失败: {err}"), cx);
+            return;
+        }
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            let input_for_field = input.clone();
-            let input_for_explorer = input.clone();
-            let input_for_save = input.clone();
-            let view_for_save = view.clone();
-            let view_for_check = view.clone();
+        match preference {
+            ThemePreference::System => Theme::sync_system_appearance(Some(window), cx),
+            ThemePreference::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+            ThemePreference::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+        }
+        self.set_status(format!("已切换为{}", preference.label()), cx);
+        cx.notify();
+    }
 
-            dialog
-                .title("设置")
-                .w(px(480.))
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .p_4()
-                        .child(div().text_sm().font_bold().child("壁纸下载保存路径"))
-                        .child(Input::new(&input_for_field))
-                        .child(
-                            div()
-                                .text_xs()
-                                .opacity(0.6)
-                                .child("留空则使用默认目录；保存后若路径不存在会自动创建。"),
-                        ),
-                )
-                .footer(
-                    DialogFooter::new()
-                        .justify_between()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    Button::new("open-download-dir")
-                                        .label("在资源管理器中打开")
-                                        .outline()
-                                        .on_click(move |_, _, cx| {
-                                            let path =
-                                                input_for_explorer.read(cx).value().to_string();
-                                            open_in_explorer(&path);
-                                        }),
-                                )
-                                .child(
-                                    Button::new("check-update")
-                                        .label("检查更新")
-                                        .outline()
-                                        .on_click(move |_, window, cx| {
-                                            view_for_check.update(cx, |this, cx| {
-                                                this.check_for_updates(true, window, cx);
-                                            });
-                                        }),
-                                )
-                                .child(Button::new("open-about").label("关于").outline().on_click(
-                                    |_, window, cx| {
-                                        open_about_dialog(window, cx);
-                                    },
-                                )),
-                        )
-                        .child(
-                            Button::new("save-settings")
-                                .label("保存")
-                                .primary()
-                                .on_click(move |_, window, cx| {
-                                    let path_str = input_for_save.read(cx).value().to_string();
-                                    view_for_save.update(cx, |this, cx| {
-                                        this.apply_download_dir(path_str, cx);
-                                    });
-                                    window.close_dialog(cx);
-                                }),
-                        ),
-                )
-        });
+    fn clear_cache(&mut self, cx: &mut Context<Self>) {
+        match crate::paths::cache_file() {
+            Ok(path) => match std::fs::remove_file(&path) {
+                Ok(()) => self.set_status("已清空本地壁纸缓存，下次刷新会重新写入", cx),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    self.set_status("本地壁纸缓存已经为空", cx);
+                }
+                Err(err) => self.set_status(format!("清空缓存失败: {err}"), cx),
+            },
+            Err(err) => self.set_status(format!("定位缓存文件失败: {err}"), cx),
+        }
     }
 
     /// 打开"预览图片"对话框：展示原始高清大图，底部提供下载/设为壁纸按钮。
@@ -630,58 +591,90 @@ impl WallpaperLibrary {
 
 /// 打开“关于”对话框：展示版本信息、致谢开源项目与本项目的仓库链接。
 fn open_about_dialog(window: &mut Window, cx: &mut App) {
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        dialog
-            .title("关于")
-            .w(px(420.))
-            .child(
-                v_flex()
-                    .gap_3()
-                    .p_4()
-                    .child(div().text_lg().font_bold().child(crate::paths::APP_NAME))
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("当前版本 v{}", crate::updater::CURRENT_VERSION)),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child("壁纸数据来源于开源项目 bing-wallpaper，感谢其长期维护："),
-                    )
-                    .child(
-                        Button::new("about-bing-wallpaper")
-                            .label("https://github.com/niumoo/bing-wallpaper")
-                            .link()
-                            .on_click(|_, _, cx| {
-                                cx.open_url("https://github.com/niumoo/bing-wallpaper");
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(_cx.theme().muted_foreground)
-                            .child(COPYRIGHT),
-                    )
-                    .child(
-                        Button::new("about-repo")
-                            .label(crate::updater::REPO_HTML_URL)
-                            .link()
-                            .on_click(|_, _, cx| {
-                                cx.open_url(crate::updater::REPO_HTML_URL);
-                            }),
-                    ),
-            )
-            .footer(
-                DialogFooter::new().child(
-                    Button::new("about-close")
-                        .label("关闭")
-                        .primary()
-                        .on_click(|_, window, cx| {
-                            window.close_dialog(cx);
-                        }),
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        dialog.title("关于").w(px(460.)).child(
+            v_flex()
+                .gap_4()
+                .p_4()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .child(div().text_lg().font_bold().child(crate::paths::APP_NAME))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("每日自动获取、浏览、下载并设置 Bing 每日壁纸"),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .p_3()
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("当前版本"),
+                                )
+                                .child(
+                                    div()
+                                        .font_bold()
+                                        .child(format!("v{}", crate::updater::CURRENT_VERSION)),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("版权信息"),
+                                )
+                                .child(div().font_bold().child(COPYRIGHT)),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().font_bold().child("开源与致谢"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                "壁纸数据来源于 niumoo/bing-wallpaper，本软件项目托管于 GitHub。",
+                            ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Button::new("about-bing-wallpaper")
+                                        .label("数据源项目")
+                                        .outline()
+                                        .on_click(|_, _, cx| {
+                                            cx.open_url("https://github.com/niumoo/bing-wallpaper");
+                                        }),
+                                )
+                                .child(
+                                    Button::new("about-repo")
+                                        .label("项目主页")
+                                        .outline()
+                                        .on_click(|_, _, cx| {
+                                            cx.open_url(crate::updater::REPO_HTML_URL);
+                                        }),
+                                ),
+                        ),
                 ),
-            )
+        )
     });
 }
 
@@ -879,6 +872,7 @@ impl Render for WallpaperLibrary {
         let selected_key = self.selected_key.clone();
         let view_mode = self.view_mode;
         let sidebar_collapsed = self.sidebar_collapsed;
+        let settings_panel_open = self.settings_panel_open;
 
         let mut sidebar_menu = SidebarMenu::new();
         for (year, months) in years {
@@ -925,6 +919,7 @@ impl Render for WallpaperLibrary {
         );
 
         let main_row = h_flex()
+            .relative()
             .flex_1()
             .min_h_0()
             .w_full()
@@ -963,28 +958,17 @@ impl Render for WallpaperLibrary {
                         this.child(SidebarGroup::new("归档").child(sidebar_menu))
                     })
                     .footer(
-                        v_flex()
-                            .gap_2()
-                            .p_2()
-                            .w_full()
-                            .child(
-                                Button::new("open-settings")
-                                    .icon(IconName::Settings)
-                                    .ghost()
-                                    .small()
-                                    .tooltip("设置")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_settings_dialog(window, cx);
-                                    })),
-                            )
-                            .when(!sidebar_collapsed, |this| {
-                                this.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(COPYRIGHT),
-                                )
-                            }),
+                        v_flex().gap_2().p_2().w_full().child(
+                            Button::new("open-settings")
+                                .icon(IconName::Settings)
+                                .ghost()
+                                .small()
+                                .tooltip("设置")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.settings_panel_open = !this.settings_panel_open;
+                                    cx.notify();
+                                })),
+                        ),
                     ),
             )
             .child(match view_mode {
@@ -992,6 +976,38 @@ impl Render for WallpaperLibrary {
                 ViewMode::MonthDetail => self
                     .render_month_view(selected_key, status, cx)
                     .into_any_element(),
+            })
+            .when(settings_panel_open, |this| {
+                let view_for_overlay = cx.entity();
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .child(
+                            Button::new("settings-panel-outside-close")
+                                .label("")
+                                .w_full()
+                                .h_full()
+                                .ghost()
+                                .opacity(0.)
+                                .on_click(move |_, _, cx| {
+                                    view_for_overlay.update(cx, |this, cx| {
+                                        this.settings_panel_open = false;
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_3()
+                        .bottom_3()
+                        .child(self.render_settings_panel(cx)),
+                )
             });
 
         v_flex()
@@ -1005,6 +1021,182 @@ impl Render for WallpaperLibrary {
 }
 
 impl WallpaperLibrary {
+    fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let input_for_field = self.settings_dir_input.clone();
+        let input_for_open = self.settings_dir_input.clone();
+        let input_for_save = self.settings_dir_input.clone();
+        let view = cx.entity();
+        let theme_preference = self.settings.theme_preference;
+
+        let view_for_save = view.clone();
+        let view_for_clear = view.clone();
+        let view_for_check = view.clone();
+        let view_for_system = view.clone();
+        let view_for_light = view.clone();
+        let view_for_dark = view.clone();
+
+        v_flex()
+            .w(px(308.))
+            .max_h(px(560.))
+            .overflow_y_scrollbar()
+            .gap_3()
+            .p_3()
+            .rounded(cx.theme().radius_lg)
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(div().font_bold().child("设置"))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_bold().child("壁纸下载保存路径"))
+                    .child(Input::new(&input_for_field))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("留空则使用默认目录；保存后若路径不存在会自动创建。"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("settings-open-dir")
+                                    .label("打开目录")
+                                    .outline()
+                                    .small()
+                                    .on_click(move |_, _, cx| {
+                                        let path = input_for_open.read(cx).value().to_string();
+                                        open_in_explorer(&path);
+                                    }),
+                            )
+                            .child(
+                                Button::new("settings-save-dir")
+                                    .label("保存路径")
+                                    .primary()
+                                    .small()
+                                    .on_click(move |_, _, cx| {
+                                        let path = input_for_save.read(cx).value().to_string();
+                                        view_for_save.update(cx, |this, cx| {
+                                            this.apply_download_dir(path, cx);
+                                        });
+                                    }),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_bold().child("外观模式"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("theme-system")
+                                    .label("跟随")
+                                    .small()
+                                    .when(theme_preference == ThemePreference::System, |this| {
+                                        this.primary()
+                                    })
+                                    .when(theme_preference != ThemePreference::System, |this| {
+                                        this.outline()
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        view_for_system.update(cx, |this, cx| {
+                                            this.set_theme_preference(
+                                                ThemePreference::System,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("theme-light")
+                                    .label("白天")
+                                    .small()
+                                    .when(theme_preference == ThemePreference::Light, |this| {
+                                        this.primary()
+                                    })
+                                    .when(theme_preference != ThemePreference::Light, |this| {
+                                        this.outline()
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        view_for_light.update(cx, |this, cx| {
+                                            this.set_theme_preference(
+                                                ThemePreference::Light,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("theme-dark")
+                                    .label("夜间")
+                                    .small()
+                                    .when(theme_preference == ThemePreference::Dark, |this| {
+                                        this.primary()
+                                    })
+                                    .when(theme_preference != ThemePreference::Dark, |this| {
+                                        this.outline()
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        view_for_dark.update(cx, |this, cx| {
+                                            this.set_theme_preference(
+                                                ThemePreference::Dark,
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("手动选择后不会再被系统主题变化覆盖。"),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().font_bold().child("维护"))
+                    .child(
+                        Button::new("settings-clear-cache")
+                            .label("清空壁纸缓存")
+                            .outline()
+                            .w_full()
+                            .on_click(move |_, _, cx| {
+                                view_for_clear.update(cx, |this, cx| {
+                                    this.clear_cache(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("settings-check-update")
+                            .label("检查更新")
+                            .outline()
+                            .w_full()
+                            .on_click(move |_, window, cx| {
+                                view_for_check.update(cx, |this, cx| {
+                                    this.check_for_updates(true, window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("settings-about")
+                            .label("关于软件")
+                            .outline()
+                            .w_full()
+                            .on_click(|_, window, cx| {
+                                open_about_dialog(window, cx);
+                            }),
+                    ),
+            )
+    }
+
     fn render_home_view(&self, status: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
         let total = self.flat_entries.len();
         let show_count = self.home_loaded_count.min(total);
@@ -1124,13 +1316,14 @@ impl WallpaperLibrary {
             )
     }
 
-    /// 首页网格中的单张壁纸卡片：鼠标悬停时图片底部浮现"预览图片"按钮
-    /// （纯 CSS 式的 group-hover 实现，不依赖任何应用状态/`cx.notify()`，
-    /// 保证滚动与悬停都足够流畅）。
+    /// 首页网格中的单张壁纸卡片：点击图片本身预览；鼠标悬停时图片底部浮现
+    /// “设为桌面壁纸”按钮（纯 CSS 式的 group-hover 实现，不依赖额外应用状态）。
     fn render_home_card(&self, entry: WallpaperEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let group_name: SharedString = format!("home-card-{}", entry.date).into();
         let date_str = entry.date.format("%Y-%m-%d").to_string();
         let entry_for_preview = entry.clone();
+        let entry_for_wallpaper = entry.clone();
+        let progress = self.progress.get(&entry.date).copied();
 
         v_flex()
             .group(group_name.clone())
@@ -1147,21 +1340,20 @@ impl WallpaperLibrary {
                     .child(
                         div()
                             .absolute()
-                            .bottom_0()
+                            .top_0()
                             .left_0()
                             .right_0()
-                            .p_2()
-                            .opacity(0.)
-                            .group_hover(group_name.clone(), |style| style.opacity(1.))
-                            .bg(hsla(0., 0., 0., 0.55))
+                            .bottom_0()
                             .child(
                                 Button::new(SharedString::from(format!(
-                                    "home-preview-{}",
+                                    "home-image-{}",
                                     entry.date
                                 )))
-                                .label("预览图片")
-                                .small()
+                                .label("")
                                 .w_full()
+                                .h_full()
+                                .ghost()
+                                .opacity(0.)
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         this.open_preview_dialog(
@@ -1171,6 +1363,26 @@ impl WallpaperLibrary {
                                         );
                                     },
                                 )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_2()
+                            .left_2()
+                            .right_2()
+                            .opacity(0.)
+                            .group_hover(group_name.clone(), |style| style.opacity(1.))
+                            .child(
+                                Button::new(SharedString::from(format!("home-set-{}", entry.date)))
+                                    .label("设为桌面壁纸")
+                                    .primary()
+                                    .small()
+                                    .w_full()
+                                    .disabled(progress.is_some())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.set_as_wallpaper(entry_for_wallpaper.clone(), cx);
+                                    })),
                             ),
                     ),
             )
