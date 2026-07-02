@@ -17,6 +17,8 @@ use chrono::NaiveDate;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::ButtonVariants as _;
+use gpui_component::checkbox::Checkbox;
+use gpui_component::date_picker::{DatePicker, DatePickerState};
 use gpui_component::dialog::DialogFooter;
 use gpui_component::input::{Input, InputState};
 use gpui_component::progress::Progress;
@@ -51,7 +53,7 @@ enum ViewMode {
     Favorites,
     /// 点击左侧“下载中心 · 批量下载”后展示的批量下载页面。
     DownloadBatch,
-    /// 点击左侧“下载中心 · 已下载的图”后展示的本地已下载壁纸画廊。
+    /// 点击左侧“下载中心 · 已下载的壁纸”后展示的本地已下载壁纸画廊。
     Downloaded,
     /// 点击左侧某个年/月条目后展示的旧版列表视图。
     MonthDetail,
@@ -126,10 +128,10 @@ pub struct WallpaperLibrary {
     settings: AppSettings,
     /// 设置面板中"下载路径"输入框的状态。
     settings_dir_input: Entity<InputState>,
-    /// 批量下载日期范围：开始日期输入框。
-    batch_start_input: Entity<InputState>,
-    /// 批量下载日期范围：结束日期输入框。
-    batch_end_input: Entity<InputState>,
+    /// 批量下载日期范围选择器（点击展开日历直接选日期，不需要手动输入数字）。
+    batch_range_picker: Entity<DatePickerState>,
+    /// 已下载壁纸画廊中当前选中的文件路径集合，用于批量删除。
+    downloaded_selected: HashSet<std::path::PathBuf>,
 }
 
 impl WallpaperLibrary {
@@ -148,10 +150,8 @@ impl WallpaperLibrary {
                 .placeholder(format!("默认: {default_dir_display}"))
                 .default_value(initial_dir_text)
         });
-        let batch_start_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("开始日期 YYYY-MM-DD"));
-        let batch_end_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("结束日期 YYYY-MM-DD"));
+        let batch_range_picker =
+            cx.new(|cx| DatePickerState::range(window, cx).date_format("%Y-%m-%d"));
         let monitors = wallpaper_setter::list_monitors().unwrap_or_default();
 
         Self {
@@ -174,8 +174,8 @@ impl WallpaperLibrary {
             settings_section: None,
             settings,
             settings_dir_input,
-            batch_start_input,
-            batch_end_input,
+            batch_range_picker,
+            downloaded_selected: HashSet::new(),
         }
     }
 
@@ -312,41 +312,12 @@ impl WallpaperLibrary {
 
     fn start_date_range_batch_download(
         &mut self,
-        start_text: String,
-        end_text: String,
+        start: Option<NaiveDate>,
+        end: Option<NaiveDate>,
         cx: &mut Context<Self>,
     ) {
-        let parse_bound = |label: &str, value: &str| -> Option<Result<NaiveDate, String>> {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(
-                    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
-                        .map_err(|_| format!("{label}格式不正确，请使用 YYYY-MM-DD")),
-                )
-            }
-        };
-
-        let start = match parse_bound("开始日期", &start_text) {
-            Some(Ok(date)) => Some(date),
-            Some(Err(err)) => {
-                self.set_status(err, cx);
-                return;
-            }
-            None => None,
-        };
-        let end = match parse_bound("结束日期", &end_text) {
-            Some(Ok(date)) => Some(date),
-            Some(Err(err)) => {
-                self.set_status(err, cx);
-                return;
-            }
-            None => None,
-        };
-
         if start.is_none() && end.is_none() {
-            self.set_status("请输入批量下载的开始日期或结束日期", cx);
+            self.set_status("请先在日历中选择批量下载的日期范围", cx);
             return;
         }
         if let (Some(start), Some(end)) = (start, end) {
@@ -525,6 +496,61 @@ impl WallpaperLibrary {
             });
         })
         .detach();
+    }
+
+    /// 直接将本地已下载的壁纸文件设置为桌面壁纸（无需重新下载，因此同步执行即可）。
+    fn set_local_file_as_wallpaper(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let target = self.settings.wallpaper_target.clone();
+        let target_label = self.wallpaper_target_label();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let outcome = match &target {
+            WallpaperTarget::All => wallpaper_setter::set_wallpaper_for_all_monitors(&path),
+            WallpaperTarget::Monitor(monitor_id) => {
+                wallpaper_setter::set_wallpaper_for_monitor(&path, monitor_id)
+            }
+        };
+        match outcome {
+            Ok(()) => self.set_status(format!("已将 {name} 设置为{target_label}壁纸"), cx),
+            Err(err) => self.set_status(format!("设置壁纸失败: {err}"), cx),
+        }
+    }
+
+    /// 删除单个已下载的壁纸文件，并同步从批量选中集合中移除。
+    fn delete_downloaded_file(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.downloaded_selected.remove(&path);
+        match std::fs::remove_file(&path) {
+            Ok(()) => self.set_status(format!("已删除 {name}"), cx),
+            Err(err) => self.set_status(format!("删除 {name} 失败: {err}"), cx),
+        }
+    }
+
+    /// 批量删除已选中的已下载壁纸文件。
+    fn delete_selected_downloaded(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<std::path::PathBuf> = self.downloaded_selected.drain().collect();
+        if paths.is_empty() {
+            self.set_status("请先勾选需要删除的壁纸", cx);
+            return;
+        }
+        let total = paths.len();
+        let mut deleted = 0usize;
+        let mut failed = 0usize;
+        for path in paths {
+            match std::fs::remove_file(&path) {
+                Ok(()) => deleted += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        self.set_status(
+            format!("批量删除完成：共 {total}，成功 {deleted}，失败 {failed}"),
+            cx,
+        );
     }
 
     /// 应用新的下载目录设置：写入磁盘，并（若 aria2 已在运行）通过
@@ -1202,7 +1228,7 @@ impl Render for WallpaperLibrary {
                 cx.notify();
             }));
 
-        let downloaded_item = SidebarMenuItem::new("已下载的图")
+        let downloaded_item = SidebarMenuItem::new("已下载的壁纸")
             .active(view_mode == ViewMode::Downloaded)
             .on_click(cx.listener(|this, _, _, cx| {
                 this.view_mode = ViewMode::Downloaded;
@@ -1849,10 +1875,8 @@ impl WallpaperLibrary {
         status: SharedString,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let batch_start_field = self.batch_start_input.clone();
-        let batch_end_field = self.batch_end_input.clone();
-        let batch_start_for_read = self.batch_start_input.clone();
-        let batch_end_for_read = self.batch_end_input.clone();
+        let batch_range_picker = self.batch_range_picker.clone();
+        let batch_range_picker_for_read = self.batch_range_picker.clone();
         let view = cx.entity();
         let view_for_all = view.clone();
         let view_for_month = view.clone();
@@ -1955,21 +1979,16 @@ impl WallpaperLibrary {
                         v_flex()
                             .gap_2()
                             .child(div().text_sm().font_bold().child("按日期范围下载"))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(Input::new(&batch_start_field).flex_1())
-                                    .child(Input::new(&batch_end_field).flex_1()),
-                            )
+                            .child(DatePicker::new(&batch_range_picker).w(px(320.)))
                             .child(
                                 Button::new("batch-center-date-range")
                                     .label("下载日期范围")
                                     .outline()
                                     .disabled(batch_progress.is_some())
                                     .on_click(move |_, _, cx| {
-                                        let start =
-                                            batch_start_for_read.read(cx).value().to_string();
-                                        let end = batch_end_for_read.read(cx).value().to_string();
+                                        let date = batch_range_picker_for_read.read(cx).date();
+                                        let start = date.start();
+                                        let end = date.end();
                                         view_for_range.update(cx, |this, cx| {
                                             this.start_date_range_batch_download(start, end, cx);
                                         });
@@ -1979,7 +1998,7 @@ impl WallpaperLibrary {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("可只填开始或结束日期；日期格式：2026-07-02。"),
+                                    .child("点击日历选择日期范围，可只选开始或结束日期。"),
                             ),
                     )
                     .when_some(batch_progress, |this, progress| {
@@ -2048,9 +2067,15 @@ impl WallpaperLibrary {
     ) -> impl IntoElement {
         let files = self.downloaded_files();
         let count = files.len();
+        let all_selected = count > 0 && files.iter().all(|p| self.downloaded_selected.contains(p));
+        let selected_count = self.downloaded_selected.len();
         let dir_display = crate::paths::wallpapers_dir()
             .map(|d| d.display().to_string())
             .unwrap_or_default();
+
+        let view_for_select_all = cx.entity();
+        let files_for_select_all = files.clone();
+        let view_for_delete_selected = cx.entity();
 
         v_flex()
             .flex_1()
@@ -2066,7 +2091,7 @@ impl WallpaperLibrary {
                         div()
                             .font_bold()
                             .text_lg()
-                            .child(format!("下载中心 · 已下载的图（{count} 张）")),
+                            .child(format!("下载中心 · 已下载的壁纸（{count} 张）")),
                     )
                     .child(
                         h_flex()
@@ -2077,6 +2102,41 @@ impl WallpaperLibrary {
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(status),
+                            )
+                            .child(
+                                Button::new("downloaded-select-all")
+                                    .label(if all_selected {
+                                        "取消全选"
+                                    } else {
+                                        "全选"
+                                    })
+                                    .outline()
+                                    .small()
+                                    .disabled(count == 0)
+                                    .on_click(move |_, _, cx| {
+                                        let files = files_for_select_all.clone();
+                                        view_for_select_all.update(cx, |this, cx| {
+                                            if all_selected {
+                                                this.downloaded_selected.clear();
+                                            } else {
+                                                this.downloaded_selected =
+                                                    files.into_iter().collect();
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .child(
+                                Button::new("downloaded-delete-selected")
+                                    .label(format!("删除选中 ({selected_count})"))
+                                    .danger()
+                                    .small()
+                                    .disabled(selected_count == 0)
+                                    .on_click(move |_, _, cx| {
+                                        view_for_delete_selected.update(cx, |this, cx| {
+                                            this.delete_selected_downloaded(cx);
+                                        });
+                                    }),
                             )
                             .child(
                                 Button::new("downloaded-refresh")
@@ -2120,33 +2180,222 @@ impl WallpaperLibrary {
                             .flex()
                             .flex_wrap()
                             .gap_4()
-                            .children(files.into_iter().map(|path| {
-                                let name = path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                v_flex()
-                                    .w(px(220.))
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .w(px(220.))
-                                            .h(px(124.))
-                                            .rounded(cx.theme().radius)
-                                            .overflow_hidden()
-                                            .child(img(path.clone()).w(px(220.)).h(px(124.))),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .truncate()
-                                            .child(name),
-                                    )
-                            }))
+                            .children(
+                                files
+                                    .into_iter()
+                                    .map(|path| self.render_downloaded_card(path, cx)),
+                            )
                             .into_any_element()
                     }),
             )
+    }
+
+    /// 已下载壁纸画廊中的单张卡片：点击图片本身预览（弹窗内可设为桌面壁纸/删除），
+    /// 左上角勾选框用于批量选择，鼠标悬停时图片底部浮现“设为桌面壁纸”/删除按钮。
+    fn render_downloaded_card(
+        &self,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let group_name: SharedString = format!("downloaded-card-{name}").into();
+        let path_for_preview = path.clone();
+        let path_for_wallpaper = path.clone();
+        let path_for_delete = path.clone();
+        let path_for_checkbox = path.clone();
+        let is_selected = self.downloaded_selected.contains(&path);
+
+        v_flex()
+            .group(group_name.clone())
+            .w(px(220.))
+            .gap_1()
+            .child(
+                div()
+                    .relative()
+                    .w(px(220.))
+                    .h(px(124.))
+                    .rounded(cx.theme().radius)
+                    .overflow_hidden()
+                    .child(img(path.clone()).w(px(220.)).h(px(124.)))
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .child(
+                                Button::new(SharedString::from(format!("downloaded-image-{name}")))
+                                    .label("")
+                                    .w_full()
+                                    .h_full()
+                                    .ghost()
+                                    .opacity(0.)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_local_preview_dialog(
+                                            path_for_preview.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_1()
+                            .left_1()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .child(
+                                Checkbox::new(SharedString::from(format!(
+                                    "downloaded-check-{name}"
+                                )))
+                                .checked(is_selected)
+                                .on_click({
+                                    let view = cx.entity();
+                                    move |_, _, cx| {
+                                        let path = path_for_checkbox.clone();
+                                        view.update(cx, |this, cx| {
+                                            if this.downloaded_selected.contains(&path) {
+                                                this.downloaded_selected.remove(&path);
+                                            } else {
+                                                this.downloaded_selected.insert(path);
+                                            }
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_1()
+                            .left_1()
+                            .right_1()
+                            .opacity(0.)
+                            .group_hover(group_name.clone(), |style| style.opacity(1.))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "downloaded-set-{name}"
+                                        )))
+                                        .label("设为桌面壁纸")
+                                        .primary()
+                                        .small()
+                                        .flex_1()
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.set_local_file_as_wallpaper(
+                                                    path_for_wallpaper.clone(),
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "downloaded-delete-{name}"
+                                        )))
+                                        .icon(IconName::Delete)
+                                        .danger()
+                                        .ghost()
+                                        .small()
+                                        .tooltip("删除")
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.delete_downloaded_file(
+                                                    path_for_delete.clone(),
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(name),
+            )
+    }
+
+    /// 打开本地已下载壁纸的预览对话框：图片已存在于本地，因此无需“下载”按钮，
+    /// 只提供“删除”与“设为桌面壁纸”。同样遵守 `open_preview_dialog` 的重入规避约定：
+    /// 不在对话框 builder 闭包内对 `cx.entity()` 调用 `.read()`。
+    fn open_local_preview_dialog(
+        &self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let path_for_title = path.clone();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let view_for_delete = view.clone();
+            let view_for_wall = view.clone();
+            let path_for_delete = path.clone();
+            let path_for_wall = path.clone();
+
+            dialog
+                .title(
+                    path_for_title
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                )
+                .w(px(860.))
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .p_4()
+                        .child(img(path.clone()).w(px(800.)).h(px(450.)).rounded(px(6.)))
+                        .child(div().text_sm().child(name.clone())),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("local-preview-delete")
+                                .label("删除")
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    let path = path_for_delete.clone();
+                                    view_for_delete.update(cx, |this, cx| {
+                                        this.delete_downloaded_file(path, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("local-preview-set-wallpaper")
+                                .label("设为桌面壁纸")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let path = path_for_wall.clone();
+                                    view_for_wall.update(cx, |this, cx| {
+                                        this.set_local_file_as_wallpaper(path, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
     }
 
     fn render_month_view(
