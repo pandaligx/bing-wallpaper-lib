@@ -168,7 +168,7 @@ impl WallpaperLibrary {
             home_scroll_handle: ScrollHandle::new(),
             sidebar_collapsed: false,
             settings_panel_open: false,
-            settings_section: Some(SettingsSection::DownloadDir),
+            settings_section: None,
             settings,
             settings_dir_input,
             batch_start_input,
@@ -269,13 +269,11 @@ impl WallpaperLibrary {
         }
     }
 
-    fn toggle_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
-        self.settings_section = if self.settings_section == Some(section) {
-            None
-        } else {
-            Some(section)
-        };
-        cx.notify();
+    fn show_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+        if self.settings_section != Some(section) {
+            self.settings_section = Some(section);
+            cx.notify();
+        }
     }
 
     fn set_wallpaper_target(&mut self, target: WallpaperTarget, cx: &mut Context<Self>) {
@@ -1302,7 +1300,7 @@ impl Render for WallpaperLibrary {
                         .left_3()
                         .top_3()
                         .bottom_3()
-                        .w(px(340.))
+                        .w(px(760.))
                         .child(self.render_settings_panel(cx)),
                 )
             });
@@ -1338,21 +1336,23 @@ impl WallpaperLibrary {
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                view.update(cx, |this, cx| {
-                    this.toggle_settings_section(section, cx);
-                });
+            .hover(|style| style.bg(cx.theme().accent.opacity(0.08)))
+            .on_hover(move |hovered, _window, cx| {
+                if *hovered {
+                    view.update(cx, |this, cx| {
+                        this.show_settings_section(section, cx);
+                    });
+                }
             })
             .child(div().text_sm().font_bold().child(title))
             .child(
-                Icon::new(if opened {
-                    IconName::ChevronDown
-                } else {
-                    IconName::ChevronRight
-                })
-                .size_4()
-                .text_color(cx.theme().muted_foreground),
+                Icon::new(IconName::ChevronRight)
+                    .size_4()
+                    .text_color(if opened {
+                        cx.theme().accent
+                    } else {
+                        cx.theme().muted_foreground
+                    }),
             )
     }
 
@@ -1391,11 +1391,9 @@ impl WallpaperLibrary {
         let batch_progress = self.batch_progress;
 
         v_flex()
-            .w_full()
-            .h_full()
-            .min_h_0()
-            .overflow_y_scrollbar()
-            .gap_3()
+            .relative()
+            .w(px(220.))
+            .gap_2()
             .p_3()
             .rounded(cx.theme().radius_lg)
             .border_1()
@@ -1413,74 +1411,89 @@ impl WallpaperLibrary {
                         cx,
                     ))
                     .when(
-                        self.settings_section == Some(SettingsSection::DownloadDir),
-                        |this| {
-                            this.child(Input::new(&input_for_field))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            "留空则使用默认目录；保存后若路径不存在会自动创建。",
+                                            self.settings_section == Some(SettingsSection::DownloadDir),
+                                            |this| {
+                                                this.child(
+                                                    v_flex()
+                                                        .absolute()
+                                                        .left(px(232.))
+                                                        .top_0()
+                                                        .w(px(380.))
+                                                        .gap_2()
+                                                        .p_3()
+                                                        .rounded(cx.theme().radius_lg)
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .bg(cx.theme().background)
+                                                        .shadow_md()
+                                                        .child(div().text_sm().font_bold().child("壁纸下载保存路径"))
+                                                        .child(Input::new(&input_for_field))
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(cx.theme().muted_foreground)
+                                                                .child("留空则使用默认目录；保存后若路径不存在会自动创建。"),
+                                                        )
+                                                        .child(
+                                                            h_flex()
+                                                                .gap_2()
+                                                                .child(
+                                                                    Button::new("settings-open-dir")
+                                                                        .label("打开目录")
+                                                                        .outline()
+                                                                        .small()
+                                                                        .on_click(move |_, _, cx| {
+                                                                            let path = input_for_open
+                                                                                .read(cx)
+                                                                                .value()
+                                                                                .to_string();
+                                                                            open_in_explorer(&path);
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    Button::new("settings-save-dir")
+                                                                        .label("选择并保存")
+                                                                        .primary()
+                                                                        .small()
+                                                                        .on_click(move |_, window, cx| {
+                                                                            match crate::folder_picker::pick_folder() {
+                                                                                Ok(Some(path)) => {
+                                                                                    let path_text =
+                                                                                        path.display().to_string();
+                                                                                    input_for_choose.update(
+                                                                                        cx,
+                                                                                        |input, cx| {
+                                                                                            input.set_value(
+                                                                                                path_text.clone(),
+                                                                                                window,
+                                                                                                cx,
+                                                                                            );
+                                                                                        },
+                                                                                    );
+                                                                                    view_for_save.update(cx, |this, cx| {
+                                                                                        this.apply_download_dir(
+                                                                                            path_text, cx,
+                                                                                        );
+                                                                                    });
+                                                                                }
+                                                                                Ok(None) => {}
+                                                                                Err(err) => {
+                                                                                    view_for_save.update(cx, |this, cx| {
+                                                                                        this.set_status(
+                                                                                            format!(
+                                                                                                "选择下载目录失败: {err}"
+                                                                                            ),
+                                                                                            cx,
+                                                                                        );
+                                                                                    });
+                                                                                }
+                                                                            }
+                                                                        }),
+                                                                ),
+                                                        ),
+                                                )
+                                            },
                                         ),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child(
-                                            Button::new("settings-open-dir")
-                                                .label("打开目录")
-                                                .outline()
-                                                .small()
-                                                .on_click(move |_, _, cx| {
-                                                    let path =
-                                                        input_for_open.read(cx).value().to_string();
-                                                    open_in_explorer(&path);
-                                                }),
-                                        )
-                                        .child(
-                                            Button::new("settings-save-dir")
-                                                .label("选择并保存")
-                                                .primary()
-                                                .small()
-                                                .on_click(move |_, window, cx| {
-                                                    match crate::folder_picker::pick_folder() {
-                                                        Ok(Some(path)) => {
-                                                            let path_text =
-                                                                path.display().to_string();
-                                                            input_for_choose.update(
-                                                                cx,
-                                                                |input, cx| {
-                                                                    input.set_value(
-                                                                        path_text.clone(),
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            );
-                                                            view_for_save.update(cx, |this, cx| {
-                                                                this.apply_download_dir(
-                                                                    path_text, cx,
-                                                                );
-                                                            });
-                                                        }
-                                                        Ok(None) => {}
-                                                        Err(err) => {
-                                                            view_for_save.update(cx, |this, cx| {
-                                                                this.set_status(
-                                                                    format!(
-                                                                        "选择下载目录失败: {err}"
-                                                                    ),
-                                                                    cx,
-                                                                );
-                                                            });
-                                                        }
-                                                    }
-                                                }),
-                                        ),
-                                )
-                        },
-                    ),
             )
             .child(
                 v_flex()
@@ -1492,86 +1505,101 @@ impl WallpaperLibrary {
                         cx,
                     ))
                     .when(
-                        self.settings_section == Some(SettingsSection::Appearance),
-                        |this| {
-                            this.child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("theme-system")
-                                            .label("跟随")
-                                            .small()
-                                            .when(
-                                                theme_preference == ThemePreference::System,
-                                                |this| this.primary(),
-                                            )
-                                            .when(
-                                                theme_preference != ThemePreference::System,
-                                                |this| this.outline(),
-                                            )
-                                            .on_click(move |_, window, cx| {
-                                                view_for_system.update(cx, |this, cx| {
-                                                    this.set_theme_preference(
-                                                        ThemePreference::System,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("theme-light")
-                                            .label("白天")
-                                            .small()
-                                            .when(
-                                                theme_preference == ThemePreference::Light,
-                                                |this| this.primary(),
-                                            )
-                                            .when(
-                                                theme_preference != ThemePreference::Light,
-                                                |this| this.outline(),
-                                            )
-                                            .on_click(move |_, window, cx| {
-                                                view_for_light.update(cx, |this, cx| {
-                                                    this.set_theme_preference(
-                                                        ThemePreference::Light,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("theme-dark")
-                                            .label("夜间")
-                                            .small()
-                                            .when(
-                                                theme_preference == ThemePreference::Dark,
-                                                |this| this.primary(),
-                                            )
-                                            .when(
-                                                theme_preference != ThemePreference::Dark,
-                                                |this| this.outline(),
-                                            )
-                                            .on_click(move |_, window, cx| {
-                                                view_for_dark.update(cx, |this, cx| {
-                                                    this.set_theme_preference(
-                                                        ThemePreference::Dark,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("手动选择后不会再被系统主题变化覆盖。"),
-                            )
-                        },
-                    ),
+                                            self.settings_section == Some(SettingsSection::Appearance),
+                                            |this| {
+                                                this.child(
+                                                    v_flex()
+                                                        .absolute()
+                                                        .left(px(232.))
+                                                        .top_0()
+                                                        .w(px(380.))
+                                                        .gap_2()
+                                                        .p_3()
+                                                        .rounded(cx.theme().radius_lg)
+                                                        .border_1()
+                                                        .border_color(cx.theme().border)
+                                                        .bg(cx.theme().background)
+                                                        .shadow_md()
+                                                        .child(div().text_sm().font_bold().child("外观模式"))
+                                                        .child(
+                                                            h_flex()
+                                                                .gap_2()
+                                                                .child(
+                                                                    Button::new("theme-system")
+                                                                        .label("跟随")
+                                                                        .small()
+                                                                        .when(
+                                                                            theme_preference == ThemePreference::System,
+                                                                            |this| this.primary(),
+                                                                        )
+                                                                        .when(
+                                                                            theme_preference != ThemePreference::System,
+                                                                            |this| this.outline(),
+                                                                        )
+                                                                        .on_click(move |_, window, cx| {
+                                                                            view_for_system.update(cx, |this, cx| {
+                                                                                this.set_theme_preference(
+                                                                                    ThemePreference::System,
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            });
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    Button::new("theme-light")
+                                                                        .label("白天")
+                                                                        .small()
+                                                                        .when(
+                                                                            theme_preference == ThemePreference::Light,
+                                                                            |this| this.primary(),
+                                                                        )
+                                                                        .when(
+                                                                            theme_preference != ThemePreference::Light,
+                                                                            |this| this.outline(),
+                                                                        )
+                                                                        .on_click(move |_, window, cx| {
+                                                                            view_for_light.update(cx, |this, cx| {
+                                                                                this.set_theme_preference(
+                                                                                    ThemePreference::Light,
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            });
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    Button::new("theme-dark")
+                                                                        .label("夜间")
+                                                                        .small()
+                                                                        .when(
+                                                                            theme_preference == ThemePreference::Dark,
+                                                                            |this| this.primary(),
+                                                                        )
+                                                                        .when(
+                                                                            theme_preference != ThemePreference::Dark,
+                                                                            |this| this.outline(),
+                                                                        )
+                                                                        .on_click(move |_, window, cx| {
+                                                                            view_for_dark.update(cx, |this, cx| {
+                                                                                this.set_theme_preference(
+                                                                                    ThemePreference::Dark,
+                                                                                    window,
+                                                                                    cx,
+                                                                                );
+                                                                            });
+                                                                        }),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .text_color(cx.theme().muted_foreground)
+                                                                .child("手动选择后不会再被系统主题变化覆盖。"),
+                                                        ),
+                                                )
+                                            },
+                                        ),
             )
             .child(
                 v_flex()
@@ -1584,10 +1612,24 @@ impl WallpaperLibrary {
                     ))
                     .when(
                         self.settings_section == Some(SettingsSection::WallpaperTarget),
-                        |this| {
-                            this.child(
-                                h_flex()
-                                    .gap_2()
+                                                |this| {
+                                                    this.child(
+                                                        v_flex()
+                                                            .absolute()
+                                                            .left(px(232.))
+                                                            .top_0()
+                                                            .w(px(380.))
+                                                            .gap_2()
+                                                            .p_3()
+                                                            .rounded(cx.theme().radius_lg)
+                                                            .border_1()
+                                                            .border_color(cx.theme().border)
+                                                            .bg(cx.theme().background)
+                                                            .shadow_md()
+                                                            .child(div().text_sm().font_bold().child("多显示器壁纸"))
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_2()
                                     .child(
                                         Button::new("wallpaper-target-all")
                                             .label("同步全部")
@@ -1667,7 +1709,8 @@ impl WallpaperLibrary {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child("选择后，所有“设为桌面壁纸”按钮都会按此目标生效。"),
-                            )
+                            ),
+                    )
                         },
                     ),
             )
@@ -1682,10 +1725,24 @@ impl WallpaperLibrary {
                     ))
                     .when(
                         self.settings_section == Some(SettingsSection::BatchDownload),
-                        |this| {
-                            this.child(
-                                h_flex()
-                                    .gap_2()
+                                                |this| {
+                                                    this.child(
+                                                        v_flex()
+                                                            .absolute()
+                                                            .left(px(232.))
+                                                            .top_0()
+                                                            .w(px(420.))
+                                                            .gap_2()
+                                                            .p_3()
+                                                            .rounded(cx.theme().radius_lg)
+                                                            .border_1()
+                                                            .border_color(cx.theme().border)
+                                                            .bg(cx.theme().background)
+                                                            .shadow_md()
+                                                            .child(div().text_sm().font_bold().child("批量下载"))
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_2()
                                     .child(
                                         Button::new("batch-all")
                                             .label("全部历史")
@@ -1804,7 +1861,8 @@ impl WallpaperLibrary {
                                             ),
                                     )
                                 },
-                            )
+                            ),
+                    )
                         },
                     ),
             )
@@ -1819,9 +1877,23 @@ impl WallpaperLibrary {
                     ))
                     .when(
                         self.settings_section == Some(SettingsSection::Maintenance),
-                        |this| {
-                            this.child(
-                                Button::new("settings-clear-cache")
+                                                |this| {
+                                                    this.child(
+                                                        v_flex()
+                                                            .absolute()
+                                                            .left(px(232.))
+                                                            .top_0()
+                                                            .w(px(320.))
+                                                            .gap_2()
+                                                            .p_3()
+                                                            .rounded(cx.theme().radius_lg)
+                                                            .border_1()
+                                                            .border_color(cx.theme().border)
+                                                            .bg(cx.theme().background)
+                                                            .shadow_md()
+                                                            .child(div().text_sm().font_bold().child("维护"))
+                                                            .child(
+                                                                Button::new("settings-clear-cache")
                                     .label("清空壁纸缓存")
                                     .outline()
                                     .w_full()
@@ -1850,7 +1922,8 @@ impl WallpaperLibrary {
                                     .on_click(|_, window, cx| {
                                         open_about_dialog(window, cx);
                                     }),
-                            )
+                            ),
+                    )
                         },
                     ),
             )

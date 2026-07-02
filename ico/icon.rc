@@ -9,8 +9,8 @@
 
 // 版本信息资源：显示在 Windows 资源管理器 exe 属性对话框的"详细信息"标签页中。
 1 VERSIONINFO
-FILEVERSION     0,2,13,0
-PRODUCTVERSION  0,2,13,0
+FILEVERSION     0,2,14,0
+PRODUCTVERSION  0,2,14,0
 FILEFLAGSMASK   0x3fL
 FILEFLAGS       0x0L
 FILEOS          0x40004L
@@ -23,12 +23,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "小南瓜"
             VALUE "FileDescription", "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
-            VALUE "FileVersion", "0.2.13.0"
+            VALUE "FileVersion", "0.2.14.0"
             VALUE "InternalName", "bing-wallpaper-lib"
             VALUE "LegalCopyright", "© 2023-2026 小南瓜"
             VALUE "OriginalFilename", "必应每日壁纸库.exe"
             VALUE "ProductName", "必应每日壁纸库"
-            VALUE "ProductVersion", "0.2.13.0"
+            VALUE "ProductVersion", "0.2.14.0"
         END
     END
     BLOCK "VarFileInfo"
