@@ -1,6 +1,6 @@
 [package]
 name = "bing-wallpaper-lib"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2021"
 description = "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
 default-run = "bing-wallpaper-lib"
@@ -58,6 +58,7 @@ windows = {
   features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",

@@ -18,6 +18,7 @@
 mod downloader;
 mod elevate;
 mod fetcher;
+mod folder_picker;
 mod model;
 mod paths;
 mod settings;

@@ -1024,7 +1024,7 @@ impl WallpaperLibrary {
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let input_for_field = self.settings_dir_input.clone();
         let input_for_open = self.settings_dir_input.clone();
-        let input_for_save = self.settings_dir_input.clone();
+        let input_for_choose = self.settings_dir_input.clone();
         let view = cx.entity();
         let theme_preference = self.settings.theme_preference;
 
@@ -1073,14 +1073,30 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("settings-save-dir")
-                                    .label("保存路径")
+                                    .label("选择并保存")
                                     .primary()
                                     .small()
-                                    .on_click(move |_, _, cx| {
-                                        let path = input_for_save.read(cx).value().to_string();
-                                        view_for_save.update(cx, |this, cx| {
-                                            this.apply_download_dir(path, cx);
-                                        });
+                                    .on_click(move |_, window, cx| {
+                                        match crate::folder_picker::pick_folder() {
+                                            Ok(Some(path)) => {
+                                                let path_text = path.display().to_string();
+                                                input_for_choose.update(cx, |input, cx| {
+                                                    input.set_value(path_text.clone(), window, cx);
+                                                });
+                                                view_for_save.update(cx, |this, cx| {
+                                                    this.apply_download_dir(path_text, cx);
+                                                });
+                                            }
+                                            Ok(None) => {}
+                                            Err(err) => {
+                                                view_for_save.update(cx, |this, cx| {
+                                                    this.set_status(
+                                                        format!("选择下载目录失败: {err}"),
+                                                        cx,
+                                                    );
+                                                });
+                                            }
+                                        }
                                     }),
                             ),
                     ),

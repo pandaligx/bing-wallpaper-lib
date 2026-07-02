@@ -27,6 +27,22 @@ pub const REPO_HTML_URL: &str = "https://github.com/pandaligx/bing-wallpaper-lib
 const RELEASES_API_URL: &str =
     "https://api.github.com/repos/pandaligx/bing-wallpaper-lib/releases/latest";
 
+/// 可选的更新包镜像直链模板。
+///
+/// 留空时仍使用 GitHub Release asset 地址下载。若需要避开 GitHub asset 下载不稳定的问题，
+/// 可以在构建时设置环境变量 `BING_WALLPAPER_UPDATE_MIRROR_URL`，或把下面的常量改成你的
+/// 永久直链模板。支持以下占位符：
+///
+/// - `{version}`：不带 `v` 的版本号，例如 `0.2.9`
+/// - `{tag}`：带 `v` 的版本号，例如 `v0.2.9`
+/// - `{asset}`：GitHub Release 里的 exe 文件名，例如 `bing-wallpaper-lib-v0.2.9-x64.exe`
+///
+/// 示例：`https://example.com/bing-wallpaper-lib/{asset}`
+///
+/// 如果你的网盘/对象存储使用固定永久链接（每次覆盖同一个文件），也可以直接填完整 URL，
+/// 不使用任何占位符。
+const UPDATE_MIRROR_URL_TEMPLATE: &str = "";
+
 /// 当前编译时的版本号（来自 `Cargo.toml` 的 `package.version`）。
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -64,6 +80,27 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let minor = parts.next().unwrap_or("0").parse().ok()?;
     let patch = parts.next().unwrap_or("0").parse().ok()?;
     Some((major, minor, patch))
+}
+
+fn mirror_template() -> Option<&'static str> {
+    option_env!("BING_WALLPAPER_UPDATE_MIRROR_URL")
+        .map(str::trim)
+        .filter(|template| !template.is_empty())
+        .or_else(|| {
+            let template = UPDATE_MIRROR_URL_TEMPLATE.trim();
+            (!template.is_empty()).then_some(template)
+        })
+}
+
+fn format_mirror_url(template: &str, version: &str, asset_name: &str) -> String {
+    template
+        .replace("{version}", version)
+        .replace("{tag}", &format!("v{version}"))
+        .replace("{asset}", asset_name)
+}
+
+fn mirror_download_url(version: &str, asset_name: &str) -> Option<String> {
+    mirror_template().map(|template| format_mirror_url(template, version, asset_name))
 }
 
 /// 检查 GitHub 上是否已发布比当前运行版本更新的正式版本。
@@ -116,10 +153,14 @@ pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<Releas
         return Ok(None);
     };
 
+    let version = release.tag_name.trim_start_matches('v').to_string();
+    let download_url = mirror_download_url(&version, &asset.name)
+        .unwrap_or_else(|| asset.browser_download_url.clone());
+
     Ok(Some(ReleaseInfo {
-        version: release.tag_name.trim_start_matches('v').to_string(),
+        version,
         html_url: release.html_url,
-        download_url: asset.browser_download_url,
+        download_url,
         asset_name: asset.name,
     }))
 }
@@ -200,5 +241,18 @@ mod tests {
         assert!(parse_version("v0.1.1") > parse_version("v0.1.0"));
         assert!(parse_version("v1.0.0") > parse_version("v0.9.9"));
         assert!(parse_version("v0.1.0") <= parse_version("v0.1.0"));
+    }
+
+    #[test]
+    fn formats_mirror_download_url_template() {
+        let url = format_mirror_url(
+            "https://download.example.com/{tag}/{asset}?version={version}",
+            "0.2.9",
+            "bing-wallpaper-lib-v0.2.9-x64.exe",
+        );
+        assert_eq!(
+            url,
+            "https://download.example.com/v0.2.9/bing-wallpaper-lib-v0.2.9-x64.exe?version=0.2.9"
+        );
     }
 }
