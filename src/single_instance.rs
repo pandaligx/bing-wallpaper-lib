@@ -10,7 +10,9 @@ use std::os::windows::ffi::OsStrExt;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+};
 
 /// 全局命名互斥体名称。加上 `Global\` 前缀，确保在多用户会话场景下也能正确检测。
 const MUTEX_NAME: &str = "Global\\BingWallpaperLib_SingleInstance";
@@ -48,7 +50,7 @@ pub fn ensure_single_instance() -> bool {
 
 /// 尝试找到已运行实例的主窗口并将其带到前台。
 fn activate_existing_window() {
-    let title = to_wide(crate::paths::APP_NAME);
+    let title = to_wide(&crate::paths::app_window_title());
     unsafe {
         if let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR(title.as_ptr())) {
             let _ = ShowWindow(hwnd, SW_RESTORE);

@@ -1,8 +1,13 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-/// 应用显示名称，用于窗口标题、数据目录等。
+/// 应用显示名称，用于数据目录、关于弹窗等。
 pub const APP_NAME: &str = "必应每日壁纸库";
+
+/// 窗口标题/任务栏标题，带当前软件版本号。
+pub fn app_window_title() -> String {
+    format!("{} v{}", APP_NAME, env!("CARGO_PKG_VERSION"))
+}
 
 /// 内嵌的 aria2c.exe 二进制数据（构建时打包进主程序，运行时首次启动释放到本地）。
 static ARIA2C_BYTES: &[u8] = include_bytes!("../assets/aria2c.exe");

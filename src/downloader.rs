@@ -56,7 +56,7 @@ impl Aria2Manager {
             .arg("--max-connection-per-server=16")
             .arg("--split=16")
             .arg("--min-split-size=1M")
-            .arg("--max-concurrent-downloads=8")
+            .arg("--max-concurrent-downloads=16")
             .arg("--max-overall-download-limit=0")
             .arg("--disable-ipv6=true")
             .arg("--quiet=true")

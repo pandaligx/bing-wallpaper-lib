@@ -842,4 +842,27 @@ v0.2.17 修复方式：
    `gpui_component::init(cx)` 后调用 `gpui_component::set_locale("zh-CN")`，让 `gpui-component` 自带的 Calendar 月份/星期翻译也使用中文。
 4. `start_date_range_batch_download` 保留业务层二次校验：即使 UI 层选择器异常或未来组件行为变化，也不会提交早于最早壁纸日期或晚于最新壁纸日期的批量下载任务。
 
+## 19. 标题版本号、每日自动壁纸、开机自启与系统托盘（v0.2.19 待确认）
+
+本轮新增几个需要跨模块协同的功能，正式发布前需重点人工验证：
+
+1. **窗口标题带版本号**：`paths::app_window_title()` 返回 `必应每日壁纸库 v{CARGO_PKG_VERSION}`，同时用于
+   `main.rs::TitlebarOptions.title`、自绘 `TitleBar` 左上角标题和 `single_instance.rs::FindWindowW` 单实例激活匹配。
+   若以后窗口标题再改，必须继续保持这三处使用同一个函数，否则重复启动时可能无法唤起已有窗口。
+2. **每日自动壁纸**：`AppSettings` 新增 `auto_wallpaper_enabled`、`auto_wallpaper_source`、`auto_wallpaper_hour`、
+   `auto_wallpaper_minute`、`last_auto_wallpaper_date`。`main.rs` 每 60 秒调用一次
+   `WallpaperLibrary::check_scheduled_wallpaper`，当天到达设定时间且尚未执行时，按来源选择壁纸：
+   - `Latest`：使用当前列表第一张（最新）壁纸，会通过既有 `set_as_wallpaper` 自动下载并设置；
+   - `RandomAll`：从全部历史壁纸随机；
+   - `RandomFavorites`：从收藏列表随机，若收藏为空会提示用户。
+3. **开机自启**：新增 `src/startup.rs`，写入 HKCU `Software\\Microsoft\\Windows\\CurrentVersion\\Run` 下的
+   `BingWallpaperLib` 值，不需要管理员权限。写入命令会带 `--background` 参数；`main.rs` 检测到该参数且
+   `background_resident_enabled` 为 true 时调用 `cx.hide()`，让开机自启以后台方式启动。
+4. **系统托盘**：新增 `src/tray.rs`，直接使用 Windows `Shell_NotifyIconW` + 独立消息线程实现，不引入额外 UI 框架。
+   托盘菜单通过 `std::sync::mpsc` 把命令发回 GPUI 主任务，支持“打开主窗口 / 开机自启 / 后台常驻 /
+   每日自动壁纸 / 立即更换一次壁纸 / 退出”。自定义图标仍复用资源 ID `1`，因此 `LoadIconW(module, MAKEINTRESOURCE(1))`
+   那一处保留了局部 `#[allow(clippy::manual_dangling_ptr)]`，这是 Windows 资源 ID 访问方式，不是普通悬垂指针。
+
+**待人工验证重点**：托盘图标右键菜单、开机自启注册表写入/删除、`--background` 启动时隐藏主窗口、每日自动壁纸在设定时间只执行一次。
+
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |

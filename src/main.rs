@@ -25,6 +25,8 @@ mod model;
 mod paths;
 mod settings;
 mod single_instance;
+mod startup;
+mod tray;
 mod ui;
 mod updater;
 mod wallpaper_setter;
@@ -73,7 +75,7 @@ fn main() {
         // 中 `FindWindowW` 用来查找已运行实例窗口的匹配依据。
         let window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
-                title: Some(SharedString::from(paths::APP_NAME)),
+                title: Some(SharedString::from(paths::app_window_title())),
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(9.0), px(9.0))),
             }),
@@ -86,10 +88,20 @@ fn main() {
             Rc::new(RefCell::new(None));
         let view_holder_for_window = view_holder.clone();
 
+        let start_in_background = std::env::args().any(|arg| arg == "--background")
+            && settings::AppSettings::load().background_resident_enabled;
+
         let window = cx
             .open_window(window_options, move |window, cx| {
                 let view = cx.new(|cx| WallpaperLibrary::new(window, cx));
                 *view_holder_for_window.borrow_mut() = Some(view.clone());
+
+                window.on_window_should_close(cx, {
+                    let view = view.clone();
+                    move |window, cx| {
+                        view.update(cx, |this, cx| this.should_close_window(window, cx))
+                    }
+                });
 
                 // 主题：默认跟随系统，也允许用户在设置中手动固定白天/夜间模式。
                 apply_theme_preference(ThemePreference::from_settings(), Some(window), cx);
@@ -110,6 +122,10 @@ fn main() {
             .clone()
             .expect("主视图应已在打开窗口时创建");
 
+        if start_in_background {
+            cx.hide();
+        }
+
         // 应用退出时，尝试通过 RPC 优雅关闭内置的 aria2c.exe 常驻进程
         // （若从未启动过下载，aria2_handle 内部为 None，则什么也不做）。
         cx.on_app_quit({
@@ -123,6 +139,61 @@ fn main() {
                     }
                 }
             }
+        })
+        .detach();
+
+        if let Ok(tray_commands) = tray::start() {
+            let view_for_tray = view.clone();
+            let window_for_tray = window;
+            cx.spawn(async move |cx| loop {
+                while let Ok(command) = tray_commands.try_recv() {
+                    match command {
+                        tray::TrayCommand::ShowWindow => {
+                            let _ = window_for_tray.update(cx, |_, window, _| {
+                                ui::show_window_from_tray(window);
+                            });
+                        }
+                        tray::TrayCommand::ToggleStartup => {
+                            view_for_tray.update(cx, |this, cx| {
+                                this.toggle_startup_enabled(cx);
+                            });
+                        }
+                        tray::TrayCommand::ToggleResident => {
+                            view_for_tray.update(cx, |this, cx| {
+                                this.toggle_background_resident_enabled(cx);
+                            });
+                        }
+                        tray::TrayCommand::ToggleAutoWallpaper => {
+                            view_for_tray.update(cx, |this, cx| {
+                                this.toggle_auto_wallpaper_enabled(cx);
+                            });
+                        }
+                        tray::TrayCommand::ChangeWallpaperNow => {
+                            view_for_tray.update(cx, |this, cx| {
+                                this.trigger_auto_wallpaper_now(cx);
+                            });
+                        }
+                        tray::TrayCommand::Quit => {
+                            cx.update(|cx| cx.quit());
+                            return;
+                        }
+                    }
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+            })
+            .detach();
+        }
+
+        let view_for_auto_wallpaper = view.clone();
+        cx.spawn(async move |cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_secs(60))
+                .await;
+            view_for_auto_wallpaper.update(cx, |this, cx| {
+                this.check_scheduled_wallpaper(cx);
+            });
         })
         .detach();
 

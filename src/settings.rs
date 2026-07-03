@@ -3,6 +3,7 @@
 //! 每个新增字段都应使用 `#[serde(default)]`，以兼容旧版本写入的配置文件。
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -48,8 +49,39 @@ impl WallpaperTarget {
     }
 }
 
+/// 每日自动壁纸来源。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoWallpaperSource {
+    /// 每天自动下载最新 Bing 壁纸并设为桌面壁纸。
+    #[default]
+    Latest,
+    /// 从全部历史壁纸中随机选一张。
+    RandomAll,
+    /// 从“我的收藏”中随机选一张。
+    RandomFavorites,
+}
+
+impl AutoWallpaperSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Latest => "每日最新壁纸",
+            Self::RandomAll => "随机全部历史",
+            Self::RandomFavorites => "随机我的收藏",
+        }
+    }
+}
+
+fn default_auto_wallpaper_hour() -> u8 {
+    8
+}
+
+fn default_background_resident_enabled() -> bool {
+    true
+}
+
 /// 持久化的应用设置。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// 用户手动指定的壁纸下载目录；为 `None` 时使用默认目录
     /// （`%LOCALAPPDATA%\BingWallpaperLib\Wallpapers`）。
@@ -61,6 +93,44 @@ pub struct AppSettings {
     /// 设置桌面壁纸时的目标显示器；默认同步全部显示器。
     #[serde(default)]
     pub wallpaper_target: WallpaperTarget,
+    /// 是否创建系统托盘图标并保持后台能力；默认关闭。
+    #[serde(default = "default_background_resident_enabled")]
+    pub background_resident_enabled: bool,
+    /// 是否注册 Windows 开机自启；默认关闭。
+    #[serde(default)]
+    pub startup_enabled: bool,
+    /// 是否启用每日自动更换壁纸。
+    #[serde(default)]
+    pub auto_wallpaper_enabled: bool,
+    /// 每日自动壁纸来源。
+    #[serde(default)]
+    pub auto_wallpaper_source: AutoWallpaperSource,
+    /// 每日自动执行小时（0~23），默认 8 点。
+    #[serde(default = "default_auto_wallpaper_hour")]
+    pub auto_wallpaper_hour: u8,
+    /// 每日自动执行分钟（0~59），默认 0 分。
+    #[serde(default)]
+    pub auto_wallpaper_minute: u8,
+    /// 上次自动执行日期，用于避免同一天重复执行。
+    #[serde(default)]
+    pub last_auto_wallpaper_date: Option<NaiveDate>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            download_dir: None,
+            theme_preference: ThemePreference::default(),
+            wallpaper_target: WallpaperTarget::default(),
+            background_resident_enabled: true,
+            startup_enabled: false,
+            auto_wallpaper_enabled: false,
+            auto_wallpaper_source: AutoWallpaperSource::default(),
+            auto_wallpaper_hour: default_auto_wallpaper_hour(),
+            auto_wallpaper_minute: 0,
+            last_auto_wallpaper_date: None,
+        }
+    }
 }
 
 impl AppSettings {

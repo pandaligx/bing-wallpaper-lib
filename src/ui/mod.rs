@@ -11,9 +11,9 @@
 
 use crate::downloader::Aria2Manager;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
-use crate::settings::{AppSettings, ThemePreference, WallpaperTarget};
+use crate::settings::{AppSettings, AutoWallpaperSource, ThemePreference, WallpaperTarget};
 use crate::wallpaper_setter;
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate, Timelike};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::button::ButtonVariants as _;
@@ -30,10 +30,16 @@ use gpui_component::sidebar::{
 use gpui_component::*;
 use gpui_component::{button::Button, theme::ThemeMode, Root, Theme};
 use http_client::HttpClient;
+use rand::seq::SliceRandom;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{
+    SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
+};
 
 /// 软件版权/作者署名，展示于“关于”信息中。
 const COPYRIGHT: &str = "© 2023-2026 小南瓜";
@@ -64,6 +70,7 @@ enum SettingsSection {
     DownloadDir,
     Appearance,
     WallpaperTarget,
+    Automation,
     Maintenance,
 }
 
@@ -140,7 +147,8 @@ pub struct WallpaperLibrary {
 
 impl WallpaperLibrary {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let settings = AppSettings::load();
+        let mut settings = AppSettings::load();
+        settings.startup_enabled = crate::startup::is_enabled();
         let initial_dir_text = settings
             .download_dir
             .as_ref()
@@ -305,6 +313,175 @@ impl WallpaperLibrary {
         }
     }
 
+    pub fn toggle_startup_enabled(&mut self, cx: &mut Context<Self>) {
+        let enabled = !self.settings.startup_enabled;
+        match crate::startup::set_enabled(enabled) {
+            Ok(()) => {
+                self.settings.startup_enabled = enabled;
+                let _ = self.settings.save();
+                self.set_status(
+                    if enabled {
+                        "已开启开机自启"
+                    } else {
+                        "已关闭开机自启"
+                    },
+                    cx,
+                );
+            }
+            Err(err) => self.set_status(format!("修改开机自启失败: {err}"), cx),
+        }
+    }
+
+    pub fn toggle_background_resident_enabled(&mut self, cx: &mut Context<Self>) {
+        self.settings.background_resident_enabled = !self.settings.background_resident_enabled;
+        let _ = self.settings.save();
+        self.set_status(
+            if self.settings.background_resident_enabled {
+                "已开启后台常驻（系统托盘图标已可用）"
+            } else {
+                "已关闭后台常驻"
+            },
+            cx,
+        );
+    }
+
+    pub fn toggle_auto_wallpaper_enabled(&mut self, cx: &mut Context<Self>) {
+        self.settings.auto_wallpaper_enabled = !self.settings.auto_wallpaper_enabled;
+        let _ = self.settings.save();
+        self.set_status(
+            if self.settings.auto_wallpaper_enabled {
+                "已开启每日自动壁纸"
+            } else {
+                "已关闭每日自动壁纸"
+            },
+            cx,
+        );
+    }
+
+    fn set_auto_wallpaper_source(&mut self, source: AutoWallpaperSource, cx: &mut Context<Self>) {
+        self.settings.auto_wallpaper_source = source;
+        let _ = self.settings.save();
+        self.set_status(format!("每日自动壁纸来源已设为{}", source.label()), cx);
+    }
+
+    fn set_auto_wallpaper_time(&mut self, hour: u8, minute: u8, cx: &mut Context<Self>) {
+        self.settings.auto_wallpaper_hour = hour.min(23);
+        self.settings.auto_wallpaper_minute = minute.min(59);
+        let _ = self.settings.save();
+        self.set_status(
+            format!(
+                "每日自动壁纸时间已设为 {:02}:{:02}",
+                hour.min(23),
+                minute.min(59)
+            ),
+            cx,
+        );
+    }
+
+    pub fn trigger_auto_wallpaper_now(&mut self, cx: &mut Context<Self>) {
+        self.run_auto_wallpaper(false, cx);
+    }
+
+    pub fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.settings.background_resident_enabled {
+            hide_window_to_tray(window);
+            self.set_status("已最小化到系统托盘，右键托盘图标可退出", cx);
+            false
+        } else {
+            self.open_close_choice_dialog(window, cx);
+            false
+        }
+    }
+
+    fn open_close_choice_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("退出必应每日壁纸库？")
+                .w(px(460.))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .p_4()
+                        .child(div().text_sm().child("后台常驻当前未开启。你想直接退出程序，还是仅最小化到系统托盘继续后台运行？"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(_cx.theme().muted_foreground)
+                                .child("选择“最小化到托盘”不会自动开启开机自启；如需开机后台运行，请在设置里开启开机自启。"),
+                        ),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("close-choice-minimize")
+                                .label("最小化到托盘")
+                                .outline()
+                                .on_click(|_, window, cx| {
+                                    window.close_dialog(cx);
+                                    hide_window_to_tray(window);
+                                }),
+                        )
+                        .child(
+                            Button::new("close-choice-exit")
+                                .label("退出程序")
+                                .danger()
+                                .on_click(|_, _window, cx| {
+                                    cx.quit();
+                                }),
+                        ),
+                )
+        });
+    }
+
+    pub fn check_scheduled_wallpaper(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.auto_wallpaper_enabled {
+            return;
+        }
+        let now = Local::now();
+        let today = now.date_naive();
+        if self.settings.last_auto_wallpaper_date == Some(today) {
+            return;
+        }
+        let current_minutes = now.hour() as u16 * 60 + now.minute() as u16;
+        let scheduled_minutes = self.settings.auto_wallpaper_hour as u16 * 60
+            + self.settings.auto_wallpaper_minute as u16;
+        if current_minutes >= scheduled_minutes {
+            self.run_auto_wallpaper(true, cx);
+        }
+    }
+
+    fn run_auto_wallpaper(&mut self, mark_today: bool, cx: &mut Context<Self>) {
+        let entry = match self.settings.auto_wallpaper_source {
+            AutoWallpaperSource::Latest => self.flat_entries.first().cloned(),
+            AutoWallpaperSource::RandomAll => {
+                self.flat_entries.choose(&mut rand::thread_rng()).cloned()
+            }
+            AutoWallpaperSource::RandomFavorites => {
+                let favorites = self.favorite_entries();
+                favorites.choose(&mut rand::thread_rng()).cloned()
+            }
+        };
+
+        let Some(entry) = entry else {
+            self.set_status("没有可用于自动更换的壁纸，请等待列表加载或先添加收藏", cx);
+            return;
+        };
+
+        if mark_today {
+            self.settings.last_auto_wallpaper_date = Some(Local::now().date_naive());
+            let _ = self.settings.save();
+        }
+        self.set_status(
+            format!(
+                "自动壁纸：正在使用{} - {}",
+                self.settings.auto_wallpaper_source.label(),
+                entry.date
+            ),
+            cx,
+        );
+        self.set_as_wallpaper(entry, cx);
+    }
+
     fn show_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         if self.settings_section != Some(section) {
             self.settings_section = Some(section);
@@ -460,6 +637,18 @@ impl WallpaperLibrary {
             let mut completed = 0usize;
             let mut skipped = 0usize;
             let mut failed = 0usize;
+            let mut tasks = Vec::new();
+
+            let manager = match ensure_aria2(&aria2, &http).await {
+                Ok(manager) => manager,
+                Err(err) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.batch_progress = None;
+                        this.set_status(format!("批量下载{label}失败: {err}"), cx);
+                    });
+                    return;
+                }
+            };
 
             for entry in entries {
                 let file_name = entry.file_name();
@@ -467,29 +656,95 @@ impl WallpaperLibrary {
                 if existing.as_ref().is_ok_and(|path| path.exists()) {
                     completed += 1;
                     skipped += 1;
-                    let _ = this.update(cx, |this, cx| {
-                        this.batch_progress = Some(BatchProgress {
-                            completed,
-                            total,
-                            skipped,
-                            failed,
-                        });
-                        this.set_status(
-                            format!("批量下载{label}: {completed}/{total}（跳过 {skipped}）"),
-                            cx,
-                        );
-                    });
                     continue;
                 }
 
                 let date = entry.date;
-                let result = run_download(&aria2, &http, &entry, &this, cx).await;
-                completed += 1;
-                if result.is_err() {
-                    failed += 1;
+                match manager.add_uri(&entry.url, &file_name).await {
+                    Ok(gid) => {
+                        tasks.push((gid, date, false));
+                        let _ = this.update(cx, |this, cx| {
+                            this.progress.insert(date, 0.0);
+                            this.batch_progress = Some(BatchProgress {
+                                completed,
+                                total,
+                                skipped,
+                                failed,
+                            });
+                            this.set_status(
+                                format!("批量下载{label}: 已提交 {} 个并发任务", tasks.len()),
+                                cx,
+                            );
+                        });
+                    }
+                    Err(_) => {
+                        completed += 1;
+                        failed += 1;
+                    }
                 }
+            }
+
+            while tasks.iter().any(|(_, _, done)| !*done) {
+                let mut progress_updates = Vec::new();
+                for (gid, date, done) in tasks.iter_mut() {
+                    if *done {
+                        continue;
+                    }
+                    match manager.tell_status(gid).await {
+                        Ok(status) => {
+                            let state = status
+                                .get("status")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("");
+                            let completed_len: u64 = status
+                                .get("completedLength")
+                                .and_then(serde_json::Value::as_str)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
+                            let total_len: u64 = status
+                                .get("totalLength")
+                                .and_then(serde_json::Value::as_str)
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
+                            let percent = if total_len > 0 {
+                                completed_len as f32 / total_len as f32 * 100.0
+                            } else {
+                                0.0
+                            };
+                            progress_updates.push((*date, percent));
+
+                            match state {
+                                "complete" => {
+                                    *done = true;
+                                    completed += 1;
+                                }
+                                "error" | "removed" => {
+                                    *done = true;
+                                    completed += 1;
+                                    failed += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Err(_) => {
+                            *done = true;
+                            completed += 1;
+                            failed += 1;
+                        }
+                    }
+                }
+
+                let finished_dates: Vec<_> = tasks
+                    .iter()
+                    .filter_map(|(_, date, done)| (*done).then_some(*date))
+                    .collect();
                 let _ = this.update(cx, |this, cx| {
-                    this.progress.remove(&date);
+                    for (date, percent) in progress_updates {
+                        this.progress.insert(date, percent);
+                    }
+                    for date in finished_dates {
+                        this.progress.remove(&date);
+                    }
                     this.batch_progress = Some(BatchProgress {
                         completed,
                         total,
@@ -503,6 +758,10 @@ impl WallpaperLibrary {
                         cx,
                     );
                 });
+
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
             }
 
             let _ = this.update(cx, |this, cx| {
@@ -1224,6 +1483,36 @@ async fn run_update_download(
     );
 }
 
+pub fn show_window_from_tray(window: &Window) {
+    if let Some(hwnd) = hwnd_from_window(window) {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        }
+    } else {
+        window.activate_window();
+    }
+}
+
+fn hide_window_to_tray(window: &Window) {
+    if let Some(hwnd) = hwnd_from_window(window) {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    } else {
+        window.minimize_window();
+    }
+}
+
+fn hwnd_from_window(window: &Window) -> Option<HWND> {
+    let handle = HasWindowHandle::window_handle(window).ok()?.as_raw();
+    match handle {
+        RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut std::ffi::c_void)),
+        _ => None,
+    }
+}
+
 fn format_date_cn(date: NaiveDate) -> String {
     date.format("%Y年%m月%d日").to_string()
 }
@@ -1337,7 +1626,7 @@ impl Render for WallpaperLibrary {
                 .items_center()
                 .gap_2()
                 .font_bold()
-                .child(crate::paths::APP_NAME),
+                .child(crate::paths::app_window_title()),
         );
 
         let main_row = h_flex()
@@ -1424,6 +1713,9 @@ impl Render for WallpaperLibrary {
                         .left_0()
                         .right_0()
                         .bottom_0()
+                        .on_scroll_wheel(|_event: &ScrollWheelEvent, _window, cx| {
+                            cx.stop_propagation();
+                        })
                         .child(
                             Button::new("settings-panel-outside-close")
                                 .label("")
@@ -1511,6 +1803,12 @@ impl WallpaperLibrary {
         let theme_preference = self.settings.theme_preference;
         let wallpaper_target = self.settings.wallpaper_target.clone();
         let monitors = self.monitors.clone();
+        let startup_enabled = self.settings.startup_enabled;
+        let resident_enabled = self.settings.background_resident_enabled;
+        let auto_enabled = self.settings.auto_wallpaper_enabled;
+        let auto_source = self.settings.auto_wallpaper_source;
+        let auto_hour = self.settings.auto_wallpaper_hour;
+        let auto_minute = self.settings.auto_wallpaper_minute;
 
         let view_for_save = view.clone();
         let view_for_clear = view.clone();
@@ -1726,6 +2024,169 @@ impl WallpaperLibrary {
                         .child("选择后，所有“设为桌面壁纸”按钮都会按此目标生效。"),
                 )
                 .into_any_element(),
+            SettingsSection::Automation => {
+                let view_for_startup = view.clone();
+                let view_for_resident = view.clone();
+                let view_for_auto = view.clone();
+                let view_for_now = view.clone();
+                v_flex()
+                    .gap_3()
+                    .child(div().text_sm().font_bold().child("自动壁纸与后台"))
+                    .child(
+                        Checkbox::new("settings-startup-enabled")
+                            .checked(startup_enabled)
+                            .label("开机自启")
+                            .on_click(move |_, _, cx| {
+                                view_for_startup.update(cx, |this, cx| {
+                                    this.toggle_startup_enabled(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Checkbox::new("settings-resident-enabled")
+                            .checked(resident_enabled)
+                            .label("后台常驻 / 显示系统托盘图标")
+                            .on_click(move |_, _, cx| {
+                                view_for_resident.update(cx, |this, cx| {
+                                    this.toggle_background_resident_enabled(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Checkbox::new("settings-auto-wallpaper-enabled")
+                            .checked(auto_enabled)
+                            .label("每日自动更换壁纸")
+                            .on_click(move |_, _, cx| {
+                                view_for_auto.update(cx, |this, cx| {
+                                    this.toggle_auto_wallpaper_enabled(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "当前计划：每天 {:02}:{:02}，来源：{}。程序运行或开机自启后会在后台检查执行。",
+                                auto_hour,
+                                auto_minute,
+                                auto_source.label()
+                            )),
+                    )
+                    .child(div().text_sm().font_bold().child("壁纸来源"))
+                    .child(div().flex().flex_wrap().gap_2().children([
+                        AutoWallpaperSource::Latest,
+                        AutoWallpaperSource::RandomAll,
+                        AutoWallpaperSource::RandomFavorites,
+                    ].into_iter().map(|source| {
+                        let view_for_source = view.clone();
+                        Button::new(SharedString::from(format!("auto-source-{source:?}")))
+                            .label(source.label())
+                            .small()
+                            .when(auto_source == source, |this| this.primary())
+                            .when(auto_source != source, |this| this.outline())
+                            .on_click(move |_, _, cx| {
+                                view_for_source.update(cx, |this, cx| {
+                                    this.set_auto_wallpaper_source(source, cx);
+                                });
+                            })
+                    })))
+                    .child(div().text_sm().font_bold().child("执行时间"))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_start()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .w(px(120.))
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("小时"))
+                                    .child(
+                                        div()
+                                            .id("auto-hour-scroll")
+                                            .h(px(180.))
+                                            .overflow_y_scroll()
+                                            .on_scroll_wheel(|_event: &ScrollWheelEvent, _window, cx| cx.stop_propagation())
+                                            .rounded(cx.theme().radius)
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .p_1()
+                                            .children((0u8..24).map(|hour| {
+                                                let selected = auto_hour == hour;
+                                                let view_for_time = view.clone();
+                                                Button::new(SharedString::from(format!("auto-hour-{hour}")))
+                                                    .label(format!("{:02}", hour))
+                                                    .small()
+                                                    .w_full()
+                                                    .when(selected, |this| this.primary())
+                                                    .when(!selected, |this| this.ghost())
+                                                    .on_click(move |_, _, cx| {
+                                                        view_for_time.update(cx, |this, cx| {
+                                                            this.set_auto_wallpaper_time(hour, auto_minute, cx);
+                                                        });
+                                                    })
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .w(px(120.))
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("分钟"))
+                                    .child(
+                                        div()
+                                            .id("auto-minute-scroll")
+                                            .h(px(180.))
+                                            .overflow_y_scroll()
+                                            .on_scroll_wheel(|_event: &ScrollWheelEvent, _window, cx| cx.stop_propagation())
+                                            .rounded(cx.theme().radius)
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .p_1()
+                                            .children((0u8..60).map(|minute| {
+                                                let selected = auto_minute == minute;
+                                                let view_for_time = view.clone();
+                                                Button::new(SharedString::from(format!("auto-minute-{minute}")))
+                                                    .label(format!("{:02}", minute))
+                                                    .small()
+                                                    .w_full()
+                                                    .when(selected, |this| this.primary())
+                                                    .when(!selected, |this| this.ghost())
+                                                    .on_click(move |_, _, cx| {
+                                                        view_for_time.update(cx, |this, cx| {
+                                                            this.set_auto_wallpaper_time(auto_hour, minute, cx);
+                                                        });
+                                                    })
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("当前选择"))
+                                    .child(div().text_2xl().font_bold().child(format!("{:02}:{:02}", auto_hour, auto_minute)))
+                                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("像闹钟一样分别选择小时和分钟")),
+                            ),
+                    )
+                    .child(
+                        Button::new("auto-wallpaper-now")
+                            .label("立即按当前方案更换一次")
+                            .outline()
+                            .w_full()
+                            .on_click(move |_, _, cx| {
+                                view_for_now.update(cx, |this, cx| {
+                                    this.trigger_auto_wallpaper_now(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("提示：选择“每日最新壁纸”时，会自动下载当天最新图片并设为桌面壁纸；选择随机收藏前，请先添加收藏。"),
+                    )
+                    .into_any_element()
+            }
             SettingsSection::Maintenance => v_flex()
                 .gap_2()
                 .child(div().text_sm().font_bold().child("维护"))
@@ -1764,14 +2225,17 @@ impl WallpaperLibrary {
         };
 
         h_flex()
-            .w(px(620.))
-            .max_h(px(420.))
+            .w(px(760.))
+            .h(px(560.))
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .shadow_md()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_event: &ScrollWheelEvent, _window, cx| {
+                cx.stop_propagation();
+            })
             .child(
                 v_flex()
                     .id("settings-section-list")
@@ -1781,6 +2245,9 @@ impl WallpaperLibrary {
                     .gap_2()
                     .p_3()
                     .overflow_y_scroll()
+                    .on_scroll_wheel(|_event: &ScrollWheelEvent, _window, cx| {
+                        cx.stop_propagation();
+                    })
                     .border_r_1()
                     .border_color(cx.theme().border)
                     .child(div().font_bold().child("设置"))
@@ -1803,6 +2270,12 @@ impl WallpaperLibrary {
                         cx,
                     ))
                     .child(self.render_settings_section_header(
+                        "settings-section-automation",
+                        "自动壁纸",
+                        SettingsSection::Automation,
+                        cx,
+                    ))
+                    .child(self.render_settings_section_header(
                         "settings-section-maintenance",
                         "维护",
                         SettingsSection::Maintenance,
@@ -1818,6 +2291,9 @@ impl WallpaperLibrary {
                     .gap_2()
                     .p_3()
                     .overflow_y_scroll()
+                    .on_scroll_wheel(|_event: &ScrollWheelEvent, _window, cx| {
+                        cx.stop_propagation();
+                    })
                     .child(detail),
             )
     }
