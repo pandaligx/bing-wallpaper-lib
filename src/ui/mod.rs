@@ -38,7 +38,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SetForegroundWindow, ShowWindow, SW_HIDE, SW_RESTORE, SW_SHOW,
+    GetSystemMetrics, SetForegroundWindow, SetWindowPos, ShowWindow, SM_CXSCREEN, SM_CYSCREEN,
+    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
 };
 
 /// 软件版权/作者署名，展示于“关于”信息中。
@@ -1486,8 +1487,9 @@ async fn run_update_download(
 pub fn show_window_from_tray(window: &Window) {
     if let Some(hwnd) = hwnd_from_window(window) {
         unsafe {
+            center_window(hwnd, 1200, 800);
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
             let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = ShowWindow(hwnd, SW_RESTORE);
             let _ = SetForegroundWindow(hwnd);
         }
     } else {
@@ -1495,7 +1497,30 @@ pub fn show_window_from_tray(window: &Window) {
     }
 }
 
-fn hide_window_to_tray(window: &Window) {
+unsafe fn center_window(hwnd: HWND, preferred_width: i32, preferred_height: i32) {
+    let screen_width = GetSystemMetrics(SM_CXSCREEN);
+    let screen_height = GetSystemMetrics(SM_CYSCREEN);
+    if screen_width <= 0 || screen_height <= 0 {
+        return;
+    }
+
+    let width = preferred_width.min(screen_width).max(200);
+    let height = preferred_height.min(screen_height).max(200);
+    let x = (screen_width - width) / 2;
+    let y = (screen_height - height) / 2;
+
+    let _ = SetWindowPos(
+        hwnd,
+        None,
+        x,
+        y,
+        width,
+        height,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+pub fn hide_window_to_tray(window: &Window) {
     if let Some(hwnd) = hwnd_from_window(window) {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);

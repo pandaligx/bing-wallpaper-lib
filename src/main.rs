@@ -67,6 +67,9 @@ fn main() {
         gpui_component::init(cx);
         gpui_component::set_locale("zh-CN");
 
+        let start_in_background = std::env::args().any(|arg| arg == "--background")
+            && settings::AppSettings::load().background_resident_enabled;
+
         // `appears_transparent: true` 关闭 Windows 原生标题栏绘制，改为由
         // `gpui_component::TitleBar`（见 ui/mod.rs）自行绘制沉浸式标题栏，
         // 使其背景色与下方内容区域一致（默认跟随主题 `background` 色）。
@@ -81,15 +84,16 @@ fn main() {
             }),
             window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
             window_min_size: Some(size(px(200.), px(200.))),
+            // 开机自启的后台模式必须从创建窗口开始就不可见，否则进入桌面时会
+            // 短暂闪过窗口边框；用户需要时可从托盘菜单重新显示主窗口。
+            show: !start_in_background,
+            focus: !start_in_background,
             ..Default::default()
         };
 
         let view_holder: Rc<RefCell<Option<Entity<WallpaperLibrary>>>> =
             Rc::new(RefCell::new(None));
         let view_holder_for_window = view_holder.clone();
-
-        let start_in_background = std::env::args().any(|arg| arg == "--background")
-            && settings::AppSettings::load().background_resident_enabled;
 
         let window = cx
             .open_window(window_options, move |window, cx| {
@@ -123,7 +127,9 @@ fn main() {
             .expect("主视图应已在打开窗口时创建");
 
         if start_in_background {
-            cx.hide();
+            let _ = window.update(cx, |_, window, _| {
+                ui::hide_window_to_tray(window);
+            });
         }
 
         // 应用退出时，尝试通过 RPC 优雅关闭内置的 aria2c.exe 常驻进程

@@ -842,9 +842,9 @@ v0.2.17 修复方式：
    `gpui_component::init(cx)` 后调用 `gpui_component::set_locale("zh-CN")`，让 `gpui-component` 自带的 Calendar 月份/星期翻译也使用中文。
 4. `start_date_range_batch_download` 保留业务层二次校验：即使 UI 层选择器异常或未来组件行为变化，也不会提交早于最早壁纸日期或晚于最新壁纸日期的批量下载任务。
 
-## 19. 标题版本号、每日自动壁纸、开机自启与系统托盘（v0.2.19 待确认）
+## 19. 标题版本号、每日自动壁纸、开机自启与系统托盘（v0.2.19）
 
-本轮新增几个需要跨模块协同的功能，正式发布前需重点人工验证：
+本轮新增几个需要跨模块协同的功能，维护时需重点关注：
 
 1. **窗口标题带版本号**：`paths::app_window_title()` 返回 `必应每日壁纸库 v{CARGO_PKG_VERSION}`，同时用于
    `main.rs::TitlebarOptions.title`、自绘 `TitleBar` 左上角标题和 `single_instance.rs::FindWindowW` 单实例激活匹配。
@@ -857,12 +857,26 @@ v0.2.17 修复方式：
    - `RandomFavorites`：从收藏列表随机，若收藏为空会提示用户。
 3. **开机自启**：新增 `src/startup.rs`，写入 HKCU `Software\\Microsoft\\Windows\\CurrentVersion\\Run` 下的
    `BingWallpaperLib` 值，不需要管理员权限。写入命令会带 `--background` 参数；`main.rs` 检测到该参数且
-   `background_resident_enabled` 为 true 时调用 `cx.hide()`，让开机自启以后台方式启动。
+   `background_resident_enabled` 为 true 时进入后台启动模式。
 4. **系统托盘**：新增 `src/tray.rs`，直接使用 Windows `Shell_NotifyIconW` + 独立消息线程实现，不引入额外 UI 框架。
    托盘菜单通过 `std::sync::mpsc` 把命令发回 GPUI 主任务，支持“打开主窗口 / 开机自启 / 后台常驻 /
    每日自动壁纸 / 立即更换一次壁纸 / 退出”。自定义图标仍复用资源 ID `1`，因此 `LoadIconW(module, MAKEINTRESOURCE(1))`
    那一处保留了局部 `#[allow(clippy::manual_dangling_ptr)]`，这是 Windows 资源 ID 访问方式，不是普通悬垂指针。
 
-**待人工验证重点**：托盘图标右键菜单、开机自启注册表写入/删除、`--background` 启动时隐藏主窗口、每日自动壁纸在设定时间只执行一次。
+## 20. 开机自启静默启动与托盘恢复窗口（v0.2.20）
+
+开机自启通过注册表 Run 项带 `--background` 参数启动。为了避免用户进入桌面时看到主窗口边框一闪而过，后台启动模式不能先创建可见窗口再调用 `cx.hide()` 或 `ShowWindow(SW_HIDE)`，而是必须在创建窗口前设置：
+
+```rust
+WindowOptions {
+    show: !start_in_background,
+    focus: !start_in_background,
+    ..Default::default()
+}
+```
+
+这样 GPUI/Windows 从窗口创建阶段就不会显示或聚焦主窗口，程序只在系统托盘后台常驻。
+
+由于隐藏创建的窗口第一次从托盘显示时，Windows 可能不会按原始 `WindowBounds::centered(1200x800)` 正常还原，`ui::show_window_from_tray` 会在 `SW_SHOW` 前调用 `SetWindowPos`，把窗口恢复为默认 `1200x800` 并按当前主屏幕居中，再置前显示。以后如果调整默认窗口尺寸，需要同步修改 `main.rs` 的 `WindowBounds::centered(...)` 与 `ui::show_window_from_tray` 中的居中恢复尺寸。
 
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |
