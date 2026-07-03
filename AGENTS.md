@@ -850,7 +850,7 @@ v0.2.17 修复方式：
    `main.rs::TitlebarOptions.title`、自绘 `TitleBar` 左上角标题和 `single_instance.rs::FindWindowW` 单实例激活匹配。
    若以后窗口标题再改，必须继续保持这三处使用同一个函数，否则重复启动时可能无法唤起已有窗口。
 2. **每日自动壁纸**：`AppSettings` 新增 `auto_wallpaper_enabled`、`auto_wallpaper_source`、`auto_wallpaper_hour`、
-   `auto_wallpaper_minute`、`last_auto_wallpaper_date`。`main.rs` 每 60 秒调用一次
+   `auto_wallpaper_minute`、`last_auto_wallpaper_date`。`main.rs` 定时调用
    `WallpaperLibrary::check_scheduled_wallpaper`，当天到达设定时间且尚未执行时，按来源选择壁纸：
    - `Latest`：使用当前列表第一张（最新）壁纸，会通过既有 `set_as_wallpaper` 自动下载并设置；
    - `RandomAll`：从全部历史壁纸随机；
@@ -878,5 +878,19 @@ WindowOptions {
 这样 GPUI/Windows 从窗口创建阶段就不会显示或聚焦主窗口，程序只在系统托盘后台常驻。
 
 由于隐藏创建的窗口第一次从托盘显示时，Windows 可能不会按原始 `WindowBounds::centered(1200x800)` 正常还原，`ui::show_window_from_tray` 会在 `SW_SHOW` 前调用 `SetWindowPos`，把窗口恢复为默认 `1200x800` 并按当前主屏幕居中，再置前显示。以后如果调整默认窗口尺寸，需要同步修改 `main.rs` 的 `WindowBounds::centered(...)` 与 `ui::show_window_from_tray` 中的居中恢复尺寸。
+
+## 21. 每日自动壁纸定时触发可靠性（v0.2.21）
+
+v0.2.20 的每日自动壁纸存在两个体验/可靠性问题：
+
+1. 后台任务先等待 60 秒再检查，用户把时间设为当前分钟后可能要等接近一分钟才触发，看起来像“到点不执行”。
+2. `last_auto_wallpaper_date` 在提交自动壁纸任务时就写入当天日期；如果用户当天测试过、切换来源或重新设置时间，后续同一天会被防重复逻辑跳过；如果下载/设置失败，也不会自动重试。
+
+v0.2.21 修复方式：
+
+- `main.rs::AUTO_WALLPAPER_CHECK_INTERVAL` 改为 5 秒，并且循环每轮先检查再等待，启动后会立即检查一次。
+- 开启每日自动壁纸、修改壁纸来源、修改执行时间时，会清空 `last_auto_wallpaper_date` 并重置 `auto_wallpaper_running`，随后立即调用 `check_scheduled_wallpaper`。这样用户设置当前分钟时会立刻尝试执行。
+- `WallpaperLibrary` 新增内存字段 `auto_wallpaper_running`，避免 5 秒轮询在下载/设置过程中重复提交任务。
+- 自动壁纸的“今天已执行”标记只在 `set_as_wallpaper_with_auto_mark` 中确认下载并设置成功后写入；失败时会清除 running 状态，让后续轮询可以重试。
 
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |

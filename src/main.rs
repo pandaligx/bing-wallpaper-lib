@@ -44,6 +44,9 @@ use ui::WallpaperLibrary;
 /// 后台检查更新的时间间隔。
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
+/// 每日自动壁纸的定时检查间隔。
+const AUTO_WALLPAPER_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
 fn main() {
     if !elevate::ensure_elevated() {
         // 已尝试以管理员身份重新启动自身，当前（非提权）进程直接退出。
@@ -194,12 +197,12 @@ fn main() {
 
         let view_for_auto_wallpaper = view.clone();
         cx.spawn(async move |cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_secs(60))
-                .await;
             view_for_auto_wallpaper.update(cx, |this, cx| {
                 this.check_scheduled_wallpaper(cx);
             });
+            cx.background_executor()
+                .timer(AUTO_WALLPAPER_CHECK_INTERVAL)
+                .await;
         })
         .detach();
 

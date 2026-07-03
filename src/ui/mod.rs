@@ -144,6 +144,8 @@ pub struct WallpaperLibrary {
     batch_date_limits: Arc<Mutex<Option<(NaiveDate, NaiveDate)>>>,
     /// 已下载壁纸画廊中当前选中的文件路径集合，用于批量删除。
     downloaded_selected: HashSet<std::path::PathBuf>,
+    /// 每日自动壁纸是否正在执行，避免 5 秒轮询重复提交同一天任务。
+    auto_wallpaper_running: bool,
 }
 
 impl WallpaperLibrary {
@@ -201,6 +203,7 @@ impl WallpaperLibrary {
             batch_range_picker,
             batch_date_limits,
             downloaded_selected: HashSet::new(),
+            auto_wallpaper_running: false,
         }
     }
 
@@ -348,6 +351,10 @@ impl WallpaperLibrary {
 
     pub fn toggle_auto_wallpaper_enabled(&mut self, cx: &mut Context<Self>) {
         self.settings.auto_wallpaper_enabled = !self.settings.auto_wallpaper_enabled;
+        if self.settings.auto_wallpaper_enabled {
+            self.settings.last_auto_wallpaper_date = None;
+            self.auto_wallpaper_running = false;
+        }
         let _ = self.settings.save();
         self.set_status(
             if self.settings.auto_wallpaper_enabled {
@@ -357,17 +364,25 @@ impl WallpaperLibrary {
             },
             cx,
         );
+        if self.settings.auto_wallpaper_enabled {
+            self.check_scheduled_wallpaper(cx);
+        }
     }
 
     fn set_auto_wallpaper_source(&mut self, source: AutoWallpaperSource, cx: &mut Context<Self>) {
         self.settings.auto_wallpaper_source = source;
+        self.settings.last_auto_wallpaper_date = None;
+        self.auto_wallpaper_running = false;
         let _ = self.settings.save();
         self.set_status(format!("每日自动壁纸来源已设为{}", source.label()), cx);
+        self.check_scheduled_wallpaper(cx);
     }
 
     fn set_auto_wallpaper_time(&mut self, hour: u8, minute: u8, cx: &mut Context<Self>) {
         self.settings.auto_wallpaper_hour = hour.min(23);
         self.settings.auto_wallpaper_minute = minute.min(59);
+        self.settings.last_auto_wallpaper_date = None;
+        self.auto_wallpaper_running = false;
         let _ = self.settings.save();
         self.set_status(
             format!(
@@ -377,6 +392,7 @@ impl WallpaperLibrary {
             ),
             cx,
         );
+        self.check_scheduled_wallpaper(cx);
     }
 
     pub fn trigger_auto_wallpaper_now(&mut self, cx: &mut Context<Self>) {
@@ -440,7 +456,7 @@ impl WallpaperLibrary {
         }
         let now = Local::now();
         let today = now.date_naive();
-        if self.settings.last_auto_wallpaper_date == Some(today) {
+        if self.auto_wallpaper_running || self.settings.last_auto_wallpaper_date == Some(today) {
             return;
         }
         let current_minutes = now.hour() as u16 * 60 + now.minute() as u16;
@@ -468,9 +484,9 @@ impl WallpaperLibrary {
             return;
         };
 
-        if mark_today {
-            self.settings.last_auto_wallpaper_date = Some(Local::now().date_naive());
-            let _ = self.settings.save();
+        let scheduled_date = mark_today.then(|| Local::now().date_naive());
+        if scheduled_date.is_some() {
+            self.auto_wallpaper_running = true;
         }
         self.set_status(
             format!(
@@ -480,7 +496,7 @@ impl WallpaperLibrary {
             ),
             cx,
         );
-        self.set_as_wallpaper(entry, cx);
+        self.set_as_wallpaper_with_auto_mark(entry, scheduled_date, cx);
     }
 
     fn show_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
@@ -777,6 +793,15 @@ impl WallpaperLibrary {
     }
 
     fn set_as_wallpaper(&mut self, entry: WallpaperEntry, cx: &mut Context<Self>) {
+        self.set_as_wallpaper_with_auto_mark(entry, None, cx);
+    }
+
+    fn set_as_wallpaper_with_auto_mark(
+        &mut self,
+        entry: WallpaperEntry,
+        auto_date: Option<NaiveDate>,
+        cx: &mut Context<Self>,
+    ) {
         let aria2 = self.aria2.clone();
         let http = self.http.clone();
         let date = entry.date;
@@ -798,6 +823,13 @@ impl WallpaperLibrary {
             };
             let _ = this.update(cx, |this, cx| {
                 this.progress.remove(&date);
+                if let Some(auto_date) = auto_date {
+                    this.auto_wallpaper_running = false;
+                    if outcome.is_ok() {
+                        this.settings.last_auto_wallpaper_date = Some(auto_date);
+                        let _ = this.settings.save();
+                    }
+                }
                 match outcome {
                     Ok(()) => {
                         this.set_status(format!("已将 {} 设置为{}壁纸", date, target_label), cx)
