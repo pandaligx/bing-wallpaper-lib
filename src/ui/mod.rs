@@ -2369,17 +2369,21 @@ impl WallpaperLibrary {
             .child(
                 h_flex()
                     .items_center()
-                    .justify_between()
+                    .gap_3()
                     .child(
                         div()
                             .font_bold()
                             .text_lg()
+                            .flex_shrink_0()
                             .child(format!("首页 · 最近壁纸（{show_count}/{total}）")),
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
+                            .truncate()
                             .child(status),
                     ),
             )
@@ -2442,17 +2446,21 @@ impl WallpaperLibrary {
             .child(
                 h_flex()
                     .items_center()
-                    .justify_between()
+                    .gap_3()
                     .child(
                         div()
                             .font_bold()
                             .text_lg()
+                            .flex_shrink_0()
                             .child(format!("我的收藏（{count} 张）")),
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
+                            .truncate()
                             .child(status),
                     ),
             )
@@ -2532,12 +2540,21 @@ impl WallpaperLibrary {
             .child(
                 h_flex()
                     .items_center()
-                    .justify_between()
-                    .child(div().font_bold().text_lg().child("下载中心 · 批量下载"))
+                    .gap_3()
                     .child(
                         div()
+                            .font_bold()
+                            .text_lg()
+                            .flex_shrink_0()
+                            .child("下载中心 · 批量下载"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
+                            .truncate()
                             .child(status),
                     ),
             )
@@ -2724,25 +2741,32 @@ impl WallpaperLibrary {
             .child(
                 h_flex()
                     .items_center()
-                    .justify_between()
+                    .gap_3()
                     .child(
                         div()
                             .font_bold()
                             .text_lg()
+                            .flex_shrink_0()
                             .child(format!("下载中心 · 已下载的壁纸（{count} 张）")),
                     )
                     .child(
                         h_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_2()
                             .items_center()
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w_0()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
+                                    .truncate()
                                     .child(status),
                             )
                             .child(
                                 Button::new("downloaded-select-all")
+                                    .flex_shrink_0()
                                     .label(if all_selected {
                                         "取消全选"
                                     } else {
@@ -2766,6 +2790,7 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-delete-selected")
+                                    .flex_shrink_0()
                                     .label(format!("删除选中 ({selected_count})"))
                                     .danger()
                                     .small()
@@ -2778,6 +2803,7 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-refresh")
+                                    .flex_shrink_0()
                                     .label("刷新")
                                     .outline()
                                     .small()
@@ -2785,6 +2811,7 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-open-dir")
+                                    .flex_shrink_0()
                                     .label("打开下载目录")
                                     .outline()
                                     .small()
@@ -3054,17 +3081,26 @@ impl WallpaperLibrary {
             .child(
                 h_flex()
                     .items_center()
-                    .justify_between()
-                    .child(div().font_bold().text_lg().child(match &content {
-                        Some(group) => {
-                            format!("{}年{:02}月", group.year, group.month)
-                        }
-                        None => "请选择左侧月份".to_string(),
-                    }))
+                    .gap_3()
                     .child(
                         div()
+                            .font_bold()
+                            .text_lg()
+                            .flex_shrink_0()
+                            .child(match &content {
+                                Some(group) => {
+                                    format!("{}年{:02}月", group.year, group.month)
+                                }
+                                None => "请选择左侧月份".to_string(),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
+                            .truncate()
                             .child(status),
                     ),
             )

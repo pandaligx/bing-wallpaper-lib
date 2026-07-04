@@ -728,6 +728,7 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 | `src/downloader.rs` | aria2 子进程管理 + JSON-RPC 客户端 |
 | `src/wallpaper_setter.rs` | Windows 设置桌面壁纸，支持全部显示器/指定显示器 |
 | `src/updater.rs` | 检查 GitHub Releases 最新版本 + 下载 + 自我替换重启（见 §14.3） |
+| `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |
 
 ## 15. 设置面板改为有边界的双栏布局 + 新增下载中心（v0.2.15）
 
@@ -893,4 +894,26 @@ v0.2.21 修复方式：
 - `WallpaperLibrary` 新增内存字段 `auto_wallpaper_running`，避免 5 秒轮询在下载/设置过程中重复提交任务。
 - 自动壁纸的“今天已执行”标记只在 `set_as_wallpaper_with_auto_mark` 中确认下载并设置成功后写入；失败时会清除 running 状态，让后续轮询可以重试。
 
-| `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |
+## 22. 文件夹选择器稳定性 + 下载文件名保留地点 + 顶部状态提示截断（v0.2.22）
+
+### 22.1 文件夹选择器必须在独立 STA 线程运行
+
+设置面板“下载路径 → 选择并保存”使用 Windows Shell 的 `IFileOpenDialog` + `FOS_PICKFOLDERS`。该对话框要求在 STA COM 线程中创建/显示；如果直接在 GPUI 主线程里调用，主线程可能已经被 GPUI/Windows 平台层以其他 COM apartment 模式初始化，表现为文件夹窗口打开后 1~3 秒随机卡死或进程闪退。
+
+`src/folder_picker.rs::pick_folder` 现在会启动独立的 `folder-picker-sta` 线程，在该线程中调用 `CoInitializeEx(None, COINIT_APARTMENTTHREADED)`，并用 RAII 在退出时 `CoUninitialize()`。以后不要把 `IFileOpenDialog` 调回 GPUI 主线程执行。
+
+### 22.2 下载文件名保留 `(©` 之前的标题与地点
+
+`WallpaperEntry::file_name()` 不再只取第一个中英文逗号前的景物标题，而是保留 `(©` / `（©` 之前的完整描述，并将中英文逗号、顿号、分号等地点分隔符统一替换为 `_`。例如：
+
+- `小溪上方的萤火虫，冈山县，日本 (© ...)` → `2026-07-03_小溪上方的萤火虫_冈山县_日本.jpg`
+- `埃斯纳神庙穹顶天花板, 埃及 (© ...)` → `2026-07-02_埃斯纳神庙穹顶天花板_埃及.jpg`
+- `Dungeon Provincial Park, Newfoundland and Labrador, Canada (© ...)` → `2026-07-01_Dungeon Provincial Park_Newfoundland and Labrador_Canada.jpg`
+
+文件名生成仍会替换 Windows 非法字符 `< > : \" / \\ | ? *` 与控制字符，并折叠连续分隔符，避免上游历史标题中的特殊标点导致 aria2 保存失败。
+
+### 22.3 顶部状态提示必须截断，不能挤压右侧操作区
+
+`WallpaperLibrary::status` 会展示下载完成路径、错误信息、批量下载状态等全局提示。下载文件名在 v0.2.22 变长后，`已下载完成: C:\\Users\\...\\2026-06-29_...jpg` 这类提示可能很长；如果直接放在页面标题行右侧，会把“首页 · 最近壁纸”、“下载中心 · 批量下载”、“下载中心 · 已下载的壁纸”的右侧内容挤出窗口，甚至隐藏“全选 / 删除选中 / 刷新 / 打开下载目录”等按钮。
+
+修复方式：所有直接展示 `status` 的页面标题行（首页、我的收藏、批量下载、已下载的壁纸、月份详情）统一使用“标题 `flex_shrink_0` + 状态 `flex_1().min_w_0().truncate()`”布局；已下载壁纸页的操作按钮额外设置 `flex_shrink_0()`，确保按钮优先显示，状态文本只在剩余空间内省略。后续新增页面如果在标题栏展示全局状态，也应沿用同样的布局模式。

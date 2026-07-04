@@ -14,7 +14,7 @@ pub struct WallpaperEntry {
 }
 
 impl WallpaperEntry {
-    /// 用于本地文件名，形如 `2026-07-01_地牢省立公园.jpg`。
+    /// 用于本地文件名，形如 `2026-07-01_地牢省立公园_纽芬兰和拉布拉多省_加拿大.jpg`。
     pub fn file_name(&self) -> String {
         let title = filename_title_part(&self.title);
         if title.is_empty() {
@@ -43,32 +43,126 @@ impl WallpaperEntry {
 }
 
 fn filename_title_part(title: &str) -> String {
-    let prefix = title
-        .split([',', '，'])
-        .next()
-        .unwrap_or(title)
-        .split("(©")
-        .next()
-        .unwrap_or(title)
-        .trim();
+    const MAX_TITLE_CHARS: usize = 120;
 
+    let prefix = trim_empty_trailing_brackets(copyright_prefix(title).trim());
     let mut result = String::new();
+    let mut last_was_separator = false;
+
     for ch in prefix.chars() {
-        let safe = match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if c.is_control() => '_',
-            c => c,
+        let replacement = match ch {
+            // Bing 标题通常用中英文逗号分隔“景物、地区、国家”。保留这些地点
+            // 信息，但将分隔符统一为 `_`，既方便阅读，也避免文件名中混杂标点。
+            ',' | '，' | '、' | ';' | '；' | '|' | '｜' | '·' | '•' => Some('_'),
+            // Windows 文件名非法字符，以及少数会让历史数据生成异常文件名的控制字符。
+            '<' | '>' | ':' | '"' | '/' | '\\' | '?' | '*' => Some('_'),
+            // 破折号常见于“标题 - 地点 - 国家”，归一后和逗号分隔的文件名风格一致。
+            '-' | '–' | '—' => Some('_'),
+            // 只包裹版权信息的括号会在 copyright_prefix 之后被清掉；标题里的括号
+            // 本身没有必要进入文件名，避免生成结尾残留的半个括号。
+            '(' | ')' | '（' | '）' | '[' | ']' | '【' | '】' => Some('_'),
+            c if c.is_control() => Some('_'),
+            c => Some(c),
         };
-        if safe.is_whitespace() {
-            result.push(' ');
+
+        let Some(safe) = replacement else {
+            continue;
+        };
+
+        if safe == '_' {
+            while result.ends_with(' ') {
+                result.pop();
+            }
+            if !result.is_empty() && !last_was_separator {
+                result.push('_');
+                last_was_separator = true;
+            }
+        } else if safe.is_whitespace() {
+            if !result.ends_with(' ') && !last_was_separator {
+                result.push(' ');
+            }
         } else {
             result.push(safe);
+            last_was_separator = false;
         }
-        if result.chars().count() >= 60 {
+
+        if result.chars().count() >= MAX_TITLE_CHARS {
             break;
         }
     }
-    result.trim().trim_matches('.').to_string()
+
+    trim_filename_separators(&result).to_string()
+}
+
+fn copyright_prefix(title: &str) -> &str {
+    ["(©", "（©", "( ©", "（ ©", "©"]
+        .iter()
+        .filter_map(|marker| title.find(marker))
+        .min()
+        .map(|index| &title[..index])
+        .unwrap_or(title)
+}
+
+fn trim_empty_trailing_brackets(value: &str) -> &str {
+    let mut value = value.trim();
+    loop {
+        let trimmed = value.trim_end();
+        let Some((open, close)) = trailing_bracket_pair(trimmed) else {
+            return trimmed;
+        };
+
+        let before_close = &trimmed[..trimmed.len() - close.len_utf8()];
+        let Some(open_index) = before_close.rfind(open) else {
+            return trimmed;
+        };
+
+        if before_close[open_index + open.len_utf8()..]
+            .trim()
+            .is_empty()
+        {
+            value = &before_close[..open_index];
+        } else {
+            return trimmed;
+        }
+    }
+}
+
+fn trailing_bracket_pair(value: &str) -> Option<(char, char)> {
+    match value.chars().next_back()? {
+        ')' => Some(('(', ')')),
+        '）' => Some(('（', '）')),
+        ']' => Some(('[', ']')),
+        '】' => Some(('【', '】')),
+        _ => None,
+    }
+}
+
+fn trim_filename_separators(value: &str) -> &str {
+    value.trim().trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '.' | ' '
+                | '_'
+                | '-'
+                | '–'
+                | '—'
+                | ','
+                | '，'
+                | '、'
+                | ';'
+                | '；'
+                | '|'
+                | '｜'
+                | '('
+                | ')'
+                | '（'
+                | '）'
+                | '['
+                | ']'
+                | '【'
+                | '】'
+        )
+    })
 }
 
 /// 按 "年-月" 分组后的壁纸列表，用于左侧导航栏。
@@ -115,13 +209,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_name_uses_date_and_title_before_location() {
+    fn file_name_keeps_title_and_location_before_copyright() {
         let entry = WallpaperEntry {
             date: NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
             title: "埃斯纳神庙穹顶天花板, 埃及 (© Nick Brundle/Getty Images)".to_string(),
             url: "https://example.com/a.jpg".to_string(),
         };
-        assert_eq!(entry.file_name(), "2026-07-02_埃斯纳神庙穹顶天花板.jpg");
+        assert_eq!(
+            entry.file_name(),
+            "2026-07-02_埃斯纳神庙穹顶天花板_埃及.jpg"
+        );
+    }
+
+    #[test]
+    fn file_name_keeps_multiple_chinese_location_parts() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 3).unwrap(),
+            title: "小溪上方的萤火虫，冈山县，日本 (© tdub303/Getty Images)".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(
+            entry.file_name(),
+            "2026-07-03_小溪上方的萤火虫_冈山县_日本.jpg"
+        );
+    }
+
+    #[test]
+    fn file_name_keeps_multiple_english_location_parts() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+            title: "Dungeon Provincial Park, Newfoundland and Labrador, Canada (© Kaitlyn McLachlan/Getty Images)".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(
+            entry.file_name(),
+            "2026-07-01_Dungeon Provincial Park_Newfoundland and Labrador_Canada.jpg"
+        );
     }
 
     #[test]
@@ -131,6 +254,72 @@ mod tests {
             title: "A/B:C*D?E, Somewhere".to_string(),
             url: "https://example.com/a.jpg".to_string(),
         };
-        assert_eq!(entry.file_name(), "2026-07-02_A_B_C_D_E.jpg");
+        assert_eq!(entry.file_name(), "2026-07-02_A_B_C_D_E_Somewhere.jpg");
+    }
+
+    #[test]
+    fn file_name_handles_full_width_copyright_marker() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+            title: "古城遗迹，某地，某国 （© Example/Getty Images）".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(entry.file_name(), "2026-07-02_古城遗迹_某地_某国.jpg");
+    }
+
+    #[test]
+    fn file_name_handles_bare_copyright_marker() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            title: "海岸灯塔, Maine, USA © Example/Getty Images".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(entry.file_name(), "2026-07-04_海岸灯塔_Maine_USA.jpg");
+    }
+
+    #[test]
+    fn file_name_removes_empty_brackets_left_by_copyright_prefix() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            title: "湖边森林 (© Example/Getty Images)".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(entry.file_name(), "2026-07-05_湖边森林.jpg");
+    }
+
+    #[test]
+    fn file_name_normalizes_dash_pipe_and_bracket_separators() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 6).unwrap(),
+            title: "Sand dunes - Namib-Naukluft Park | Namibia (Africa) (© Example)".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(
+            entry.file_name(),
+            "2026-07-06_Sand dunes_Namib_Naukluft Park_Namibia_Africa.jpg"
+        );
+    }
+
+    #[test]
+    fn file_name_falls_back_to_date_when_title_is_only_credit() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 7).unwrap(),
+            title: "(© Example/Getty Images)".to_string(),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(entry.file_name(), "2026-07-07.jpg");
+    }
+
+    #[test]
+    fn file_name_trims_separators_after_length_limit() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 8).unwrap(),
+            title: format!("{}，地点", "山".repeat(120)),
+            url: "https://example.com/a.jpg".to_string(),
+        };
+        assert_eq!(
+            entry.file_name(),
+            format!("2026-07-08_{}.jpg", "山".repeat(120))
+        );
     }
 }
