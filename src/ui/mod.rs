@@ -16,6 +16,7 @@ use crate::wallpaper_setter;
 use chrono::{Datelike, Local, NaiveDate, Timelike};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use gpui_component::alert::Alert;
 use gpui_component::button::ButtonVariants as _;
 use gpui_component::checkbox::Checkbox;
 use gpui_component::date_picker::{DatePicker, DatePickerState};
@@ -28,7 +29,9 @@ use gpui_component::sidebar::{
     SidebarToggleButton,
 };
 use gpui_component::*;
-use gpui_component::{button::Button, theme::ThemeMode, Root, Theme};
+use gpui_component::{
+    button::Button, theme::ThemeMode, v_virtual_list, Root, Theme, VirtualListScrollHandle,
+};
 use http_client::HttpClient;
 use rand::seq::SliceRandom;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -45,11 +48,54 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// 软件版权/作者署名，展示于“关于”信息中。
 const COPYRIGHT: &str = "© 2023-2026 小南瓜";
 
-/// 首页网格视图每次展示/加载的壁纸数量。
-const HOME_PAGE_SIZE: usize = 20;
+/// 首页壁纸卡片固定宽度。
+const HOME_GRID_CARD_WIDTH: f32 = 260.0;
 
-/// 首页网格滚动到距离底部还剩多少像素时，自动加载下一页。
-const LOAD_MORE_THRESHOLD: f32 = 300.0;
+/// 首页壁纸卡片列间距（对应 `.gap_4()`）。
+const HOME_GRID_GAP: f32 = 16.0;
+
+/// 首页虚拟网格中单行的固定高度，用于 `VirtualList` 计算可见范围。
+const HOME_GRID_ROW_HEIGHT: f32 = 245.0;
+
+/// 展开侧边栏的近似宽度，用于按窗口宽度计算首页虚拟网格列数。
+const SIDEBAR_EXPANDED_WIDTH: f32 = 260.0;
+
+/// 折叠侧边栏的近似宽度。
+const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.0;
+
+fn image_frame(
+    source: impl Into<ImageSource>,
+    width: f32,
+    height: f32,
+    cx: &mut App,
+) -> impl IntoElement {
+    div()
+        .relative()
+        .w(px(width))
+        .h(px(height))
+        .rounded(cx.theme().radius)
+        .overflow_hidden()
+        .bg(cx.theme().muted)
+        .child(
+            v_flex()
+                .absolute()
+                .inset_0()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .text_color(cx.theme().muted_foreground)
+                .child(Icon::new(IconName::Frame).size_6())
+                .child(div().text_xs().child("图片加载中...")),
+        )
+        .child(
+            img(source)
+                .absolute()
+                .inset_0()
+                .w_full()
+                .h_full()
+                .object_fit(ObjectFit::Cover),
+        )
+}
 
 /// 右侧内容区域的当前视图模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,10 +168,8 @@ pub struct WallpaperLibrary {
     /// 读到最新值，而不需要在弹窗 builder 内部反向 `.read()` 主视图（后者会触发
     /// GPUI 的 entity 重入锁定 panic，见 AGENTS.md §12.3）。
     update_progress: Rc<RefCell<Option<UpdateProgress>>>,
-    /// 首页网格当前已展示的壁纸数量（初始 [`HOME_PAGE_SIZE`] 张，滚动到底部后递增）。
-    home_loaded_count: usize,
-    /// 首页网格滚动容器的滚动状态句柄，用于判断是否已接近底部。
-    home_scroll_handle: ScrollHandle,
+    /// 首页虚拟网格滚动状态句柄，用于右侧滚动条和回到顶部。
+    home_scroll_handle: VirtualListScrollHandle,
     /// 侧边导航栏是否处于折叠（仅图标）状态。
     sidebar_collapsed: bool,
     /// 设置浮层是否展开（左下角，类似抖音侧边栏设置菜单）。
@@ -193,8 +237,7 @@ impl WallpaperLibrary {
             batch_progress: None,
             monitors,
             update_progress: Rc::new(RefCell::new(None)),
-            home_loaded_count: HOME_PAGE_SIZE,
-            home_scroll_handle: ScrollHandle::new(),
+            home_scroll_handle: VirtualListScrollHandle::new(),
             sidebar_collapsed: false,
             settings_panel_open: false,
             settings_section: None,
@@ -351,10 +394,12 @@ impl WallpaperLibrary {
 
     pub fn toggle_auto_wallpaper_enabled(&mut self, cx: &mut Context<Self>) {
         self.settings.auto_wallpaper_enabled = !self.settings.auto_wallpaper_enabled;
-        if self.settings.auto_wallpaper_enabled {
-            self.settings.last_auto_wallpaper_date = None;
+        let should_check_now = if self.settings.auto_wallpaper_enabled {
+            self.prepare_auto_wallpaper_after_manual_setting_change()
+        } else {
             self.auto_wallpaper_running = false;
-        }
+            false
+        };
         let _ = self.settings.save();
         self.set_status(
             if self.settings.auto_wallpaper_enabled {
@@ -364,25 +409,57 @@ impl WallpaperLibrary {
             },
             cx,
         );
-        if self.settings.auto_wallpaper_enabled {
+        if should_check_now {
             self.check_scheduled_wallpaper(cx);
+        }
+    }
+
+    pub fn toggle_auto_wallpaper_exit_after_done(&mut self, cx: &mut Context<Self>) {
+        self.settings.auto_wallpaper_exit_after_done =
+            !self.settings.auto_wallpaper_exit_after_done;
+        let _ = self.settings.save();
+        self.set_status(
+            if self.settings.auto_wallpaper_exit_after_done {
+                "已开启自动壁纸完成后退出程序"
+            } else {
+                "已关闭自动壁纸完成后退出程序"
+            },
+            cx,
+        );
+    }
+
+    fn prepare_auto_wallpaper_after_manual_setting_change(&mut self) -> bool {
+        self.auto_wallpaper_running = false;
+        let now = Local::now();
+        let current_minutes = now.hour() as u16 * 60 + now.minute() as u16;
+        let scheduled_minutes = self.settings.auto_wallpaper_hour as u16 * 60
+            + self.settings.auto_wallpaper_minute as u16;
+
+        if current_minutes > scheduled_minutes {
+            // 用户在设置面板里修改自动壁纸选项时，如果今天的计划时间已经过去，
+            // 不应立刻补执行并退出程序；后台/开机启动时的补执行仍由普通轮询负责。
+            self.settings.last_auto_wallpaper_date = Some(now.date_naive());
+            false
+        } else {
+            self.settings.last_auto_wallpaper_date = None;
+            current_minutes == scheduled_minutes
         }
     }
 
     fn set_auto_wallpaper_source(&mut self, source: AutoWallpaperSource, cx: &mut Context<Self>) {
         self.settings.auto_wallpaper_source = source;
-        self.settings.last_auto_wallpaper_date = None;
-        self.auto_wallpaper_running = false;
+        let should_check_now = self.prepare_auto_wallpaper_after_manual_setting_change();
         let _ = self.settings.save();
         self.set_status(format!("每日自动壁纸来源已设为{}", source.label()), cx);
-        self.check_scheduled_wallpaper(cx);
+        if self.settings.auto_wallpaper_enabled && should_check_now {
+            self.check_scheduled_wallpaper(cx);
+        }
     }
 
     fn set_auto_wallpaper_time(&mut self, hour: u8, minute: u8, cx: &mut Context<Self>) {
         self.settings.auto_wallpaper_hour = hour.min(23);
         self.settings.auto_wallpaper_minute = minute.min(59);
-        self.settings.last_auto_wallpaper_date = None;
-        self.auto_wallpaper_running = false;
+        let should_check_now = self.prepare_auto_wallpaper_after_manual_setting_change();
         let _ = self.settings.save();
         self.set_status(
             format!(
@@ -392,7 +469,9 @@ impl WallpaperLibrary {
             ),
             cx,
         );
-        self.check_scheduled_wallpaper(cx);
+        if self.settings.auto_wallpaper_enabled && should_check_now {
+            self.check_scheduled_wallpaper(cx);
+        }
     }
 
     pub fn trigger_auto_wallpaper_now(&mut self, cx: &mut Context<Self>) {
@@ -586,23 +665,6 @@ impl WallpaperLibrary {
             (None, None) => unreachable!(),
         };
         self.start_batch_download(label, entries, cx);
-    }
-
-    /// 首页网格滚动条即将触底时，追加下一页壁纸（无限滚动）。
-    fn maybe_load_more_home(&mut self, cx: &mut Context<Self>) {
-        let total = self.flat_entries.len();
-        if self.home_loaded_count >= total {
-            return;
-        }
-        let offset = self.home_scroll_handle.offset();
-        let max_offset = self.home_scroll_handle.max_offset();
-        // `offset.y` 在向下滚动时为负值，`max_offset.y` 为可滚动的总距离；
-        // 二者之和即"距离底部还剩多少像素"。
-        let remaining = max_offset.y + offset.y;
-        if remaining <= px(LOAD_MORE_THRESHOLD) {
-            self.home_loaded_count = (self.home_loaded_count + HOME_PAGE_SIZE).min(total);
-            cx.notify();
-        }
     }
 
     fn start_download(&mut self, entry: WallpaperEntry, cx: &mut Context<Self>) {
@@ -823,6 +885,9 @@ impl WallpaperLibrary {
             };
             let _ = this.update(cx, |this, cx| {
                 this.progress.remove(&date);
+                let should_exit_after_auto = auto_date.is_some()
+                    && outcome.is_ok()
+                    && this.settings.auto_wallpaper_exit_after_done;
                 if let Some(auto_date) = auto_date {
                     this.auto_wallpaper_running = false;
                     if outcome.is_ok() {
@@ -832,7 +897,15 @@ impl WallpaperLibrary {
                 }
                 match outcome {
                     Ok(()) => {
-                        this.set_status(format!("已将 {} 设置为{}壁纸", date, target_label), cx)
+                        if should_exit_after_auto {
+                            this.set_status("自动壁纸已设置完成，正在退出程序", cx);
+                            cx.quit();
+                        } else {
+                            this.set_status(
+                                format!("已将 {} 设置为{}壁纸", date, target_label),
+                                cx,
+                            );
+                        }
                     }
                     Err(err) => this.set_status(format!("设置壁纸失败: {err}"), cx),
                 }
@@ -979,7 +1052,7 @@ impl WallpaperLibrary {
         let url = entry.url.clone();
         let downloading = self.progress.contains_key(&entry.date);
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
+        window.open_dialog(cx, move |dialog, _window, cx| {
             let view_for_dl = view.clone();
             let view_for_wall = view.clone();
             let entry_for_dl = entry.clone();
@@ -992,7 +1065,7 @@ impl WallpaperLibrary {
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(img(url.clone()).w(px(800.)).h(px(450.)).rounded(px(6.)))
+                        .child(image_frame(url.clone(), 800., 450., cx))
                         .child(div().text_sm().child(title.clone())),
                 )
                 .footer(
@@ -1000,6 +1073,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("preview-download")
                                 .label("下载")
+                                .tooltip("下载当前高清壁纸到本地目录")
                                 .disabled(downloading)
                                 .on_click(move |_, window, cx| {
                                     let entry = entry_for_dl.clone();
@@ -1012,6 +1086,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("preview-set-wallpaper")
                                 .label("设为桌面壁纸")
+                                .tooltip("自动下载并按当前显示器设置应用为桌面壁纸")
                                 .primary()
                                 .disabled(downloading)
                                 .on_click(move |_, window, cx| {
@@ -1751,7 +1826,7 @@ impl Render for WallpaperLibrary {
                     ),
             )
             .child(match view_mode {
-                ViewMode::Home => self.render_home_view(status, cx).into_any_element(),
+                ViewMode::Home => self.render_home_view(status, window, cx).into_any_element(),
                 ViewMode::Favorites => self.render_favorites_view(status, cx).into_any_element(),
                 ViewMode::DownloadBatch => self
                     .render_batch_download_view(status, cx)
@@ -1852,6 +1927,58 @@ impl WallpaperLibrary {
             )
     }
 
+    fn render_status_alert(&self, id: &'static str, status: &SharedString) -> Option<AnyElement> {
+        let text = status.to_string();
+        let is_error = text.contains("失败") || text.contains("错误") || text.contains("异常");
+        let is_warning = text.starts_with("请选择")
+            || text.contains("不能")
+            || text.contains("没有可")
+            || text.contains("为空");
+
+        if is_error {
+            Some(Alert::error(id, text).small().into_any_element())
+        } else if is_warning {
+            Some(Alert::warning(id, text).small().into_any_element())
+        } else {
+            None
+        }
+    }
+
+    fn render_image_frame(
+        &self,
+        source: impl Into<ImageSource>,
+        width: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .relative()
+            .w(px(width))
+            .h(px(height))
+            .rounded(cx.theme().radius)
+            .overflow_hidden()
+            .bg(cx.theme().muted)
+            .child(
+                v_flex()
+                    .absolute()
+                    .inset_0()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Icon::new(IconName::Frame).size_6())
+                    .child(div().text_xs().child("图片加载中...")),
+            )
+            .child(
+                img(source)
+                    .absolute()
+                    .inset_0()
+                    .w_full()
+                    .h_full()
+                    .object_fit(ObjectFit::Cover),
+            )
+    }
+
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let input_for_field = self.settings_dir_input.clone();
         let input_for_open = self.settings_dir_input.clone();
@@ -1863,6 +1990,7 @@ impl WallpaperLibrary {
         let startup_enabled = self.settings.startup_enabled;
         let resident_enabled = self.settings.background_resident_enabled;
         let auto_enabled = self.settings.auto_wallpaper_enabled;
+        let auto_exit_after_done = self.settings.auto_wallpaper_exit_after_done;
         let auto_source = self.settings.auto_wallpaper_source;
         let auto_hour = self.settings.auto_wallpaper_hour;
         let auto_minute = self.settings.auto_wallpaper_minute;
@@ -2085,6 +2213,7 @@ impl WallpaperLibrary {
                 let view_for_startup = view.clone();
                 let view_for_resident = view.clone();
                 let view_for_auto = view.clone();
+                let view_for_auto_exit = view.clone();
                 let view_for_now = view.clone();
                 v_flex()
                     .gap_3()
@@ -2120,14 +2249,26 @@ impl WallpaperLibrary {
                             }),
                     )
                     .child(
+                        Checkbox::new("settings-auto-wallpaper-exit-after-done")
+                            .checked(auto_exit_after_done)
+                            .label("自动壁纸完成后退出程序")
+                            .tooltip("仅对每日自动执行生效；手动“立即更换一次”不会自动退出。")
+                            .on_click(move |_, _, cx| {
+                                view_for_auto_exit.update(cx, |this, cx| {
+                                    this.toggle_auto_wallpaper_exit_after_done(cx);
+                                });
+                            }),
+                    )
+                    .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
-                                "当前计划：每天 {:02}:{:02}，来源：{}。程序运行或开机自启后会在后台检查执行。",
+                                "当前计划：每天 {:02}:{:02}，来源：{}。程序运行或开机自启后会在后台检查执行{}。",
                                 auto_hour,
                                 auto_minute,
-                                auto_source.label()
+                                auto_source.label(),
+                                if auto_exit_after_done { "；设置成功后将自动退出" } else { "" }
                             )),
                     )
                     .child(div().text_sm().font_bold().child("壁纸来源"))
@@ -2240,7 +2381,7 @@ impl WallpaperLibrary {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("提示：选择“每日最新壁纸”时，会自动下载当天最新图片并设为桌面壁纸；选择随机收藏前，请先添加收藏。"),
+                            .child("提示：选择“每日最新壁纸”时，会自动下载当天最新图片并设为桌面壁纸；选择随机收藏前，请先添加收藏。开启“自动壁纸完成后退出程序”后，仅每日自动执行成功时会退出，手动更换不会退出。"),
                     )
                     .into_any_element()
             }
@@ -2355,10 +2496,38 @@ impl WallpaperLibrary {
             )
     }
 
-    fn render_home_view(&self, status: SharedString, cx: &mut Context<Self>) -> impl IntoElement {
+    fn home_grid_columns(&self, window: &Window) -> usize {
+        let sidebar_width = if self.sidebar_collapsed {
+            px(SIDEBAR_COLLAPSED_WIDTH)
+        } else {
+            px(SIDEBAR_EXPANDED_WIDTH)
+        };
+        let available_width = window.viewport_size().width - sidebar_width - px(56.0);
+        let columns = ((available_width + px(HOME_GRID_GAP))
+            / px(HOME_GRID_CARD_WIDTH + HOME_GRID_GAP))
+        .floor() as usize;
+        columns.max(1)
+    }
+
+    fn render_home_view(
+        &self,
+        status: SharedString,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let total = self.flat_entries.len();
-        let show_count = self.home_loaded_count.min(total);
-        let entries: Vec<WallpaperEntry> = self.flat_entries[..show_count].to_vec();
+        let columns = self.home_grid_columns(window);
+        let rows: Rc<Vec<Vec<WallpaperEntry>>> = Rc::new(
+            self.flat_entries
+                .chunks(columns)
+                .map(|chunk| chunk.to_vec())
+                .collect(),
+        );
+        let item_sizes = Rc::new(
+            (0..rows.len())
+                .map(|_| size(px(1.), px(HOME_GRID_ROW_HEIGHT)))
+                .collect::<Vec<_>>(),
+        );
 
         v_flex()
             .flex_1()
@@ -2375,7 +2544,7 @@ impl WallpaperLibrary {
                             .font_bold()
                             .text_lg()
                             .flex_shrink_0()
-                            .child(format!("首页 · 最近壁纸（{show_count}/{total}）")),
+                            .child(format!("首页 · 最近壁纸（{total} 张）")),
                     )
                     .child(
                         div()
@@ -2384,8 +2553,12 @@ impl WallpaperLibrary {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
-                            .child(status),
+                            .child(status.clone()),
                     ),
+            )
+            .when_some(
+                self.render_status_alert("home-status-alert", &status),
+                |this, alert| this.child(alert),
             )
             .child(
                 div()
@@ -2394,22 +2567,30 @@ impl WallpaperLibrary {
                     .flex_1()
                     .min_h_0()
                     .child(
-                        div()
-                            .id("home-scroll")
+                        v_flex()
+                            .id("home-virtual-scroll")
+                            .relative()
                             .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.home_scroll_handle)
-                            .on_scroll_wheel(cx.listener(
-                                |this, _event: &ScrollWheelEvent, _window, cx| {
-                                    this.maybe_load_more_home(cx);
-                                },
-                            ))
                             .child(
-                                div().flex().flex_wrap().gap_4().pr_2().children(
-                                    entries
-                                        .into_iter()
-                                        .map(|entry| self.render_home_card(entry, cx)),
-                                ),
+                                v_virtual_list(
+                                    cx.entity().clone(),
+                                    "home-wallpaper-rows",
+                                    item_sizes,
+                                    move |view, visible_range, _window, cx| {
+                                        visible_range
+                                            .filter_map(|row_index| rows.get(row_index).cloned())
+                                            .map(|row| {
+                                                h_flex().gap_4().pb_4().children(
+                                                    row.into_iter().map(|entry| {
+                                                        view.render_home_card(entry, cx)
+                                                    }),
+                                                )
+                                            })
+                                            .collect()
+                                    },
+                                )
+                                .track_scroll(&self.home_scroll_handle)
+                                .pr_2(),
                             ),
                     )
                     .vertical_scrollbar(&self.home_scroll_handle)
@@ -2461,8 +2642,12 @@ impl WallpaperLibrary {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
-                            .child(status),
+                            .child(status.clone()),
                     ),
+            )
+            .when_some(
+                self.render_status_alert("favorites-status-alert", &status),
+                |this, alert| this.child(alert),
             )
             .child(
                 div()
@@ -2555,8 +2740,12 @@ impl WallpaperLibrary {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
-                            .child(status),
+                            .child(status.clone()),
                     ),
+            )
+            .when_some(
+                self.render_status_alert("batch-status-alert", &status),
+                |this, alert| this.child(alert),
             )
             .child(
                 v_flex()
@@ -2577,6 +2766,7 @@ impl WallpaperLibrary {
                                     .child(
                                         Button::new("batch-center-all")
                                             .label("全部历史")
+                                            .tooltip("下载当前列表中的全部历史壁纸")
                                             .outline()
                                             .disabled(batch_progress.is_some())
                                             .on_click(move |_, _, cx| {
@@ -2593,6 +2783,7 @@ impl WallpaperLibrary {
                                     .child(
                                         Button::new("batch-center-month")
                                             .label("当前月份")
+                                            .tooltip("下载左侧当前选中月份的壁纸")
                                             .outline()
                                             .disabled(batch_progress.is_some())
                                             .on_click(move |_, _, cx| {
@@ -2609,6 +2800,7 @@ impl WallpaperLibrary {
                                     .child(
                                         Button::new("batch-center-favorites")
                                             .label("收藏")
+                                            .tooltip("下载我的收藏中的全部壁纸")
                                             .outline()
                                             .disabled(batch_progress.is_some())
                                             .on_click(move |_, _, cx| {
@@ -2638,6 +2830,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new("batch-center-date-range")
                                     .label("下载日期范围")
+                                    .tooltip("下载日历中选中的日期范围壁纸")
                                     .outline()
                                     .disabled(batch_progress.is_some() || date_limits.is_none())
                                     .on_click(move |_, _, cx| {
@@ -2762,11 +2955,12 @@ impl WallpaperLibrary {
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
                                     .truncate()
-                                    .child(status),
+                                    .child(status.clone()),
                             )
                             .child(
                                 Button::new("downloaded-select-all")
                                     .flex_shrink_0()
+                                    .tooltip("全选或取消全选当前下载目录中的壁纸")
                                     .label(if all_selected {
                                         "取消全选"
                                     } else {
@@ -2791,6 +2985,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new("downloaded-delete-selected")
                                     .flex_shrink_0()
+                                    .tooltip("删除当前勾选的本地壁纸文件")
                                     .label(format!("删除选中 ({selected_count})"))
                                     .danger()
                                     .small()
@@ -2804,6 +2999,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new("downloaded-refresh")
                                     .flex_shrink_0()
+                                    .tooltip("重新扫描下载目录")
                                     .label("刷新")
                                     .outline()
                                     .small()
@@ -2812,6 +3008,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new("downloaded-open-dir")
                                     .flex_shrink_0()
+                                    .tooltip("在资源管理器中打开当前壁纸下载目录")
                                     .label("打开下载目录")
                                     .outline()
                                     .small()
@@ -2820,6 +3017,10 @@ impl WallpaperLibrary {
                                     }),
                             ),
                     ),
+            )
+            .when_some(
+                self.render_status_alert("downloaded-status-alert", &status),
+                |this, alert| this.child(alert),
             )
             .child(
                 div()
@@ -2884,7 +3085,7 @@ impl WallpaperLibrary {
                     .h(px(124.))
                     .rounded(cx.theme().radius)
                     .overflow_hidden()
-                    .child(img(path.clone()).w(px(220.)).h(px(124.)))
+                    .child(self.render_image_frame(path.clone(), 220., 124., cx))
                     .child(
                         div()
                             .absolute()
@@ -2920,6 +3121,7 @@ impl WallpaperLibrary {
                                     "downloaded-check-{name}"
                                 )))
                                 .checked(is_selected)
+                                .tooltip("选择这张本地壁纸用于批量删除")
                                 .on_click({
                                     let view = cx.entity();
                                     move |_, _, cx| {
@@ -2952,6 +3154,7 @@ impl WallpaperLibrary {
                                             "downloaded-set-{name}"
                                         )))
                                         .label("设为桌面壁纸")
+                                        .tooltip("将这张本地图片设置为桌面壁纸")
                                         .primary()
                                         .small()
                                         .flex_1()
@@ -3012,7 +3215,7 @@ impl WallpaperLibrary {
             .unwrap_or_default();
         let path_for_title = path.clone();
 
-        window.open_dialog(cx, move |dialog, _window, _cx| {
+        window.open_dialog(cx, move |dialog, _window, cx| {
             let view_for_delete = view.clone();
             let view_for_wall = view.clone();
             let path_for_delete = path.clone();
@@ -3030,7 +3233,7 @@ impl WallpaperLibrary {
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(img(path.clone()).w(px(800.)).h(px(450.)).rounded(px(6.)))
+                        .child(image_frame(path.clone(), 800., 450., cx))
                         .child(div().text_sm().child(name.clone())),
                 )
                 .footer(
@@ -3038,6 +3241,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("local-preview-delete")
                                 .label("删除")
+                                .tooltip("删除这张本地壁纸文件")
                                 .danger()
                                 .on_click(move |_, window, cx| {
                                     let path = path_for_delete.clone();
@@ -3050,6 +3254,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("local-preview-set-wallpaper")
                                 .label("设为桌面壁纸")
+                                .tooltip("将这张本地图片设置为桌面壁纸")
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     let path = path_for_wall.clone();
@@ -3101,8 +3306,12 @@ impl WallpaperLibrary {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
-                            .child(status),
+                            .child(status.clone()),
                     ),
+            )
+            .when_some(
+                self.render_status_alert("month-status-alert", &status),
+                |this, alert| this.child(alert),
             )
             .child(
                 div()
@@ -3143,7 +3352,7 @@ impl WallpaperLibrary {
                     .h(px(146.))
                     .rounded(cx.theme().radius)
                     .overflow_hidden()
-                    .child(img(entry.thumbnail_url()).w(px(260.)).h(px(146.)))
+                    .child(self.render_image_frame(entry.thumbnail_url(), 260., 146., cx))
                     .child(
                         div()
                             .absolute()
@@ -3190,6 +3399,7 @@ impl WallpaperLibrary {
                                             entry.date
                                         )))
                                         .label("设为桌面壁纸")
+                                        .tooltip("自动下载并按当前显示器设置应用为桌面壁纸")
                                         .primary()
                                         .small()
                                         .flex_1()
@@ -3268,12 +3478,7 @@ impl WallpaperLibrary {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
-            .child(
-                img(entry.thumbnail_url())
-                    .w(px(220.))
-                    .h(px(124.))
-                    .rounded(cx.theme().radius),
-            )
+            .child(self.render_image_frame(entry.thumbnail_url(), 220., 124., cx))
             .child(
                 v_flex()
                     .flex_1()
@@ -3288,6 +3493,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new(SharedString::from(format!("dl-{}", entry.date)))
                                     .label("下载")
+                                    .tooltip("下载当前高清壁纸到本地目录")
                                     .disabled(progress.is_some())
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.start_download(entry_for_download.clone(), cx);
@@ -3296,6 +3502,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new(SharedString::from(format!("preview-{}", entry.date)))
                                     .label("预览图片")
+                                    .tooltip("打开高清大图预览")
                                     .outline()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_preview_dialog(
@@ -3308,6 +3515,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new(SharedString::from(format!("set-{}", entry.date)))
                                     .label("设为桌面壁纸")
+                                    .tooltip("自动下载并按当前显示器设置应用为桌面壁纸")
                                     .primary()
                                     .disabled(progress.is_some())
                                     .on_click(cx.listener(move |this, _, _, cx| {

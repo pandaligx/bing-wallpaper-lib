@@ -111,6 +111,9 @@ pub struct AppSettings {
     /// 每日自动执行分钟（0~59），默认 0 分。
     #[serde(default)]
     pub auto_wallpaper_minute: u8,
+    /// 每日自动壁纸成功设置后是否自动退出程序。
+    #[serde(default)]
+    pub auto_wallpaper_exit_after_done: bool,
     /// 上次自动执行日期，用于避免同一天重复执行。
     #[serde(default)]
     pub last_auto_wallpaper_date: Option<NaiveDate>,
@@ -128,6 +131,7 @@ impl Default for AppSettings {
             auto_wallpaper_source: AutoWallpaperSource::default(),
             auto_wallpaper_hour: default_auto_wallpaper_hour(),
             auto_wallpaper_minute: 0,
+            auto_wallpaper_exit_after_done: false,
             last_auto_wallpaper_date: None,
         }
     }
