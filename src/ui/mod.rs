@@ -10,6 +10,7 @@
 //! 因此再次点击某个月份条目时仍会恢复到之前查看的那个月份。
 
 use crate::downloader::Aria2Manager;
+use crate::fetcher;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
 use crate::settings::{AppSettings, AutoWallpaperSource, ThemePreference, WallpaperTarget};
 use crate::wallpaper_setter;
@@ -290,6 +291,49 @@ impl WallpaperLibrary {
     pub fn set_status(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.status = message.into();
         cx.notify();
+    }
+
+    fn refresh_wallpaper_list(&mut self, cx: &mut Context<Self>) {
+        self.set_status("正在重新获取壁纸列表...", cx);
+        let http = self.http.clone();
+        cx.spawn(async move |this, cx| {
+            match fetcher::fetch_all(http).await {
+                Ok(entries) => {
+                    let is_new = fetcher::load_cache()
+                        .ok()
+                        .flatten()
+                        .map(|cached| fetcher::has_new_entry(&cached, &entries))
+                        .unwrap_or(true);
+                    let _ = fetcher::save_cache(&entries);
+                    let _ = this.update(cx, |this, cx| {
+                        this.set_entries(entries, cx);
+                        if is_new {
+                            this.set_status("已重新获取壁纸列表，并检测到新壁纸", cx);
+                        } else {
+                            this.set_status("已重新获取壁纸列表，当前已是最新", cx);
+                        }
+                    });
+                }
+                Err(err) => {
+                    let bundled = fetcher::bundled_entries();
+                    let _ = this.update(cx, |this, cx| {
+                        if bundled.is_empty() {
+                            this.set_status(format!("获取壁纸列表失败: {err}"), cx);
+                        } else {
+                            let count = bundled.len();
+                            this.set_entries(bundled, cx);
+                            this.set_status(
+                                format!(
+                                    "远程壁纸列表获取失败，已使用内置壁纸列表（{count} 张）。请稍后重试: {err}"
+                                ),
+                                cx,
+                            );
+                        }
+                    });
+                }
+            }
+        })
+        .detach();
     }
 
     fn selected_group(&self) -> Option<&MonthGroup> {
@@ -2554,6 +2598,17 @@ impl WallpaperLibrary {
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
                             .child(status.clone()),
+                    )
+                    .child(
+                        Button::new("home-refresh-wallpaper-list")
+                            .label("重新获取壁纸列表")
+                            .small()
+                            .outline()
+                            .flex_shrink_0()
+                            .tooltip("重新从远程数据源获取壁纸列表；网络不可用时会继续使用内置列表")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.refresh_wallpaper_list(cx);
+                            })),
                     ),
             )
             .when_some(

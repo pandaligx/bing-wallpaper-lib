@@ -36,7 +36,10 @@
 
   英文补全集使用同样顺序，但路径为仓库根目录下的 `bing-wallpaper.md`。每组源第一个请求成功的地址即被采用，
   任何一个失败都只记一条 `log::warn!` 并尝试下一个；若中文源成功但英文源失败，则只展示中文源已有范围，
-  若中文源失败但英文源成功，则退回英文列表，只有两组源全部失败才对外报错。
+  若中文源失败但英文源成功，则退回英文列表；若两组远程源全部失败，启动流程与首页手动刷新会退回到
+  `assets/data/bing-wallpaper-zh-cn.md` / `assets/data/bing-wallpaper-en.md` 内置快照，保证无 VPN 或 GitHub/CDN
+  临时不可达时仍能展示历史图库。内置快照不是实时权威源，网络恢复后点击首页“重新获取壁纸列表”或等待后台刷新会
+  重新写回最新缓存。发布新版本前如希望离线兜底尽量新，应重新下载这两份快照。
   **已知权衡**：jsDelivr 对 GitHub 仓库内容存在数小时级（历史上最长约 12 小时）的 CDN 缓存延迟，但本项目
   本身只每 30 分钟检查一次是否有新的一天壁纸，这点延迟可以接受，换来的是国内绝大多数网络环境下无需 VPN
   即可直接使用。若以后 jsDelivr 出现长期不可用/正确性问题，可在两组 `*_SOURCE_URLS` 中调整顺序或替换镜像。
@@ -709,6 +712,7 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 | `.cargo/config.toml` | 强制 `x86_64-pc-windows-msvc` + CRT 静态链接 |
 | `build.rs` | 构建时嵌入 `ico/icon.rc`（图标 + 版本信息） |
 | `assets/aria2c.exe` | 内嵌的 aria2 官方预编译二进制（GPL-2.0） |
+| `assets/data/bing-wallpaper-*.md` | 内置壁纸列表快照，远程数据源全部失败时用于离线兜底 |
 | `ico/icon.ico` | 多分辨率（16~256px）应用图标 |
 | `ico/icon.rc` | Windows 资源脚本：图标（数字 ID `1`）+ VERSIONINFO |
 | `scripts/generate_ico.ps1` | 从源图重新生成多分辨率 `icon.ico` 的工具脚本 |

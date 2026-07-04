@@ -40,6 +40,12 @@ const ENGLISH_SOURCE_URLS: &[&str] = &[
     "https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/bing-wallpaper.md",
 ];
 
+/// 随 exe 内置的壁纸列表快照，用于所有远程数据源都不可用、且本地缓存也不存在时兜底。
+///
+/// 这不是权威实时数据源；网络恢复后仍应优先通过 [`fetch_all`] 拉取远程最新列表并写回缓存。
+const BUNDLED_CHINESE_SOURCE: &str = include_str!("../assets/data/bing-wallpaper-zh-cn.md");
+const BUNDLED_ENGLISH_SOURCE: &str = include_str!("../assets/data/bing-wallpaper-en.md");
+
 /// 解析一行形如：
 /// `2026-07-02 | [Dungeon Provincial Park... (© xxx)](https://cn.bing.com/th?id=OHR.xxx_UHD.jpg&...)`
 /// 的记录。标题中可能包含方括号/圆括号，因此优先匹配以 `](http` 开头的图片链接。
@@ -100,6 +106,14 @@ fn merge_entries_prefer_primary(
 
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.date));
     entries
+}
+
+/// 读取随 exe 内置的壁纸列表快照（已按日期倒序）。
+pub fn bundled_entries() -> Vec<WallpaperEntry> {
+    merge_entries_prefer_primary(
+        parse_markdown(BUNDLED_CHINESE_SOURCE),
+        parse_markdown(BUNDLED_ENGLISH_SOURCE),
+    )
 }
 
 /// 从一组候选源依次尝试拉取并解析壁纸历史（已去重，保持源文件原始顺序）。
@@ -247,6 +261,13 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(entries[0].title.contains("埃斯纳神庙"));
         assert!(entries[1].title.contains("地牢省立公园"));
+    }
+
+    #[test]
+    fn bundled_snapshot_is_parseable() {
+        let entries = bundled_entries();
+        assert!(!entries.is_empty());
+        assert!(entries.windows(2).all(|pair| pair[0].date >= pair[1].date));
     }
 
     #[test]

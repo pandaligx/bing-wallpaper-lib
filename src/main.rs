@@ -293,9 +293,21 @@ async fn refresh_once(
             });
         }
         Err(err) => {
+            let bundled = fetcher::bundled_entries();
             let _ = window.update(cx, |_, _, app_cx| {
                 view.update(app_cx, |this, cx| {
-                    this.set_status(format!("获取壁纸列表失败: {err}"), cx);
+                    if bundled.is_empty() {
+                        this.set_status(format!("获取壁纸列表失败: {err}"), cx);
+                    } else {
+                        let count = bundled.len();
+                        this.set_entries(bundled, cx);
+                        this.set_status(
+                            format!(
+                                "远程壁纸列表获取失败，已使用内置壁纸列表（{count} 张）。可稍后点击“重新获取壁纸列表”重试: {err}"
+                            ),
+                            cx,
+                        );
+                    }
                 });
             });
         }
