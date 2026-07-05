@@ -1868,7 +1868,7 @@ impl Render for WallpaperLibrary {
                                 .icon(IconName::Settings)
                                 .ghost()
                                 .small()
-                                .tooltip("设置")
+                                .when(!settings_panel_open, |this| this.tooltip("设置"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.settings_panel_open = !this.settings_panel_open;
                                     cx.notify();
@@ -2057,6 +2057,7 @@ impl WallpaperLibrary {
         let auto_minute = self.settings.auto_wallpaper_minute;
 
         let view_for_save = view.clone();
+        let view_for_close = view.clone();
         let view_for_clear = view.clone();
         let view_for_check = view.clone();
         let view_for_system = view.clone();
@@ -2484,6 +2485,7 @@ impl WallpaperLibrary {
         };
 
         h_flex()
+            .relative()
             .w(px(panel_width))
             .h(px(panel_height))
             .rounded(cx.theme().radius_lg)
@@ -2554,6 +2556,26 @@ impl WallpaperLibrary {
                         cx.stop_propagation();
                     })
                     .child(detail),
+            )
+            .child(
+                div().absolute().top_2().right_2().child(
+                    Button::new("settings-panel-close")
+                        .icon(
+                            Icon::empty()
+                                .path("icons/close.svg")
+                                .size_4()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .ghost()
+                        .small()
+                        .tooltip("关闭设置")
+                        .on_click(move |_, _, cx| {
+                            view_for_close.update(cx, |this, cx| {
+                                this.settings_panel_open = false;
+                                cx.notify();
+                            });
+                        }),
+                ),
             )
     }
 
