@@ -675,10 +675,11 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 - `spawn_relaunch(new_exe)` 是整个机制的核心：**Windows 下进程无法覆盖正在运行的自身 exe
   文件**，因此必须借助一个独立的辅助进程来完成替换。具体做法是写出一个 `apply_update.bat`
   脚本（与下载到的新 exe 同目录），内容依次为：`ping -n 4` 延迟 ≈ 3 秒（等待旧进程退出）
-  → `copy /Y` 重试循环（最多 15 次，每次间隔 `ping -n 2`）→ `start "" target` 重新启动新 exe →
-  自我删除下载缓存与脚本本身。启动这个脚本时复用了 `downloader.rs` 中已验证过的
-  `CREATE_NO_WINDOW`（`0x0800_0000`）方法避免闪现黑色控制台窗口。调用方在 `spawn_relaunch` 成功
-  后立即调用 `cx.quit()` 优雅退出，由脚本接管完成实际替换与重启。
+  → `copy /Y` 重试循环（最多 15 次，每次间隔 `ping -n 2`）把新 exe 复制到当前程序所在目录，文件名使用
+  Release asset 的新版文件名（如 `bing-wallpaper-lib-v0.2.25-x64.exe`，即使旧文件叫旧版本名或用户自定义名）
+  → `start "" final` 重新启动新版 exe → 删除旧 exe、更新缓存中的临时 exe 与脚本本身。启动这个脚本时复用了
+  `downloader.rs` 中已验证过的 `CREATE_NO_WINDOW`（`0x0800_0000`）方法避免闪现黑色控制台窗口。调用方在
+  `spawn_relaunch` 成功后立即调用 `cx.quit()` 优雅退出，由脚本接管完成实际替换与重启。
 
 集成到 UI 与启动流程：
 
@@ -729,6 +730,7 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 | `src/downloader.rs` | aria2 子进程管理 + JSON-RPC 客户端 |
 | `src/wallpaper_setter.rs` | Windows 设置桌面壁纸，支持全部显示器/指定显示器 |
 | `src/updater.rs` | 检查 GitHub Releases 最新版本 + 下载 + 自我替换重启（见 §14.3） |
+| `src/window_sizing.rs` | 主窗口默认尺寸/位置计算，按 Windows 工作区适配小分辨率 |
 | `src/ui/mod.rs` | 主界面（侧边栏 + 壁纸网格 + 进度条 + 版权署名） |
 
 ## 15. 设置面板改为有边界的双栏布局 + 新增下载中心（v0.2.15）
@@ -883,7 +885,7 @@ WindowOptions {
 
 这样 GPUI/Windows 从窗口创建阶段就不会显示或聚焦主窗口，程序只在系统托盘后台常驻。
 
-由于隐藏创建的窗口第一次从托盘显示时，Windows 可能不会按原始 `WindowBounds::centered(1200x800)` 正常还原，`ui::show_window_from_tray` 会在 `SW_SHOW` 前调用 `SetWindowPos`，把窗口恢复为默认 `1200x800` 并按当前主屏幕居中，再置前显示。以后如果调整默认窗口尺寸，需要同步修改 `main.rs` 的 `WindowBounds::centered(...)` 与 `ui::show_window_from_tray` 中的居中恢复尺寸。
+由于隐藏创建的窗口第一次从托盘显示时，Windows 可能不会按原始窗口 bounds 正常还原，`ui::show_window_from_tray` 会在 `SW_SHOW` 前调用 `SetWindowPos`，把窗口恢复到 `src/window_sizing.rs` 计算出的默认位置，再置前显示。初始窗口与托盘恢复窗口都使用同一套 `window_sizing::default_window_placement()` / `default_window_bounds()` 逻辑：目标尺寸仍是 `1200x800`，但会按 Windows 工作区（扣除任务栏）自动缩小并居中；小分辨率（如 800×600）会尽量使用完整工作区，不再额外预留边距，避免右侧操作按钮和设置面板被挤出窗口。以后如果调整默认窗口尺寸，只需要修改 `src/window_sizing.rs` 中的常量。
 
 ## 21. 每日自动壁纸定时触发可靠性（v0.2.21）
 

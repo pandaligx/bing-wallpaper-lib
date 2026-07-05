@@ -14,6 +14,7 @@ use crate::fetcher;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
 use crate::settings::{AppSettings, AutoWallpaperSource, ThemePreference, WallpaperTarget};
 use crate::wallpaper_setter;
+use crate::window_sizing;
 use chrono::{Datelike, Local, NaiveDate, Timelike};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -42,8 +43,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SetForegroundWindow, SetWindowPos, ShowWindow, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
+    SetForegroundWindow, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+    SW_SHOWNORMAL,
 };
 
 /// 软件版权/作者署名，展示于“关于”信息中。
@@ -96,6 +97,21 @@ fn image_frame(
                 .h_full()
                 .object_fit(ObjectFit::Cover),
         )
+}
+
+fn preview_dialog_dimensions(window: &Window) -> (f32, f32, f32) {
+    let viewport = window.viewport_size();
+    let viewport_width = viewport.width.as_f32().max(320.0);
+    let viewport_height = viewport.height.as_f32().max(320.0);
+
+    let max_dialog_width = (viewport_width - 48.0).clamp(320.0, 860.0);
+    let max_image_width = (max_dialog_width - 60.0).clamp(260.0, 800.0);
+    let max_image_height = (viewport_height - 220.0).clamp(180.0, 450.0);
+    let image_width = max_image_width.min(max_image_height * 16.0 / 9.0);
+    let image_height = image_width * 9.0 / 16.0;
+    let dialog_width = (image_width + 60.0).clamp(320.0, max_dialog_width);
+
+    (dialog_width, image_width, image_height)
 }
 
 /// 右侧内容区域的当前视图模式。
@@ -1095,6 +1111,7 @@ impl WallpaperLibrary {
         let title = entry.title.clone();
         let url = entry.url.clone();
         let downloading = self.progress.contains_key(&entry.date);
+        let (dialog_width, image_width, image_height) = preview_dialog_dimensions(window);
 
         window.open_dialog(cx, move |dialog, _window, cx| {
             let view_for_dl = view.clone();
@@ -1104,13 +1121,13 @@ impl WallpaperLibrary {
 
             dialog
                 .title(date_str.clone())
-                .w(px(860.))
+                .w(px(dialog_width))
                 .child(
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(image_frame(url.clone(), 800., 450., cx))
-                        .child(div().text_sm().child(title.clone())),
+                        .child(image_frame(url.clone(), image_width, image_height, cx))
+                        .child(div().text_sm().line_clamp(2).child(title.clone())),
                 )
                 .footer(
                     DialogFooter::new()
@@ -1638,7 +1655,7 @@ async fn run_update_download(
 pub fn show_window_from_tray(window: &Window) {
     if let Some(hwnd) = hwnd_from_window(window) {
         unsafe {
-            center_window(hwnd, 1200, 800);
+            restore_window_to_default_placement(hwnd);
             let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
@@ -1648,25 +1665,15 @@ pub fn show_window_from_tray(window: &Window) {
     }
 }
 
-unsafe fn center_window(hwnd: HWND, preferred_width: i32, preferred_height: i32) {
-    let screen_width = GetSystemMetrics(SM_CXSCREEN);
-    let screen_height = GetSystemMetrics(SM_CYSCREEN);
-    if screen_width <= 0 || screen_height <= 0 {
-        return;
-    }
-
-    let width = preferred_width.min(screen_width).max(200);
-    let height = preferred_height.min(screen_height).max(200);
-    let x = (screen_width - width) / 2;
-    let y = (screen_height - height) / 2;
-
+unsafe fn restore_window_to_default_placement(hwnd: HWND) {
+    let placement = window_sizing::default_window_placement();
     let _ = SetWindowPos(
         hwnd,
         None,
-        x,
-        y,
-        width,
-        height,
+        placement.x,
+        placement.y,
+        placement.width,
+        placement.height,
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
 }
@@ -1912,7 +1919,7 @@ impl Render for WallpaperLibrary {
                         .absolute()
                         .left_3()
                         .bottom_3()
-                        .child(self.render_settings_panel(cx)),
+                        .child(self.render_settings_panel(window, cx)),
                 )
             });
 
@@ -2023,7 +2030,17 @@ impl WallpaperLibrary {
             )
     }
 
-    fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_settings_panel(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        let panel_width = (viewport.width.as_f32() - 24.0).clamp(320.0, 760.0);
+        let panel_height = (viewport.height.as_f32() - 72.0).clamp(280.0, 560.0);
+        let section_width = if panel_width < 560.0 {
+            136.0
+        } else if panel_width < 640.0 {
+            168.0
+        } else {
+            200.0
+        };
         let input_for_field = self.settings_dir_input.clone();
         let input_for_open = self.settings_dir_input.clone();
         let input_for_choose = self.settings_dir_input.clone();
@@ -2467,8 +2484,8 @@ impl WallpaperLibrary {
         };
 
         h_flex()
-            .w(px(760.))
-            .h(px(560.))
+            .w(px(panel_width))
+            .h(px(panel_height))
             .rounded(cx.theme().radius_lg)
             .border_1()
             .border_color(cx.theme().border)
@@ -2481,7 +2498,7 @@ impl WallpaperLibrary {
             .child(
                 v_flex()
                     .id("settings-section-list")
-                    .w(px(200.))
+                    .w(px(section_width))
                     .h_full()
                     .flex_shrink_0()
                     .gap_2()
@@ -2987,22 +3004,19 @@ impl WallpaperLibrary {
             .gap_3()
             .p_4()
             .child(
-                h_flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .font_bold()
-                            .text_lg()
-                            .flex_shrink_0()
-                            .child(format!("下载中心 · 已下载的壁纸（{count} 张）")),
-                    )
+                v_flex()
+                    .gap_2()
                     .child(
                         h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_2()
                             .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .font_bold()
+                                    .text_lg()
+                                    .flex_shrink_0()
+                                    .child(format!("下载中心 · 已下载的壁纸（{count} 张）")),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -3011,10 +3025,14 @@ impl WallpaperLibrary {
                                     .text_color(cx.theme().muted_foreground)
                                     .truncate()
                                     .child(status.clone()),
-                            )
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
                             .child(
                                 Button::new("downloaded-select-all")
-                                    .flex_shrink_0()
                                     .tooltip("全选或取消全选当前下载目录中的壁纸")
                                     .label(if all_selected {
                                         "取消全选"
@@ -3039,7 +3057,6 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-delete-selected")
-                                    .flex_shrink_0()
                                     .tooltip("删除当前勾选的本地壁纸文件")
                                     .label(format!("删除选中 ({selected_count})"))
                                     .danger()
@@ -3053,7 +3070,6 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-refresh")
-                                    .flex_shrink_0()
                                     .tooltip("重新扫描下载目录")
                                     .label("刷新")
                                     .outline()
@@ -3062,7 +3078,6 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-open-dir")
-                                    .flex_shrink_0()
                                     .tooltip("在资源管理器中打开当前壁纸下载目录")
                                     .label("打开下载目录")
                                     .outline()
@@ -3269,6 +3284,7 @@ impl WallpaperLibrary {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         let path_for_title = path.clone();
+        let (dialog_width, image_width, image_height) = preview_dialog_dimensions(window);
 
         window.open_dialog(cx, move |dialog, _window, cx| {
             let view_for_delete = view.clone();
@@ -3283,13 +3299,13 @@ impl WallpaperLibrary {
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default(),
                 )
-                .w(px(860.))
+                .w(px(dialog_width))
                 .child(
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(image_frame(path.clone(), 800., 450., cx))
-                        .child(div().text_sm().child(name.clone())),
+                        .child(image_frame(path.clone(), image_width, image_height, cx))
+                        .child(div().text_sm().truncate().child(name.clone())),
                 )
                 .footer(
                     DialogFooter::new()
@@ -3399,6 +3415,7 @@ impl WallpaperLibrary {
         v_flex()
             .group(group_name.clone())
             .w(px(260.))
+            .h(px(224.))
             .gap_2()
             .child(
                 div()
@@ -3507,12 +3524,14 @@ impl WallpaperLibrary {
             )
             .child(
                 v_flex()
+                    .h(px(62.))
                     .gap_1()
                     .child(div().text_sm().font_bold().child(date_str))
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
+                            .line_clamp(2)
                             .child(entry.title.clone()),
                     ),
             )
@@ -3545,6 +3564,7 @@ impl WallpaperLibrary {
                         h_flex()
                             .gap_2()
                             .mt_2()
+                            .flex_wrap()
                             .child(
                                 Button::new(SharedString::from(format!("dl-{}", entry.date)))
                                     .label("下载")

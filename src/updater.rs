@@ -9,8 +9,8 @@
 //! （`ui/mod.rs::run_update_download`）通过 `Aria2Manager::add_uri_to_dir` 提交任务并轮询进度，
 //! 同时推送实时下载进度条、已下/总大小、速度与剩余时间到弹窗。
 //!
-//! 更新逻辑：下载到本地临时目录后，写出一个小的 `.bat` 脚本负责“等待本进程退出 → 覆盖
-//! 当前 exe → 重新启动 → 自我清理”，以 `CREATE_NO_WINDOW` 方式启动该脚本后，调用
+//! 更新逻辑：下载到本地临时目录后，写出一个小的 `.bat` 脚本负责“等待本进程退出 → 将
+//! 新 exe 复制为当前目录下的新版 Release 文件名 → 重新启动 → 删除旧文件与临时文件”，以 `CREATE_NO_WINDOW` 方式启动该脚本后，调用
 //! `App::quit()` 优雅退出，由脚本接管完成实际的文件替换与重启（Windows 下无法在进程运行
 //! 时覆盖自身的 exe 文件，因此必须借助一个独立的辅助进程）。
 
@@ -180,35 +180,47 @@ pub fn update_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// 生成负责"等待旧进程退出 → 覆盖旧 exe → 重新启动 → 自我清理"的批处理脚本内容。
-fn build_relaunch_script(new_exe: &Path, target_exe: &Path) -> String {
+/// 生成负责"等待旧进程退出 → 复制新版 exe → 重新启动 → 清理旧文件/临时文件"的批处理脚本内容。
+fn build_relaunch_script(new_exe: &Path, old_exe: &Path, final_exe: &Path) -> String {
     format!(
         "@echo off\r\n\
          chcp 65001 >nul\r\n\
          ping -n 4 127.0.0.1 >nul\r\n\
          set /a n=0\r\n\
          :retry\r\n\
-         copy /Y \"{new}\" \"{target}\" >nul 2>&1\r\n\
+         copy /Y \"{new}\" \"{final}\" >nul 2>&1\r\n\
          if not errorlevel 1 goto done\r\n\
          set /a n+=1\r\n\
-         if %n% GEQ 15 goto done\r\n\
+         if %n% GEQ 15 goto failed\r\n\
          ping -n 2 127.0.0.1 >nul\r\n\
          goto retry\r\n\
          :done\r\n\
-         start \"\" \"{target}\"\r\n\
-         del \"{new}\" >nul 2>&1\r\n\
+         start \"\" \"{final}\"\r\n\
+         if /I not \"{old}\"==\"{final}\" del \"{old}\" >nul 2>&1\r\n\
+         if /I not \"{new}\"==\"{final}\" del \"{new}\" >nul 2>&1\r\n\
+         goto cleanup\r\n\
+         :failed\r\n\
+         start \"\" \"{old}\"\r\n\
+         :cleanup\r\n\
          del \"%~f0\" >nul 2>&1\r\n",
         new = new_exe.display(),
-        target = target_exe.display(),
+        old = old_exe.display(),
+        final = final_exe.display(),
     )
 }
 
 /// 写出并以隐藏窗口方式启动"替换 + 重启"脚本。调用方在此之后应立即调用
 /// `App::quit()` 让当前进程退出，脚本会在等待期过后接管完成实际替换。
+///
+/// 新版本会使用 Release asset 的文件名复制到当前 exe 所在目录；这样即使用户从
+/// `bing-wallpaper-lib-v0.2.20-x64.exe` 或自定义的 `必应每日壁纸.exe` 启动，更新后
+/// 也会变成类似 `bing-wallpaper-lib-v0.2.25-x64.exe` 的新版文件名。
 pub fn spawn_relaunch(new_exe: &Path) -> Result<()> {
-    let target_exe = std::env::current_exe().context("获取当前可执行文件路径失败")?;
+    let old_exe = std::env::current_exe().context("获取当前可执行文件路径失败")?;
+    let asset_name = new_exe.file_name().context("获取新版可执行文件名失败")?;
+    let final_exe = old_exe.with_file_name(asset_name);
     let script_path = new_exe.with_file_name("apply_update.bat");
-    let script = build_relaunch_script(new_exe, &target_exe);
+    let script = build_relaunch_script(new_exe, &old_exe, &final_exe);
     std::fs::write(&script_path, script).context("写入更新脚本失败")?;
 
     #[cfg(windows)]
@@ -247,6 +259,22 @@ mod tests {
         assert!(parse_version("v0.1.1") > parse_version("v0.1.0"));
         assert!(parse_version("v1.0.0") > parse_version("v0.9.9"));
         assert!(parse_version("v0.1.0") <= parse_version("v0.1.0"));
+    }
+
+    #[test]
+    fn relaunch_script_uses_new_release_file_name() {
+        let new_exe = Path::new(
+            r"C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe",
+        );
+        let old_exe = Path::new(r"C:\Users\me\Desktop\必应每日壁纸.exe");
+        let final_exe = Path::new(r"C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe");
+        let script = build_relaunch_script(new_exe, old_exe, final_exe);
+
+        assert!(script.contains(r#"copy /Y "C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe" "C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe""#));
+        assert!(
+            script.contains(r#"start "" "C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe""#)
+        );
+        assert!(script.contains(r#"del "C:\Users\me\Desktop\必应每日壁纸.exe""#));
     }
 
     #[test]

@@ -30,6 +30,7 @@ mod tray;
 mod ui;
 mod updater;
 mod wallpaper_setter;
+mod window_sizing;
 
 use gpui::*;
 use gpui_component::theme::ThemeMode;
@@ -85,7 +86,9 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: Some(point(px(9.0), px(9.0))),
             }),
-            window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
+            window_bounds: Some(WindowBounds::Windowed(
+                window_sizing::default_window_bounds(),
+            )),
             window_min_size: Some(size(px(200.), px(200.))),
             // 开机自启的后台模式必须从创建窗口开始就不可见，否则进入桌面时会
             // 短暂闪过窗口边框；用户需要时可从托盘菜单重新显示主窗口。
