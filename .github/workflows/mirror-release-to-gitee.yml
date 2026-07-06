@@ -1,0 +1,116 @@
+name: Mirror release to Gitee
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to mirror, for example v0.2.27"
+        required: true
+        type: string
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+jobs:
+  mirror-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITEE_REPO: pandaligx/bing-wallpaper-lib
+      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download GitHub release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TAG_NAME}" ]; then
+            echo "TAG_NAME is empty."
+            exit 1
+          fi
+
+          rm -rf dist
+          mkdir -p dist
+          gh release download "${TAG_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "*.exe" \
+            --dir dist \
+            --clobber
+
+          count="$(find dist -maxdepth 1 -type f -name '*.exe' | wc -l)"
+          if [ "$count" -eq 0 ]; then
+            echo "No exe asset found in GitHub Release ${TAG_NAME}."
+            exit 1
+          fi
+
+      - name: Create or update Gitee release
+        shell: bash
+        env:
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GITEE_TOKEN}" ]; then
+            echo "GITEE_TOKEN is not configured; skipped Gitee Release mirror."
+            exit 0
+          fi
+
+          release_name="${RELEASE_NAME:-}"
+          if [ -z "$release_name" ]; then
+            release_name="$(gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json name --jq '.name // ""')"
+          fi
+          if [ -z "$release_name" ]; then
+            release_name="${TAG_NAME}"
+          fi
+
+          prerelease="${RELEASE_PRERELEASE:-}"
+          if [ -z "$prerelease" ]; then
+            prerelease="$(gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease --jq '.isPrerelease')"
+          fi
+
+          body_file="/tmp/gitee-release-body.md"
+          gh release view "${TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json body --jq '.body // ""' > "$body_file"
+          target_commitish="$(git rev-list -n 1 "${TAG_NAME}")"
+          api_base="https://gitee.com/api/v5/repos/${GITEE_REPO}/releases"
+
+          release_json="$(curl -fsS --get "${api_base}/tags/${TAG_NAME}" \
+            --data-urlencode "access_token=${GITEE_TOKEN}" || true)"
+          release_id="$(node -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); if (!input) process.exit(0); const data=JSON.parse(input); if (data.id) console.log(data.id);' <<<"$release_json")"
+
+          if [ -z "$release_id" ]; then
+            release_json="$(curl -fsS -X POST "$api_base" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "tag_name=${TAG_NAME}" \
+              -F "name=${release_name}" \
+              -F "body=<${body_file}" \
+              -F "prerelease=${prerelease}" \
+              -F "target_commitish=${target_commitish}")"
+            release_id="$(node -e 'const fs=require("fs"); const data=JSON.parse(fs.readFileSync(0,"utf8")); console.log(data.id);' <<<"$release_json")"
+          fi
+
+          attachments_api="${api_base}/${release_id}/attach_files"
+          existing="$(curl -fsS --get "$attachments_api" \
+            --data-urlencode "access_token=${GITEE_TOKEN}" \
+            --data-urlencode "per_page=100")"
+
+          for file in dist/*.exe; do
+            name="$(basename "$file")"
+            if node -e 'const fs=require("fs"); const name=process.argv[1]; const data=JSON.parse(fs.readFileSync(0,"utf8")); process.exit(data.some((asset) => asset.name === name) ? 0 : 1);' "$name" <<<"$existing"; then
+              echo "Gitee Release asset already exists: $name"
+              continue
+            fi
+
+            curl -fsS -X POST "$attachments_api" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "file=@${file}" >/dev/null
+            echo "Uploaded Gitee Release asset: $name"
+          done

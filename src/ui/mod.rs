@@ -1582,7 +1582,7 @@ async fn run_update_download(
             if index == 0 {
                 this.set_status(format!("正在下载新版本 v{} ...", release.version), cx);
             } else {
-                this.set_status("镜像下载失败，正在尝试 GitHub 官方地址...", cx);
+                this.set_status("国内发行版下载失败，正在尝试备用下载地址...", cx);
             }
             cx.notify();
         });

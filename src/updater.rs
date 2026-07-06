@@ -1,7 +1,8 @@
-//! 检查 GitHub Releases 上的最新版本，并支持一键下载 + 自动替换当前 exe + 重启。
+//! 检查 Gitee / GitHub Releases 上的最新版本，并支持一键下载 + 自动替换当前 exe + 重启。
 //!
-//! 检测逻辑：请求 GitHub 公开 REST API `GET /repos/{owner}/{repo}/releases/latest`，
-//! 解析其中的 `tag_name`（形如 `v0.1.0`）与当前编译时版本号（`CARGO_PKG_VERSION`）比较。
+//! 检测逻辑：优先请求 Gitee 公开 REST API `GET /repos/{owner}/{repo}/releases/latest`，
+//! 失败时回退 GitHub 公开 REST API，解析其中的 `tag_name`（形如 `v0.1.0`）与当前编译时
+//! 版本号（`CARGO_PKG_VERSION`）比较。
 //!
 //! 实际下载 **不**在本模块中用 `http_client` 直接 GET（GitHub 的 release asset URL 会
 //! 302 重定向到一个带签名参数的 `release-assets.githubusercontent.com` 地址，而 reqwest 处理
@@ -17,7 +18,7 @@
 use anyhow::{bail, Context, Result};
 use futures::AsyncReadExt;
 use http_client::{HttpClient, HttpRequestExt, Request};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,21 +28,9 @@ pub const REPO_HTML_URL: &str = "https://github.com/pandaligx/bing-wallpaper-lib
 const RELEASES_API_URL: &str =
     "https://api.github.com/repos/pandaligx/bing-wallpaper-lib/releases/latest";
 
-/// 可选的更新包镜像直链模板。
-///
-/// 留空时仍使用 GitHub Release asset 地址下载。若需要避开 GitHub asset 下载不稳定的问题，
-/// 可以在构建时设置环境变量 `BING_WALLPAPER_UPDATE_MIRROR_URL`，或把下面的常量改成你的
-/// 永久直链模板。支持以下占位符：
-///
-/// - `{version}`：不带 `v` 的版本号，例如 `0.2.9`
-/// - `{tag}`：带 `v` 的版本号，例如 `v0.2.9`
-/// - `{asset}`：GitHub Release 里的 exe 文件名，例如 `bing-wallpaper-lib-v0.2.9-x64.exe`
-///
-/// 示例：`https://www.lgxng.cn/1814328088/g/new/soft/{asset}`
-///
-/// 如果你的网盘/对象存储使用固定永久链接（每次覆盖同一个文件），也可以直接填完整 URL，
-/// 不使用任何占位符。
-const UPDATE_MIRROR_URL_TEMPLATE: &str = "https://www.lgxng.cn/1814328088/g/new/soft/{asset}";
+const GITEE_REPO_HTML_URL: &str = "https://gitee.com/pandaligx/bing-wallpaper-lib";
+const GITEE_RELEASES_API_URL: &str =
+    "https://gitee.com/api/v5/repos/pandaligx/bing-wallpaper-lib/releases/latest";
 
 /// 当前编译时的版本号（来自 `Cargo.toml` 的 `package.version`）。
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -53,9 +42,9 @@ pub struct ReleaseInfo {
     pub version: String,
     /// Release 在网页上的地址，供"查看详情"跳转。
     pub html_url: String,
-    /// 优先尝试的 `.exe` 资源地址（通常是镜像直链；无镜像时为 GitHub 官方地址）。
+    /// 优先尝试的 `.exe` 资源地址（通常是 Gitee Release 附件；无国内附件时为 GitHub 官方地址）。
     pub download_url: String,
-    /// 当优先地址失败时回退使用的 GitHub 官方 Release asset 地址。
+    /// 当优先地址失败时回退使用的备用 Release asset 地址。
     pub fallback_download_url: Option<String>,
     /// 资源文件名（用于本地临时文件命名）。
     pub asset_name: String,
@@ -74,6 +63,18 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
+#[derive(Deserialize)]
+struct GiteeRelease {
+    id: u64,
+    tag_name: String,
+}
+
+#[derive(Deserialize, Clone)]
+struct GiteeAsset {
+    name: String,
+    browser_download_url: String,
+}
+
 /// 解析形如 `"v1.2.3"` / `"1.2.3"` 的版本号为 `(major, minor, patch)`，用于比较新旧。
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let v = v.trim().trim_start_matches('v');
@@ -84,44 +85,38 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-fn mirror_template() -> Option<&'static str> {
-    option_env!("BING_WALLPAPER_UPDATE_MIRROR_URL")
-        .map(str::trim)
-        .filter(|template| !template.is_empty())
-        .or_else(|| {
-            let template = UPDATE_MIRROR_URL_TEMPLATE.trim();
-            (!template.is_empty()).then_some(template)
-        })
+fn github_release_download_url(tag: &str, asset_name: &str) -> String {
+    format!("{REPO_HTML_URL}/releases/download/{tag}/{asset_name}")
 }
 
-fn format_mirror_url(template: &str, version: &str, asset_name: &str) -> String {
-    template
-        .replace("{version}", version)
-        .replace("{tag}", &format!("v{version}"))
-        .replace("{asset}", asset_name)
+fn gitee_release_html_url(tag: &str) -> String {
+    format!("{GITEE_REPO_HTML_URL}/releases/tag/{tag}")
 }
 
-fn mirror_download_url(version: &str, asset_name: &str) -> Option<String> {
-    mirror_template().map(|template| format_mirror_url(template, version, asset_name))
+fn gitee_release_by_tag_api_url(tag: &str) -> String {
+    format!("https://gitee.com/api/v5/repos/pandaligx/bing-wallpaper-lib/releases/tags/{tag}")
 }
 
-/// 检查 GitHub 上是否已发布比当前运行版本更新的正式版本。
-///
-/// 返回 `Ok(Some(info))` 表示发现新版本；`Ok(None)` 表示已是最新（或无法判断）。
-pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<ReleaseInfo>> {
-    let request = Request::get(RELEASES_API_URL)
-        .header("Accept", "application/vnd.github+json")
+fn gitee_release_assets_api_url(release_id: u64) -> String {
+    format!(
+        "https://gitee.com/api/v5/repos/pandaligx/bing-wallpaper-lib/releases/{release_id}/attach_files?per_page=100"
+    )
+}
+
+async fn get_json<T: DeserializeOwned>(http: &Arc<dyn HttpClient>, url: &str) -> Result<T> {
+    let request = Request::get(url)
+        .header("Accept", "application/json")
         .follow_redirects(http_client::RedirectPolicy::FollowAll)
         .body(Default::default())
-        .context("构建更新检查请求失败")?;
+        .with_context(|| format!("构建请求失败: {url}"))?;
 
     let mut response = http
         .send(request)
         .await
-        .context("请求 GitHub Releases 接口失败")?;
+        .with_context(|| format!("请求失败: {url}"))?;
 
     if !response.status().is_success() {
-        bail!("GitHub Releases 接口返回错误状态码: {}", response.status());
+        bail!("接口返回错误状态码 {}: {url}", response.status());
     }
 
     let mut body = Vec::new();
@@ -129,10 +124,57 @@ pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<Releas
         .body_mut()
         .read_to_end(&mut body)
         .await
-        .context("读取更新检查响应失败")?;
+        .with_context(|| format!("读取响应失败: {url}"))?;
 
-    let release: GithubRelease =
-        serde_json::from_slice(&body).context("解析 GitHub Releases 响应 JSON 失败")?;
+    serde_json::from_slice(&body).with_context(|| format!("解析响应 JSON 失败: {url}"))
+}
+
+async fn gitee_asset_for_tag(
+    http: &Arc<dyn HttpClient>,
+    tag: &str,
+    asset_name: Option<&str>,
+) -> Result<Option<GiteeAsset>> {
+    let release: GiteeRelease = get_json(http, &gitee_release_by_tag_api_url(tag)).await?;
+    let assets: Vec<GiteeAsset> = get_json(http, &gitee_release_assets_api_url(release.id)).await?;
+
+    Ok(assets.into_iter().find(|asset| {
+        asset.name.ends_with(".exe") && asset_name.is_none_or(|name| asset.name == name)
+    }))
+}
+
+async fn check_gitee_for_update(http: &Arc<dyn HttpClient>) -> Result<Option<ReleaseInfo>> {
+    let release: GiteeRelease = get_json(http, GITEE_RELEASES_API_URL).await?;
+    let (Some(latest), Some(current)) = (
+        parse_version(&release.tag_name),
+        parse_version(CURRENT_VERSION),
+    ) else {
+        return Ok(None);
+    };
+
+    if latest <= current {
+        return Ok(None);
+    }
+
+    let Some(asset) = gitee_asset_for_tag(http, &release.tag_name, None).await? else {
+        bail!("Gitee Release {} 未找到 exe 附件", release.tag_name);
+    };
+
+    let version = release.tag_name.trim_start_matches('v').to_string();
+    let github_download_url = github_release_download_url(&release.tag_name, &asset.name);
+    let fallback_download_url =
+        (asset.browser_download_url != github_download_url).then_some(github_download_url);
+
+    Ok(Some(ReleaseInfo {
+        version,
+        html_url: gitee_release_html_url(&release.tag_name),
+        download_url: asset.browser_download_url,
+        fallback_download_url,
+        asset_name: asset.name,
+    }))
+}
+
+async fn check_github_for_update(http: &Arc<dyn HttpClient>) -> Result<Option<ReleaseInfo>> {
+    let release: GithubRelease = get_json(http, RELEASES_API_URL).await?;
 
     let (Some(latest), Some(current)) = (
         parse_version(&release.tag_name),
@@ -157,8 +199,16 @@ pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<Releas
 
     let version = release.tag_name.trim_start_matches('v').to_string();
     let github_download_url = asset.browser_download_url.clone();
-    let download_url =
-        mirror_download_url(&version, &asset.name).unwrap_or_else(|| github_download_url.clone());
+    let gitee_download_url =
+        match gitee_asset_for_tag(http, &release.tag_name, Some(&asset.name)).await {
+            Ok(Some(asset)) => Some(asset.browser_download_url),
+            Ok(None) => None,
+            Err(err) => {
+                log::warn!("Gitee Release 附件查询失败，将使用 GitHub 下载地址: {err:#}");
+                None
+            }
+        };
+    let download_url = gitee_download_url.unwrap_or_else(|| github_download_url.clone());
     let fallback_download_url =
         (download_url != github_download_url).then_some(github_download_url);
 
@@ -169,6 +219,26 @@ pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<Releas
         fallback_download_url,
         asset_name: asset.name,
     }))
+}
+
+/// 检查 Gitee / GitHub 上是否已发布比当前运行版本更新的正式版本。
+///
+/// 返回 `Ok(Some(info))` 表示发现新版本；`Ok(None)` 表示已是最新（或无法判断）。
+pub async fn check_for_update(http: Arc<dyn HttpClient>) -> Result<Option<ReleaseInfo>> {
+    match check_gitee_for_update(&http).await {
+        Ok(Some(info)) => Ok(Some(info)),
+        Ok(None) => match check_github_for_update(&http).await {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                log::warn!("GitHub Releases 检查失败，已采用 Gitee 当前版本判断: {err:#}");
+                Ok(None)
+            }
+        },
+        Err(gitee_err) => {
+            log::warn!("Gitee Releases 检查失败，将回退 GitHub: {gitee_err:#}");
+            check_github_for_update(&http).await
+        }
+    }
 }
 
 /// 下载更新资源目录：`%LOCALAPPDATA%\BingWallpaperLib\update`。
@@ -278,15 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn formats_mirror_download_url_template() {
-        let url = format_mirror_url(
-            "https://download.example.com/{tag}/{asset}?version={version}",
-            "0.2.9",
-            "bing-wallpaper-lib-v0.2.9-x64.exe",
-        );
+    fn formats_github_release_download_url() {
+        let url = github_release_download_url("v0.2.9", "bing-wallpaper-lib-v0.2.9-x64.exe");
         assert_eq!(
             url,
-            "https://download.example.com/v0.2.9/bing-wallpaper-lib-v0.2.9-x64.exe?version=0.2.9"
+            "https://github.com/pandaligx/bing-wallpaper-lib/releases/download/v0.2.9/bing-wallpaper-lib-v0.2.9-x64.exe"
         );
     }
 }
