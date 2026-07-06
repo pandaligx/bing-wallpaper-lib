@@ -11,6 +11,7 @@ permissions:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       ARCHIVE_SOURCE_URL: https://raw.githubusercontent.com/zxyongyo/bing-daily-wallpaper/master/map.json
       ARCHIVE_TARGET_PATH: assets/data/zxyongyo-bing-wallpaper.json
@@ -56,15 +57,58 @@ jobs:
       - name: Push to Gitee mirror
         if: ${{ steps.commit.outputs.changed == 'true' }}
         shell: bash
+        timeout-minutes: 5
         env:
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
           GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
-          if [ -z "${GITEE_USERNAME}" ] || [ -z "${GITEE_TOKEN}" ]; then
+          if [ -z "${GITEE_SSH_PRIVATE_KEY}" ] && { [ -z "${GITEE_USERNAME}" ] || [ -z "${GITEE_TOKEN}" ]; }; then
             echo "Gitee credentials are not configured; skipped mirror push."
             exit 0
           fi
-          git remote add gitee "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
-          git push gitee HEAD:main
-          git push gitee --tags
+
+          if [ -n "${GITEE_SSH_PRIVATE_KEY}" ]; then
+            mkdir -p ~/.ssh
+            printf '%s\n' "${GITEE_SSH_PRIVATE_KEY}" > ~/.ssh/gitee_actions_key
+            chmod 600 ~/.ssh/gitee_actions_key
+            ssh-keyscan gitee.com >> ~/.ssh/known_hosts
+            git config core.sshCommand "ssh -i ~/.ssh/gitee_actions_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+            git remote add gitee "git@gitee.com:${GITEE_REPO}.git"
+          else
+            git remote add gitee "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          fi
+
+          if timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee HEAD:main; then
+            timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee --tags
+            exit 0
+          fi
+
+          if [ -z "${GITEE_TOKEN}" ]; then
+            echo "Git push to Gitee failed or timed out, and GITEE_TOKEN is unavailable for API fallback."
+            exit 1
+          fi
+
+          echo "Git push to Gitee failed or timed out; updating archive file through Gitee Contents API."
+          encoded_path="${ARCHIVE_TARGET_PATH//\//%2F}"
+          api_url="https://gitee.com/api/v5/repos/${GITEE_REPO}/contents/${encoded_path}"
+          content="$(base64 -w 0 "$ARCHIVE_TARGET_PATH")"
+          response="$(curl -fsS --get "$api_url" --data-urlencode "access_token=${GITEE_TOKEN}" --data-urlencode "ref=main" || true)"
+          sha="$(node -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); if (!input) process.exit(0); const data=JSON.parse(input); if (data.sha) console.log(data.sha);' <<<"$response")"
+
+          if [ -n "$sha" ]; then
+            curl -fsS -X PUT "$api_url" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "content=${content}" \
+              -F "sha=${sha}" \
+              -F "message=chore: sync wallpaper archive" \
+              -F "branch=main" >/dev/null
+          else
+            curl -fsS -X POST "$api_url" \
+              -F "access_token=${GITEE_TOKEN}" \
+              -F "content=${content}" \
+              -F "message=chore: sync wallpaper archive" \
+              -F "branch=main" >/dev/null
+          fi

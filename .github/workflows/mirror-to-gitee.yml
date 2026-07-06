@@ -9,6 +9,7 @@ on:
 jobs:
   mirror:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       GITEE_REPO: pandaligx/bing-wallpaper-lib
     steps:
@@ -19,15 +20,28 @@ jobs:
 
       - name: Push current branch to Gitee
         shell: bash
+        timeout-minutes: 5
         env:
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
           GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
           set -euo pipefail
-          if [ -z "${GITEE_USERNAME}" ] || [ -z "${GITEE_TOKEN}" ]; then
+
+          if [ -n "${GITEE_SSH_PRIVATE_KEY}" ]; then
+            mkdir -p ~/.ssh
+            printf '%s\n' "${GITEE_SSH_PRIVATE_KEY}" > ~/.ssh/gitee_actions_key
+            chmod 600 ~/.ssh/gitee_actions_key
+            ssh-keyscan gitee.com >> ~/.ssh/known_hosts
+            git config core.sshCommand "ssh -i ~/.ssh/gitee_actions_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+            git remote add gitee "git@gitee.com:${GITEE_REPO}.git"
+          elif [ -n "${GITEE_USERNAME}" ] && [ -n "${GITEE_TOKEN}" ]; then
+            git remote add gitee "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          else
             echo "Gitee credentials are not configured; skipped mirror push."
             exit 0
           fi
-          git remote add gitee "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
-          git push gitee HEAD:main
-          git push gitee --tags
+
+          timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee HEAD:main
+          timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee --tags
