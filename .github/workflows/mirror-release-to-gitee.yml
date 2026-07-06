@@ -54,6 +54,7 @@ jobs:
 
       - name: Create or update Gitee release
         shell: bash
+        timeout-minutes: 8
         env:
           RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
@@ -82,12 +83,14 @@ jobs:
           target_commitish="$(git rev-list -n 1 "${TAG_NAME}")"
           api_base="https://gitee.com/api/v5/repos/${GITEE_REPO}/releases"
 
-          release_json="$(curl -fsS --get "${api_base}/tags/${TAG_NAME}" \
+          curl_args=(-fsS --connect-timeout 30 --max-time 300 --retry 2 --retry-delay 5)
+
+          release_json="$(curl "${curl_args[@]}" --get "${api_base}/tags/${TAG_NAME}" \
             --data-urlencode "access_token=${GITEE_TOKEN}" || true)"
           release_id="$(node -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); if (!input) process.exit(0); const data=JSON.parse(input); if (data && data.id) console.log(data.id);' <<<"$release_json")"
 
           if [ -z "$release_id" ]; then
-            release_json="$(curl -fsS -X POST "$api_base" \
+            release_json="$(curl "${curl_args[@]}" -X POST "$api_base" \
               -F "access_token=${GITEE_TOKEN}" \
               -F "tag_name=${TAG_NAME}" \
               -F "name=${release_name}" \
@@ -98,7 +101,7 @@ jobs:
           fi
 
           attachments_api="${api_base}/${release_id}/attach_files"
-          existing="$(curl -fsS --get "$attachments_api" \
+          existing="$(curl "${curl_args[@]}" --get "$attachments_api" \
             --data-urlencode "access_token=${GITEE_TOKEN}" \
             --data-urlencode "per_page=100")"
 
@@ -109,7 +112,7 @@ jobs:
               continue
             fi
 
-            curl -fsS -X POST "$attachments_api" \
+            curl "${curl_args[@]}" -X POST "$attachments_api" \
               -F "access_token=${GITEE_TOKEN}" \
               -F "file=@${file}" >/dev/null
             echo "Uploaded Gitee Release asset: $name"
