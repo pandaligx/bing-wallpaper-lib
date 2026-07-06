@@ -9,8 +9,8 @@
 
 功能：
 
-1. 自动获取开源项目 [niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 维护的**全部历史必应每日壁纸**（2021-02-01 至今），
-   并按"年 / 月"在左侧导航栏中分类展示。
+1. 自动获取开源项目 [zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) 归档的**全部历史必应每日壁纸**，
+   并用 Bing 官方 `HPImageArchive.aspx` API 补强最近数据，按"年 / 月"在左侧导航栏中分类展示。
 2. 每 30 分钟后台自动检查一次是否有新的一天的壁纸发布，一旦发布立即增量更新本地列表与缓存。
 3. 支持将任意一天的壁纸**下载**到本地，或**一键设置为 Windows 桌面壁纸**，下载时有**实时进度条**。
 4. 下载引擎基于 [aria2](https://github.com/aria2/aria2) 的 JSON-RPC 接口，并以最高速度（多连接分片）下载。
@@ -24,51 +24,30 @@
 
 ## 2. 数据源说明（重要）
 
-- 权威数据源：[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 仓库中的两份 Markdown：
-  - `zh-cn/bing-wallpaper.md`：中文标题版本，自 v0.2.4 起作为主数据源。
-  - `bing-wallpaper.md`：英文标题版本，自 v0.2.5 起作为补全集，用于补齐中文版缺失的历史日期。
-- **多镜像回退策略（自 v0.2.1 起，见 `src/fetcher.rs::CHINESE_SOURCE_URLS` / `ENGLISH_SOURCE_URLS`）**：
-  `raw.githubusercontent.com` 在中国大陆部分网络环境下经常无法直接访问（需要科学上网），因此中文、英文两组源
-  都按顺序依次尝试 jsDelivr CDN 镜像、jsDelivr Fastly 节点、GitHub 官方原始地址。中文主源为：
-  1. `https://cdn.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md`（jsDelivr CDN 镜像，优先）
-  2. `https://fastly.jsdelivr.net/gh/niumoo/bing-wallpaper@main/zh-cn/bing-wallpaper.md`（jsDelivr 备用节点）
-  3. `https://raw.githubusercontent.com/niumoo/bing-wallpaper/main/zh-cn/bing-wallpaper.md`（GitHub 官方原始地址，兜底）
-
-  英文补全集使用同样顺序，但路径为仓库根目录下的 `bing-wallpaper.md`。每组源第一个请求成功的地址即被采用，
-  任何一个失败都只记一条 `log::warn!` 并尝试下一个；若中文源成功但英文源失败，则只展示中文源已有范围，
-  若中文源失败但英文源成功，则退回英文列表；若两组远程源全部失败，启动流程与首页手动刷新会退回到
-  `assets/data/bing-wallpaper-zh-cn.md` / `assets/data/bing-wallpaper-en.md` 内置快照，保证无 VPN 或 GitHub/CDN
-  临时不可达时仍能展示历史图库。内置快照不是实时权威源，网络恢复后点击首页“重新获取壁纸列表”或等待后台刷新会
-  重新写回最新缓存。发布新版本前如希望离线兜底尽量新，应重新下载这两份快照。
-  **已知权衡**：jsDelivr 对 GitHub 仓库内容存在数小时级（历史上最长约 12 小时）的 CDN 缓存延迟，但本项目
-  本身只每 30 分钟检查一次是否有新的一天壁纸，这点延迟可以接受，换来的是国内绝大多数网络环境下无需 VPN
-  即可直接使用。若以后 jsDelivr 出现长期不可用/正确性问题，可在两组 `*_SOURCE_URLS` 中调整顺序或替换镜像。
-- 该文件是一份纯文本 Markdown，每天一行，格式形如：
-
-  ```
-  2026-07-02 | [埃斯纳神庙穹顶天花板, 埃及 (© Nick Brundle Photography/Getty Images)](https://cn.bing.com/th?id=OHR.TempleEsna_ZH-CN9834689523_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4)
-  ```
-
-  与英文版相比有两处区别（均不影响现有解析器）：
-
-  1. 图片 URL 中 OHR 文件名里的语言变体是 `_ZH-CN` 而不是 `_EN-US`，但 Bing CDN 实际返回的图片内容完全相同。
-  2. 中文文件的**相邻两条记录之间多出一个空行**，英文版则不插空行。`parse_markdown` 本来就会过滤
-     `line.is_empty()` 与不以数字开头的行，因此两种格式均能直接兼容。
-
-- 两份文件都按日期**倒序**排列（最新一天在最前面）。`fetch_all` 会先对各自列表按日期去重，再合并：同一日期
-  永远优先保留中文记录，只有中文版缺失的日期才追加英文记录，最后再统一按日期倒序排序。因此不会因为同时拉取
-  中英文两份列表而让同一天/同一张图片重复出现在界面里。合并后的列表既可以用于首次全量拉取历史，也可以用于
-  "取最上面一条日期，与本地缓存的最新日期比较"来判断是否有新的一天发布。
-- **已知数据质量问题（解析时必须容错）：**
-  - 个别日期存在**两条重复记录**（如 `2025-04-10`、`2025-01-17`、`2024-07-19`、`2024-04-24` 等），
-    图片 URL 不同。当前策略是**保留同一天中第一条出现的记录**（`fetcher::dedup_by_date`）。
-  - 2023-02-09 之前的记录，图片 URL **不带** `&rf=...&pid=hp&w=3840&h=2160&rs=1&c=4` 查询参数，只是一个裸的
-    `.jpg` 链接；解析正则必须同时兼容这两种形式（见 `fetcher::line_regex`）。
-  - 中文版文件中少量日期（如 `2025-05-15`）的标题里存在上游数据源留下的 UTF-8 替换字符 `�`
-    （部分乱码），不尝试在解析层"修复"，直接展示即可。
-- 解析实现：`src/fetcher.rs` 中的 `parse_markdown` / `dedup_by_date` / `merge_entries_prefer_primary` /
-  `fetch_all`，并附带单元测试覆盖以上各类情况（现代格式、历史无查询参数格式、同日期去重、中文标题、带空行的
-  中文多行样本、中文优先 + 英文补全集合并）。
+- 历史归档主数据源：[zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) 的 `map.json`。
+  该文件是 JSON 格式，字段包含 `date`、`title`（Bing 当日短标题）、`copyright`（地点/版权说明）、
+  `url_preview`、`url_1080`、`url_4k` 等。本项目使用 `url_4k` 作为下载/设置壁纸的高清地址，并将
+  `title` 保存为 `WallpaperEntry::headline`，用于卡片标题和下载文件名前缀。
+- 运行时远程源回退顺序见 `src/fetcher.rs::ZXYONGYO_ARCHIVE_URLS`：
+  1. `https://gitee.com/pandaligx/bing-wallpaper-lib/raw/main/assets/data/zxyongyo-bing-wallpaper.json`
+     （本项目 Gitee 国内镜像，优先，解决中国大陆不开 VPN 时 GitHub raw 访问慢/失败的问题）
+  2. `https://cdn.jsdelivr.net/gh/zxyongyo/bing-daily-wallpaper@master/map.json`
+  3. `https://fastly.jsdelivr.net/gh/zxyongyo/bing-daily-wallpaper@master/map.json`
+  4. `https://raw.githubusercontent.com/zxyongyo/bing-daily-wallpaper/master/map.json`
+- 本项目内置快照为 `assets/data/zxyongyo-bing-wallpaper.json`。启动时会先加载本地缓存；若缓存不存在，
+  立即展示内置快照，避免无 VPN 或远程源响应慢时首页长时间空白。后台刷新成功后会写回本地缓存。
+- 自动同步：`.github/workflows/sync-wallpaper-archive.yml` 每 6 小时拉取上游 `map.json`，校验后更新
+  `assets/data/zxyongyo-bing-wallpaper.json` 并提交到 GitHub；若 GitHub Actions secrets 中配置了
+  `GITEE_USERNAME` / `GITEE_TOKEN`，还会同步推送到 Gitee。`.github/workflows/mirror-to-gitee.yml`
+  会在 GitHub `main` 分支每次 push 后把代码与 tag 同步到 Gitee。
+- 最新数据补强：Bing 官方 `HPImageArchive.aspx` 只能稳定提供最近一小段历史（`idx=0`、`idx=8`），
+  更深的 `idx` 会被服务端折回最近数据。因此 `fetch_all` 会先获取 zxyongyo 历史归档，再用 Bing 官方最近窗口覆盖同日期记录。
+- 去重策略：`merge_entries_prefer_primary` 同时按日期和 OHR 图片标识去重。由于 Bing 官方 API 与第三方归档
+  对“日期”的取法偶尔会相差一天，同一张图片可能出现在相邻日期；本项目优先保留 Bing 官方最近窗口中的记录，
+  避免首页出现重复卡片。
+- 解析实现：`src/fetcher.rs` 中的 `parse_zxyongyo_archive` / `zxyongyo_image_to_entry` /
+  `bing_image_to_entry` / `dedup_by_date` / `merge_entries_prefer_primary` / `fetch_all`，并附带单元测试覆盖
+  JSON 解析、官方最近数据覆盖、跨日期同图去重、内置快照可解析等情况。
 
 ## 3. 架构与模块划分
 
@@ -80,7 +59,7 @@ src/
 ├── paths.rs             应用数据目录、内置 aria2c.exe 的释放逻辑、默认/生效下载目录（见 §6、§12）
 ├── settings.rs          持久化应用设置（自定义下载路径），JSON 读写（见 §12）
 ├── model.rs             WallpaperEntry / MonthGroup 数据结构，按年月分组算法，缩略图 URL 转换
-├── fetcher.rs           抓取 + 解析中英文 bing-wallpaper.md、中文优先合并、去重、本地 JSON 缓存、"是否有新一天"检测
+├── fetcher.rs           抓取 + 解析 zxyongyo map.json 与 Bing 官方最近窗口、去重、本地 JSON 缓存、"是否有新一天"检测
 ├── downloader.rs        Aria2Manager：管理内置 aria2c.exe 子进程 + JSON-RPC 客户端（见 §7、§12）
 ├── wallpaper_setter.rs  调用 Windows IDesktopWallpaper / SystemParametersInfoW 设置桌面壁纸，支持多显示器
 ├── updater.rs           检查 GitHub Releases 最新版本，下载 + 自我替换重启（见 §14.3）
@@ -106,8 +85,8 @@ flowchart TD
     C --> D[打开主窗口 WallpaperLibrary]
     D --> D2[Theme::sync_system_appearance 同步系统主题]
     D --> E[加载本地 JSON 缓存快速展示]
-    E --> F[后台拉取 bing-wallpaper.md]
-    F --> G[解析 + 去重 + 按年月分组]
+    E --> F[后台拉取 Gitee/jsDelivr/GitHub map.json + Bing 官方最近窗口]
+    F --> G[解析 JSON + 日期/OHR 去重 + 按年月分组]
     G --> H[写回本地缓存 + 刷新界面]
     H --> I[每 30 分钟循环回到 F]
     D --> J[用户点击下载/设为壁纸]
@@ -713,7 +692,7 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
 | `.cargo/config.toml` | 强制 `x86_64-pc-windows-msvc` + CRT 静态链接 |
 | `build.rs` | 构建时嵌入 `ico/icon.rc`（图标 + 版本信息） |
 | `assets/aria2c.exe` | 内嵌的 aria2 官方预编译二进制（GPL-2.0） |
-| `assets/data/bing-wallpaper-*.md` | 内置壁纸列表快照，远程数据源全部失败时用于离线兜底 |
+| `assets/data/zxyongyo-bing-wallpaper.json` | 内置 zxyongyo 壁纸归档快照，远程数据源全部失败时用于离线兜底 |
 | `ico/icon.ico` | 多分辨率（16~256px）应用图标 |
 | `ico/icon.rc` | Windows 资源脚本：图标（数字 ID `1`）+ VERSIONINFO |
 | `scripts/generate_ico.ps1` | 从源图重新生成多分辨率 `icon.ico` 的工具脚本 |
@@ -945,3 +924,23 @@ v0.2.21 修复方式：
 设置浮层现在在右上角提供一个独立的关闭图标按钮（使用已注册的 `icons/close.svg`），点击后只关闭设置面板，不影响当前页面状态；面板外侧透明遮罩仍保留点击关闭能力。
 
 曾有一个体验问题：设置面板打开后，鼠标移动到左下角原“设置”按钮所在位置时，即使该区域已被设置面板覆盖，底层按钮的 `.tooltip("设置")` 仍可能显示出来，造成类似 tooltip 穿透的观感。修复方式是在 `render` 中根据 `settings_panel_open` 状态条件化设置 tooltip：只有面板关闭时才对左下角设置按钮调用 `.tooltip("设置")`，面板打开期间不注册该 tooltip。
+
+## 25. zxyongyo/Gitee 数据源与国内自动镜像（v0.2.27）
+
+旧的 `assets/data/bing-wallpaper-zh-cn.md` / `assets/data/bing-wallpaper-en.md` Markdown 快照已移除。内置快照改为
+`assets/data/zxyongyo-bing-wallpaper.json`，格式与 `zxyongyo/bing-daily-wallpaper` 的 `map.json` 一致。
+
+`fetcher.rs` 运行时优先访问本项目 Gitee raw 镜像，再回退到 jsDelivr、Fastly jsDelivr、GitHub raw。这样中国大陆用户不开 VPN
+时也能尽快拿到历史归档；所有远程源失败时仍会立即展示 exe 内置快照。
+
+`main.rs` 启动流程改为“本地缓存优先；缓存不存在则立即展示内置快照；后台再刷新远程数据”，避免首屏出现“0 张 / 正在加载”
+并长时间空白。
+
+新增 `.github/workflows/sync-wallpaper-archive.yml`：每 6 小时同步上游 `map.json` 到本仓库快照文件，有变化时自动提交，
+并在配置 `GITEE_USERNAME` / `GITEE_TOKEN` 后推送到 Gitee。
+
+新增 `.github/workflows/mirror-to-gitee.yml`：GitHub `main` 分支每次 push 后同步代码与 tag 到
+`gitee.com/pandaligx/bing-wallpaper-lib`。Gitee 私人令牌只应配置在 GitHub Actions secrets 中，不得写入仓库文件或命令历史。
+
+下载文件名和卡片标题使用 Bing 短标题：卡片标题形如 `2026-07-04 紫色花海`；下载文件名形如
+`2026-07-04_紫色花海_瓦朗索勒高原的薰衣草行_普罗旺斯_法国.jpg`。

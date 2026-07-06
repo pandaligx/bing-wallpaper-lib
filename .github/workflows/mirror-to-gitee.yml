@@ -1,0 +1,33 @@
+name: Mirror to Gitee
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      GITEE_REPO: pandaligx/bing-wallpaper-lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push current branch to Gitee
+        shell: bash
+        env:
+          GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GITEE_USERNAME}" ] || [ -z "${GITEE_TOKEN}" ]; then
+            echo "Gitee credentials are not configured; skipped mirror push."
+            exit 0
+          fi
+          git remote add gitee "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          git push gitee HEAD:main
+          git push gitee --tags

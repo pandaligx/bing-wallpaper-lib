@@ -1,0 +1,70 @@
+name: Sync wallpaper archive
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      ARCHIVE_SOURCE_URL: https://raw.githubusercontent.com/zxyongyo/bing-daily-wallpaper/master/map.json
+      ARCHIVE_TARGET_PATH: assets/data/zxyongyo-bing-wallpaper.json
+      GITEE_REPO: pandaligx/bing-wallpaper-lib
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download and validate archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL "$ARCHIVE_SOURCE_URL" -o /tmp/zxyongyo-bing-wallpaper.json
+          node <<'NODE'
+          const fs = require("fs");
+          const source = "/tmp/zxyongyo-bing-wallpaper.json";
+          const target = process.env.ARCHIVE_TARGET_PATH;
+          const data = JSON.parse(fs.readFileSync(source, "utf8"));
+          if (!data || !Array.isArray(data.images) || data.images.length < 1000) {
+            throw new Error("Wallpaper archive does not look valid.");
+          }
+          fs.writeFileSync(target, JSON.stringify(data));
+          NODE
+
+      - name: Commit archive update
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- "$ARCHIVE_TARGET_PATH"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$ARCHIVE_TARGET_PATH"
+          git commit -m "chore: sync wallpaper archive"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push to Gitee mirror
+        if: ${{ steps.commit.outputs.changed == 'true' }}
+        shell: bash
+        env:
+          GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GITEE_USERNAME}" ] || [ -z "${GITEE_TOKEN}" ]; then
+            echo "Gitee credentials are not configured; skipped mirror push."
+            exit 0
+          fi
+          git remote add gitee "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          git push gitee HEAD:main
+          git push gitee --tags

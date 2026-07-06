@@ -1107,7 +1107,7 @@ impl WallpaperLibrary {
         cx: &mut Context<Self>,
     ) {
         let view = cx.entity();
-        let date_str = entry.date.format("%Y-%m-%d").to_string();
+        let date_str = entry.date_heading();
         let title = entry.title.clone();
         let url = entry.url.clone();
         let downloading = self.progress.contains_key(&entry.date);
@@ -1435,7 +1435,7 @@ fn open_about_dialog(window: &mut Window, cx: &mut App) {
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(
-                                "壁纸数据来源于 niumoo/bing-wallpaper，本软件项目托管于 GitHub。",
+                                "最新壁纸来自 Bing 官方接口；历史归档来自 zxyongyo/bing-daily-wallpaper，并使用本地缓存与内置快照兜底。本软件项目托管于 GitHub。",
                             ),
                         )
                         .child(
@@ -1443,10 +1443,10 @@ fn open_about_dialog(window: &mut Window, cx: &mut App) {
                                 .gap_2()
                                 .child(
                                     Button::new("about-bing-wallpaper")
-                                        .label("数据源项目")
+                                        .label("历史归档项目")
                                         .outline()
                                         .on_click(|_, _, cx| {
-                                            cx.open_url("https://github.com/niumoo/bing-wallpaper");
+                                            cx.open_url("https://github.com/zxyongyo/bing-daily-wallpaper");
                                         }),
                                 )
                                 .child(
@@ -3427,7 +3427,7 @@ impl WallpaperLibrary {
     /// “设为桌面壁纸”按钮（纯 CSS 式的 group-hover 实现，不依赖额外应用状态）。
     fn render_home_card(&self, entry: WallpaperEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let group_name: SharedString = format!("home-card-{}", entry.date).into();
-        let date_str = entry.date.format("%Y-%m-%d").to_string();
+        let date_str = entry.date_heading();
         let entry_for_preview = entry.clone();
         let entry_for_wallpaper = entry.clone();
         let favorite_date = entry.date;
@@ -3565,7 +3565,7 @@ impl WallpaperLibrary {
         let entry_for_wallpaper = entry.clone();
         let favorite_date = entry.date;
         let is_favorite = self.favorites.contains(&entry.date);
-        let date_str = entry.date.format("%Y-%m-%d").to_string();
+        let date_str = entry.date_heading();
         let progress = self.progress.get(&entry.date).copied();
 
         h_flex()

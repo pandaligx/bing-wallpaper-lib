@@ -4,7 +4,7 @@
 
 ### ✨ 功能特性
 
-- 自动抓取 [niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 维护的全部历史必应每日壁纸（2021-02-01 至今），按年 / 月分类展示
+- 自动抓取历史必应每日壁纸归档，按年 / 月分类展示
 - 每 30 分钟自动检查更新，第一时间获取新的一天壁纸
 - 首页网格视图，支持无限滚动、悬停预览、放大预览弹窗
 - 基于 [aria2](https://github.com/aria2/aria2) JSON-RPC 接口的高速多连接下载引擎，实时进度条

@@ -5,7 +5,7 @@
 //! 2. 检测是否已有另一个实例在运行（见 [`single_instance`] 模块）；
 //! 3. 初始化日志；
 //! 4. 启动 GPUI 应用，加载本地缓存的壁纸列表（如果存在）用于快速展示；
-//! 5. 后台异步拉取 `bing-wallpaper.md` 获取最新的完整历史壁纸列表并写入缓存；
+//! 5. 后台异步拉取 Bing 官方 API 最新壁纸，并与本地历史缓存合并后写回缓存；
 //! 6. 启动一个每 30 分钟轮询一次的后台任务，检测是否有新的一天的壁纸发布。
 //!
 //! 使用 `windows` 子系统构建（仅在 release 构建时生效，见下方 `windows_subsystem`
@@ -211,11 +211,16 @@ fn main() {
 
         let view_for_update = view.clone();
         cx.spawn(async move |cx| {
-            // 优先加载本地缓存，尽快展示已知内容。
-            if let Ok(Some(cached)) = fetcher::load_cache() {
+            // 优先加载本地缓存；首次安装或缓存缺失时先展示内置历史快照，避免网络慢时首屏空白。
+            let initial_entries = fetcher::load_cache()
+                .ok()
+                .flatten()
+                .filter(|entries| !entries.is_empty())
+                .unwrap_or_else(fetcher::bundled_entries);
+            if !initial_entries.is_empty() {
                 let _ = window.update(cx, |_, _, app_cx| {
                     view.update(app_cx, |this, cx| {
-                        this.set_entries(cached, cx);
+                        this.set_entries(initial_entries, cx);
                     });
                 });
             }

@@ -14,9 +14,9 @@
 </p>
 
 一款基于 [Rust](https://www.rust-lang.org/) + [GPUI](https://gpui.rs)（Zed 编辑器同款 GPU 加速 UI 框架）与
-[gpui-component](https://longbridge.github.io/gpui-component/zh-CN/) 组件库编写的 Windows 桌面应用，自动抓取开源项目
-[niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 维护的**全部历史必应每日壁纸**（2021-02-01 至今），
-按年 / 月分类展示，并支持一键下载 / 设为桌面壁纸、中文描述优先展示、每日自动壁纸、后台常驻与自动检查更新。
+[gpui-component](https://longbridge.github.io/gpui-component/zh-CN/) 组件库编写的 Windows 桌面应用，自动获取
+[zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) 归档的**全部历史必应每日壁纸**，
+并用 Bing 官方 API 补强最近数据，按年 / 月分类展示，支持一键下载 / 设为桌面壁纸、中文标题展示、每日自动壁纸、后台常驻与自动检查更新。
 
 ## 目录
 
@@ -33,10 +33,10 @@
 
 | | |
 |---|---|
-| 📅 **全部历史壁纸** | 自动拉取 2021-02-01 至今的每日必应壁纸，中文数据源优先，中文缺失的历史日期用英文数据源补齐，左侧导航栏按年 / 月分类，可折叠收起。 |
+| 📅 **全部历史壁纸** | 自动拉取 zxyongyo/bing-daily-wallpaper 归档的每日必应壁纸，优先访问本项目 Gitee 国内镜像，失败后回退 jsDelivr/GitHub，左侧导航栏按年 / 月分类，可折叠收起。 |
 | 🔄 **自动增量更新** | 每 30 分钟检查一次是否有新的一天壁纸发布，检测到后自动更新列表与本地缓存。 |
 | 🖼️ **首页网格视图** | 默认展示最近壁纸网格，使用虚拟列表按可见区域渲染，右侧可拖动滚动条 + 右下角“回到顶部”按钮；点击图片可放大预览，悬停按钮可直接设为桌面壁纸并收藏。 |
-| ⬇️ **高速下载引擎** | 基于 [aria2](https://github.com/aria2/aria2) 的 JSON-RPC 接口，多连接分片、不限速，下载时有实时进度条。下载文件名会保留日期、景物标题与地点信息，并自动清理 Windows 非法字符。 |
+| ⬇️ **高速下载引擎** | 基于 [aria2](https://github.com/aria2/aria2) 的 JSON-RPC 接口，多连接分片、不限速，下载时有实时进度条。下载文件名会保留日期、Bing 短标题、景物地点信息，并自动清理 Windows 非法字符。 |
 | 🖥️ **一键设置桌面壁纸** | 通过 Windows 桌面壁纸 API 设置壁纸，支持同步全部显示器或只设置某一个显示器。 |
 | ❤ **我的收藏** | 左侧导航栏新增“我的收藏”，首页和归档列表可用固定尺寸心形图标收藏/取消收藏壁纸。 |
 | 📥 **下载中心** | 左侧导航栏新增“下载中心”，包含“批量下载”（全部历史 / 当前月份 / 收藏 / 日历式日期范围选择）与“已下载的壁纸”（本地壁纸目录缩略图画廊，点击图片可预览大图并直接设为桌面壁纸，支持单个或勾选批量删除）两个子页面；关键按钮带悬浮提示，顶部状态提示会自动截断，不遮挡右侧操作按钮。 |
@@ -89,9 +89,11 @@ cargo build --release                        # 发布构建
 
 ## 数据来源
 
-壁纸数据来自 [niumoo/bing-wallpaper](https://github.com/niumoo/bing-wallpaper) 维护的 Markdown 文件：
-优先使用中文标题版本 [`zh-cn/bing-wallpaper.md`](https://github.com/niumoo/bing-wallpaper/blob/main/zh-cn/bing-wallpaper.md)，
-并用英文版 [`bing-wallpaper.md`](https://github.com/niumoo/bing-wallpaper/blob/main/bing-wallpaper.md) 补齐中文源缺失的历史日期。
+壁纸历史归档来自 [zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) 的 `map.json`。
+本项目通过 GitHub Actions 每 6 小时同步一次到仓库内置快照
+[`assets/data/zxyongyo-bing-wallpaper.json`](assets/data/zxyongyo-bing-wallpaper.json)，并同步到
+[Gitee 国内镜像](https://gitee.com/pandaligx/bing-wallpaper-lib)，软件运行时优先访问 Gitee raw 地址，
+失败后回退 jsDelivr / GitHub；Bing 官方 `HPImageArchive.aspx` API 用于补强最近发布的壁纸数据。
 本项目仅负责抓取、解析、展示与下载，不拥有壁纸版权，图片版权归原摄影师 / 版权方所有。
 
 ## 下载引擎
