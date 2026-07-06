@@ -16,6 +16,7 @@ use crate::settings::{AppSettings, AutoWallpaperSource, ThemePreference, Wallpap
 use crate::wallpaper_setter;
 use crate::window_sizing;
 use chrono::{Datelike, Local, NaiveDate, Timelike};
+use futures::{future::Shared, FutureExt};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::alert::Alert;
@@ -65,6 +66,10 @@ const SIDEBAR_EXPANDED_WIDTH: f32 = 260.0;
 /// 折叠侧边栏的近似宽度。
 const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.0;
 
+/// 远程缩略图最多保留的数量。超出后会释放最久未使用的图片纹理，避免滚动完整历史后
+/// 进程内存随图片数量无限增长。
+const THUMBNAIL_IMAGE_CACHE_ITEMS: usize = 120;
+
 fn image_frame(
     source: impl Into<ImageSource>,
     width: f32,
@@ -112,6 +117,94 @@ fn preview_dialog_dimensions(window: &Window) -> (f32, f32, f32) {
     let dialog_width = (image_width + 60.0).clamp(320.0, max_dialog_width);
 
     (dialog_width, image_width, image_height)
+}
+
+type ImageLoadingTask = Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>;
+
+struct BoundedImageCache {
+    max_items: usize,
+    usages: Vec<u64>,
+    cache: HashMap<u64, ImageCacheItem>,
+}
+
+impl BoundedImageCache {
+    fn new(max_items: usize, cx: &mut Context<Self>) -> Self {
+        cx.on_release(|cache, cx| {
+            for (_, mut item) in std::mem::take(&mut cache.cache) {
+                if let Some(Ok(image)) = item.get() {
+                    cx.drop_image(image, None);
+                }
+            }
+        })
+        .detach();
+
+        Self {
+            max_items,
+            usages: Vec::with_capacity(max_items),
+            cache: HashMap::with_capacity(max_items),
+        }
+    }
+
+    fn clear(&mut self, window: &mut Window, cx: &mut App) {
+        for (_, mut item) in std::mem::take(&mut self.cache) {
+            if let Some(Ok(image)) = item.get() {
+                cx.drop_image(image, Some(window));
+            }
+        }
+        self.usages.clear();
+    }
+}
+
+impl ImageCache for BoundedImageCache {
+    fn load(
+        &mut self,
+        resource: &Resource,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+        if self.max_items == 0 {
+            return None;
+        }
+
+        let hash = hash(resource);
+        if let Some(item) = self.cache.get_mut(&hash) {
+            if let Some(current_ix) = self.usages.iter().position(|item| *item == hash) {
+                self.usages.remove(current_ix);
+            }
+            self.usages.insert(0, hash);
+            return item.get();
+        }
+
+        let fut = AssetLogger::<ImageAssetLoader>::load(resource.clone(), cx);
+        let task: ImageLoadingTask = cx.background_executor().spawn(fut).shared();
+
+        while self.usages.len() >= self.max_items {
+            let Some(oldest) = self.usages.pop() else {
+                break;
+            };
+            if let Some(mut item) = self.cache.remove(&oldest) {
+                if let Some(Ok(image)) = item.get() {
+                    cx.drop_image(image, Some(window));
+                }
+            }
+        }
+
+        self.cache
+            .insert(hash, ImageCacheItem::Loading(task.clone()));
+        self.usages.insert(0, hash);
+
+        let entity = window.current_view();
+        window
+            .spawn(cx, async move |cx| {
+                _ = task.await;
+                cx.on_next_frame(move |_, cx| {
+                    cx.notify(entity);
+                });
+            })
+            .detach();
+
+        None
+    }
 }
 
 /// 右侧内容区域的当前视图模式。
@@ -187,6 +280,8 @@ pub struct WallpaperLibrary {
     update_progress: Rc<RefCell<Option<UpdateProgress>>>,
     /// 首页虚拟网格滚动状态句柄，用于右侧滚动条和回到顶部。
     home_scroll_handle: VirtualListScrollHandle,
+    /// 远程缩略图 LRU 缓存，限制主页/月份列表滚动时保留的图片数量。
+    thumbnail_cache: Entity<BoundedImageCache>,
     /// 侧边导航栏是否处于折叠（仅图标）状态。
     sidebar_collapsed: bool,
     /// 设置浮层是否展开（左下角，类似抖音侧边栏设置菜单）。
@@ -255,6 +350,7 @@ impl WallpaperLibrary {
             monitors,
             update_progress: Rc::new(RefCell::new(None)),
             home_scroll_handle: VirtualListScrollHandle::new(),
+            thumbnail_cache: cx.new(|cx| BoundedImageCache::new(THUMBNAIL_IMAGE_CACHE_ITEMS, cx)),
             sidebar_collapsed: false,
             settings_panel_open: false,
             settings_section: None,
@@ -270,6 +366,12 @@ impl WallpaperLibrary {
     /// 导出内部持有的 aria2 管理器共享句柄，供应用退出时优雅关闭使用（见 `main.rs`）。
     pub fn aria2_handle(&self) -> Rc<RefCell<Option<Rc<Aria2Manager>>>> {
         self.aria2.clone()
+    }
+
+    fn clear_thumbnail_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.thumbnail_cache.update(cx, |cache, cx| {
+            cache.clear(window, cx);
+        });
     }
 
     /// 使用最新抓取到的壁纸条目刷新界面状态。
@@ -540,6 +642,7 @@ impl WallpaperLibrary {
 
     pub fn should_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.settings.background_resident_enabled {
+            self.clear_thumbnail_cache(window, cx);
             hide_window_to_tray(window);
             self.set_status("已最小化到系统托盘，右键托盘图标可退出", cx);
             false
@@ -550,7 +653,9 @@ impl WallpaperLibrary {
     }
 
     fn open_close_choice_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let view_for_minimize = view.clone();
             dialog
                 .title("退出必应每日壁纸库？")
                 .w(px(460.))
@@ -572,8 +677,11 @@ impl WallpaperLibrary {
                             Button::new("close-choice-minimize")
                                 .label("最小化到托盘")
                                 .outline()
-                                .on_click(|_, window, cx| {
+                                .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
+                                    view_for_minimize.update(cx, |this, cx| {
+                                        this.clear_thumbnail_cache(window, cx);
+                                    });
                                     hide_window_to_tray(window);
                                 }),
                         )
@@ -1109,15 +1217,17 @@ impl WallpaperLibrary {
         let view = cx.entity();
         let date_str = entry.date_heading();
         let title = entry.title.clone();
-        let url = entry.url.clone();
+        let url = entry.preview_url();
         let downloading = self.progress.contains_key(&entry.date);
         let (dialog_width, image_width, image_height) = preview_dialog_dimensions(window);
+        let preview_cache = RetainAllImageCache::new(cx);
 
         window.open_dialog(cx, move |dialog, _window, cx| {
             let view_for_dl = view.clone();
             let view_for_wall = view.clone();
             let entry_for_dl = entry.clone();
             let entry_for_wall = entry.clone();
+            let preview_cache = preview_cache.clone();
 
             dialog
                 .title(date_str.clone())
@@ -1126,7 +1236,12 @@ impl WallpaperLibrary {
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(image_frame(url.clone(), image_width, image_height, cx))
+                        .child(image_cache(preview_cache).child(image_frame(
+                            url.clone(),
+                            image_width,
+                            image_height,
+                            cx,
+                        )))
                         .child(div().text_sm().line_clamp(2).child(title.clone())),
                 )
                 .footer(
@@ -2028,6 +2143,17 @@ impl WallpaperLibrary {
                     .h_full()
                     .object_fit(ObjectFit::Cover),
             )
+    }
+
+    fn render_cached_thumbnail_frame(
+        &self,
+        source: impl Into<ImageSource>,
+        width: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        image_cache(self.thumbnail_cache.clone())
+            .child(self.render_image_frame(source, width, height, cx))
     }
 
     fn render_settings_panel(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3446,7 +3572,12 @@ impl WallpaperLibrary {
                     .h(px(146.))
                     .rounded(cx.theme().radius)
                     .overflow_hidden()
-                    .child(self.render_image_frame(entry.thumbnail_url(), 260., 146., cx))
+                    .child(self.render_cached_thumbnail_frame(
+                        entry.thumbnail_url(),
+                        260.,
+                        146.,
+                        cx,
+                    ))
                     .child(
                         div()
                             .absolute()
@@ -3574,7 +3705,7 @@ impl WallpaperLibrary {
             .rounded(cx.theme().radius)
             .border_1()
             .border_color(cx.theme().border)
-            .child(self.render_image_frame(entry.thumbnail_url(), 220., 124., cx))
+            .child(self.render_cached_thumbnail_frame(entry.thumbnail_url(), 220., 124., cx))
             .child(
                 v_flex()
                     .flex_1()

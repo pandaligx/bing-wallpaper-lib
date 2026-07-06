@@ -70,6 +70,25 @@ impl WallpaperEntry {
         }
     }
 
+    /// URL used by the large preview dialog.
+    ///
+    /// Downloads and wallpaper setting keep using [`WallpaperEntry::url`], but
+    /// showing a 4K image in the dialog makes GPUI retain a much larger decoded
+    /// image/texture. A 1080p preview is visually enough for the dialog and
+    /// cuts the per-preview cache cost substantially.
+    pub fn preview_url(&self) -> String {
+        if let Some(url) = self.resize_url("1920x1080") {
+            return url;
+        }
+        const FULL_SIZE: &str = "w=3840&h=2160";
+        const PREVIEW_SIZE: &str = "w=1920&h=1080";
+        if self.url.contains(FULL_SIZE) {
+            self.url.replace(FULL_SIZE, PREVIEW_SIZE)
+        } else {
+            self.url.clone()
+        }
+    }
+
     fn resize_url(&self, size: &str) -> Option<String> {
         let (width, height) = size.split_once('x')?;
         let marker = "_UHD.jpg";
@@ -448,6 +467,22 @@ mod tests {
         assert_eq!(
             entry.thumbnail_url(),
             "https://cn.bing.com/th?id=OHR.NavajoSandstone_ZH-CN5009673011_320x180.jpg&rf=LaDigue_320x180.jpg&pid=hp&w=320&h=180"
+        );
+    }
+
+    #[test]
+    fn preview_url_resizes_official_uhd_url() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 13).unwrap(),
+            headline: None,
+            title: "Navajo Sandstone, USA".to_string(),
+            url: "https://cn.bing.com/th?id=OHR.NavajoSandstone_ZH-CN5009673011_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        };
+
+        assert_eq!(
+            entry.preview_url(),
+            "https://cn.bing.com/th?id=OHR.NavajoSandstone_ZH-CN5009673011_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp&w=1920&h=1080"
         );
     }
 }
