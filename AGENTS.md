@@ -241,12 +241,12 @@ cargo build --release
 
 **发布物分发方式**：本项目不再把构建产物提交进 Git 仓库（大体积二进制不适合长期存在于 Git 历史中），
 而是把 release 构建出的 exe 重命名为 `bing-wallpaper-lib-vX.Y.Z-x64.exe` 后，先作为 **GitHub Release** 的
-附件上传（`gh release create vX.Y.Z <exe路径> --notes ...`）。`.github/workflows/mirror-release-to-gitee.yml`
-会在 GitHub Release 发布后自动把同名 exe 附件同步到 **Gitee Release**；也可用 `workflow_dispatch` 输入
-tag 手动补同步。仓库根目录不再维护 `dist/` 目录；`README.md` 的"下载使用"一节同时指向 Gitee / GitHub
-Releases。应用内置的"检查更新"功能（见 §14.3）优先通过 Gitee Releases 判断和下载，失败后回退 GitHub
-Releases，因此每次发布都必须走 GitHub Release + 打 tag 的流程，不能只更新仓库文件，也不再需要手动上传
-第三方直链镜像。
+附件上传（`gh release create vX.Y.Z <exe路径> --notes ...`），再用 Gitee API 从本机上传同名 exe 到
+**Gitee Release**。本机上传 Gitee 附件通常比 GitHub Actions 海外 Runner 上传更快更稳定；
+`.github/workflows/mirror-release-to-gitee.yml` 仅保留为 `workflow_dispatch` 手动兜底工具。仓库根目录不再维护
+`dist/` 目录；`README.md` 的"下载使用"一节同时指向 Gitee / GitHub Releases。应用内置的"检查更新"功能
+（见 §14.3）优先通过 Gitee Releases 判断和下载，失败后回退 GitHub Releases，因此每次发布都必须走
+GitHub Release + 打 tag + Gitee Release 附件上传的流程，不能只更新仓库文件，也不再需要手动上传第三方直链镜像。
 
 `Cargo.toml` 中 `[profile.release]` 已配置：
 
@@ -645,10 +645,10 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
   链的健壮性高很多。`downloader.rs` 为此新增了 `add_uri_to_dir` 方法（相对 `add_uri` 额外
   接受 `dir` 参数），避免把非壁纸文件下载到用户配置的壁纸目录。`updater::update_dir()`
   目录则变成 `pub`（仍为 `%LOCALAPPDATA%\BingWallpaperLib\update`），供 UI 层拼 `--dir` 参数使用。
-- **更新包国内/国外双 Release 源（自 v0.2.27 后续维护起）**：不再使用 `lgxng.cn` 等手动上传的直链镜像。
-  发布流程以 GitHub Release 为源头，`.github/workflows/mirror-release-to-gitee.yml` 自动下载 GitHub Release
-  中的 `.exe` 附件，并通过 Gitee API 创建/复用同 tag 的 Gitee Release、上传同名附件。软件检查更新时优先
-  使用 Gitee Release 附件下载，失败时再尝试 GitHub 官方 Release asset 地址。
+- **更新包国内/国外双 Release 源（自 v0.2.28 起正式发布）**：不再使用 `lgxng.cn` 等手动上传的直链镜像。
+  发布流程以 GitHub Release 为源头，随后通过 Gitee API 在本机创建/复用同 tag 的 Gitee Release、上传同名
+  `.exe` 附件；`.github/workflows/mirror-release-to-gitee.yml` 仅作为手动兜底工具。软件检查更新时优先使用
+  Gitee Release 附件下载，失败时再尝试 GitHub 官方 Release asset 地址。
 - **下载进度弹窗（自 v0.2.3）**：`ui/mod.rs::open_update_progress_dialog` 在点击“立即更新”后
   弹出一个新的对话框，展示 `Progress` 进度条 + 已下/总字节（`format_bytes` 二进制前缀） +
   百分比 + 实时速度 + 剩余时间（`format_duration`）。后台任务 `run_update_download` 每 300ms 拉
@@ -679,8 +679,9 @@ false, .. }` 会让 Windows 绘制**系统原生的标题栏**，其颜色由 Wi
   后自动退出并重启。
 
 > **国内更新可访问性说明**：Gitee Release 需要真实存在并带有同名 `.exe` 附件。若只打了 tag 或只创建
-> GitHub Release，但 Gitee Release 同步工作流没有成功，国内优先下载地址会缺失，软件会回退 GitHub。
-> 因此发布后应检查 `mirror-release-to-gitee.yml` 是否成功，或手动触发该 workflow 传入对应 tag 补同步。
+> GitHub Release，但没有上传 Gitee Release 附件，国内优先下载地址会缺失，软件会回退 GitHub。
+> 因此发布后应检查 Gitee Release 附件是否存在；若本机上传不可用，再手动触发 `mirror-release-to-gitee.yml`
+> 并传入对应 tag 作为兜底。
 
 **版本号约定**：每次发布新 GitHub Release 时，必须同步带上 `Cargo.toml` 中 `package.version`
 的提升（否则内置的检查更新就会因为“当前编译版本号 = 最新 Release 版本号”而报告为“已是最新

@@ -4,12 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to mirror, for example v0.2.27"
+        description: "Release tag to mirror, for example v0.2.28"
         required: true
         type: string
-  release:
-    types:
-      - published
 
 permissions:
   contents: read
@@ -20,7 +17,7 @@ jobs:
     timeout-minutes: 20
     env:
       GITEE_REPO: pandaligx/bing-wallpaper-lib
-      TAG_NAME: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG_NAME: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
       GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
     steps:

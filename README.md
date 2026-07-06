@@ -66,7 +66,8 @@
 `bing-wallpaper-lib-vX.Y.Z-x64.exe`，海外或 GitHub 可访问环境也可以从
 **[GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest)** 下载同名附件。
 下载后双击即可运行，无需安装任何其他依赖，启动时会自动请求管理员权限。
-软件内置检查更新功能（设置浮层中），可一键检测并升级到最新版本。开启开机自启后，软件会静默进入系统托盘，用户需要时可从托盘菜单打开主窗口。
+软件内置检查更新功能（设置浮层中），会优先从 Gitee Release 获取更新包，失败后回退 GitHub Release。
+开启开机自启后，软件会静默进入系统托盘，用户需要时可从托盘菜单打开主窗口。
 
 ## 从源码构建
 
