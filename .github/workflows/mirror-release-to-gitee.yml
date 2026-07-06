@@ -84,7 +84,7 @@ jobs:
 
           release_json="$(curl -fsS --get "${api_base}/tags/${TAG_NAME}" \
             --data-urlencode "access_token=${GITEE_TOKEN}" || true)"
-          release_id="$(node -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); if (!input) process.exit(0); const data=JSON.parse(input); if (data.id) console.log(data.id);' <<<"$release_json")"
+          release_id="$(node -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); if (!input) process.exit(0); const data=JSON.parse(input); if (data && data.id) console.log(data.id);' <<<"$release_json")"
 
           if [ -z "$release_id" ]; then
             release_json="$(curl -fsS -X POST "$api_base" \
