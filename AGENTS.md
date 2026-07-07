@@ -36,7 +36,7 @@
   4. `https://raw.githubusercontent.com/zxyongyo/bing-daily-wallpaper/master/map.json`
 - 本项目内置快照为 `assets/data/zxyongyo-bing-wallpaper.json`。启动时会先加载本地缓存；若缓存不存在，
   立即展示内置快照，避免无 VPN 或远程源响应慢时首页长时间空白。后台刷新成功后会写回本地缓存。
-- 自动同步：`.github/workflows/sync-wallpaper-archive.yml` 每 6 小时拉取上游 `map.json`，校验后更新
+- 自动同步：`.github/workflows/sync-wallpaper-archive.yml` 每 4 小时拉取上游 `map.json`，校验后更新
   `assets/data/zxyongyo-bing-wallpaper.json` 并提交到 GitHub；若 GitHub Actions secrets 中配置了
   `GITEE_USERNAME` / `GITEE_TOKEN`，还会同步推送到 Gitee；若 Git 推送到 Gitee 失败或超时，则会用
   Gitee Contents API 兜底更新该 `map.json` 文件。`.github/workflows/mirror-to-gitee.yml`
@@ -938,7 +938,7 @@ v0.2.21 修复方式：
 `main.rs` 启动流程改为“本地缓存优先；缓存不存在则立即展示内置快照；后台再刷新远程数据”，避免首屏出现“0 张 / 正在加载”
 并长时间空白。
 
-新增 `.github/workflows/sync-wallpaper-archive.yml`：每 6 小时同步上游 `map.json` 到本仓库快照文件，有变化时自动提交，
+新增 `.github/workflows/sync-wallpaper-archive.yml`：每 4 小时同步上游 `map.json` 到本仓库快照文件，有变化时自动提交，
 并在配置 `GITEE_USERNAME` / `GITEE_TOKEN` 后推送到 Gitee。
 
 新增 `.github/workflows/mirror-to-gitee.yml`：GitHub `main` 分支每次 push 后同步代码与 tag 到

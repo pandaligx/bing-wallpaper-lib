@@ -94,7 +94,7 @@ cargo build --release                        # 发布构建
 ## 数据来源
 
 壁纸历史归档来自 [zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) 的 `map.json`。
-本项目通过 GitHub Actions 每 6 小时同步一次到仓库内置快照
+本项目通过 GitHub Actions 每 4 小时同步一次到仓库内置快照
 [`assets/data/zxyongyo-bing-wallpaper.json`](assets/data/zxyongyo-bing-wallpaper.json)，并同步到
 [Gitee 国内镜像](https://gitee.com/pandaligx/bing-wallpaper-lib)，软件运行时优先访问 Gitee raw 地址，
 失败后回退 jsDelivr / GitHub；Bing 官方 `HPImageArchive.aspx` API 用于补强最近发布的壁纸数据。

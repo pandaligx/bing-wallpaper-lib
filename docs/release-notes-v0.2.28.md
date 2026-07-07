@@ -11,7 +11,7 @@
 
 ### 自动同步
 
-- GitHub Actions 每 6 小时同步上游 `map.json`，并同步到 Gitee。
+- GitHub Actions 每 4 小时同步上游 `map.json`，并同步到 Gitee。
 - GitHub `main` 分支 push 后会自动同步代码与 tag 到 Gitee。
 - Gitee Release 附件发布改为本机上传优先，避免 GitHub Runner 到 Gitee 上传大文件时变慢或卡住。
 

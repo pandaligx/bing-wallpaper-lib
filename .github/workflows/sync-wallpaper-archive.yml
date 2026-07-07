@@ -3,7 +3,7 @@ name: Sync wallpaper archive
 on:
   workflow_dispatch:
   schedule:
-    - cron: "20 */6 * * *"
+    - cron: "20 */4 * * *"
 
 permissions:
   contents: write
