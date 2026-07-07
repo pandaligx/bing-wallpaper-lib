@@ -1,3 +1,4 @@
+use crate::settings::DownloadResolution;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -55,8 +56,8 @@ impl WallpaperEntry {
     /// 现代记录（2023-02-09 起）的 `url` 带有 `w=3840&h=2160` 查询参数，
     /// 替换为更小的尺寸可以大幅减少缩略图加载的流量与解码开销；
     /// 更早期的记录没有这个查询参数（裸 `.jpg` 链接），无法改变分辨率，
-    /// 此时原样返回完整地址。下载/设为壁纸时应始终使用 [`WallpaperEntry::url`]
-    /// 原始高清地址，而不是这里的缩略图地址。
+    /// 此时原样返回完整地址。下载/设为壁纸时应使用 [`WallpaperEntry::download_url`]
+    /// 按全局分辨率生成的地址，而不是这里的缩略图地址。
     pub fn thumbnail_url(&self) -> String {
         if let Some(url) = self.resize_url("320x180") {
             return url;
@@ -72,10 +73,10 @@ impl WallpaperEntry {
 
     /// URL used by the large preview dialog.
     ///
-    /// Downloads and wallpaper setting keep using [`WallpaperEntry::url`], but
-    /// showing a 4K image in the dialog makes GPUI retain a much larger decoded
-    /// image/texture. A 1080p preview is visually enough for the dialog and
-    /// cuts the per-preview cache cost substantially.
+    /// Downloads and wallpaper setting use [`WallpaperEntry::download_url`],
+    /// but showing a 4K image in the dialog makes GPUI retain a much larger
+    /// decoded image/texture. A 1080p preview is visually enough for the dialog
+    /// and cuts the per-preview cache cost substantially.
     pub fn preview_url(&self) -> String {
         if let Some(url) = self.resize_url("1920x1080") {
             return url;
@@ -87,6 +88,48 @@ impl WallpaperEntry {
         } else {
             self.url.clone()
         }
+    }
+
+    pub fn download_url(&self, resolution: DownloadResolution) -> String {
+        match resolution {
+            DownloadResolution::Original => {
+                self.original_uhd_url().unwrap_or_else(|| self.url.clone())
+            }
+            DownloadResolution::FourK => self.url.clone(),
+            DownloadResolution::TwoK => self
+                .query_resized_url(2560, 1440)
+                .or_else(|| self.resize_url("2560x1440"))
+                .unwrap_or_else(|| self.url.clone()),
+            DownloadResolution::OneK => self
+                .query_resized_url(1920, 1080)
+                .or_else(|| self.resize_url("1920x1080"))
+                .unwrap_or_else(|| self.url.clone()),
+        }
+    }
+
+    fn original_uhd_url(&self) -> Option<String> {
+        let marker = "_UHD.jpg";
+        let end = self.url.find(marker)? + marker.len();
+        Some(self.url[..end].to_string())
+    }
+
+    fn query_resized_url(&self, width: u32, height: u32) -> Option<String> {
+        let mut url = self.url.clone();
+        let mut changed = false;
+        for (from, to) in [
+            ("w=3840", format!("w={width}")),
+            ("h=2160", format!("h={height}")),
+            ("w=2560", format!("w={width}")),
+            ("h=1440", format!("h={height}")),
+            ("w=1920", format!("w={width}")),
+            ("h=1080", format!("h={height}")),
+        ] {
+            if url.contains(from) {
+                url = url.replace(from, &to);
+                changed = true;
+            }
+        }
+        changed.then_some(url)
     }
 
     fn resize_url(&self, size: &str) -> Option<String> {
@@ -483,6 +526,56 @@ mod tests {
         assert_eq!(
             entry.preview_url(),
             "https://cn.bing.com/th?id=OHR.NavajoSandstone_ZH-CN5009673011_1920x1080.jpg&rf=LaDigue_1920x1080.jpg&pid=hp&w=1920&h=1080"
+        );
+    }
+
+    #[test]
+    fn download_url_original_strips_resize_parameters() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            headline: None,
+            title: "Lavender rows, France".to_string(),
+            url: "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        };
+
+        assert_eq!(
+            entry.download_url(DownloadResolution::Original),
+            "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg"
+        );
+    }
+
+    #[test]
+    fn download_url_keeps_default_4k_archive_url() {
+        let url = "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4";
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            headline: None,
+            title: "Lavender rows, France".to_string(),
+            url: url.to_string(),
+            copyright_link: None,
+        };
+
+        assert_eq!(entry.download_url(DownloadResolution::FourK), url);
+    }
+
+    #[test]
+    fn download_url_rewrites_query_resolution() {
+        let entry = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            headline: None,
+            title: "Lavender rows, France".to_string(),
+            url: "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        };
+
+        assert_eq!(
+            entry.download_url(DownloadResolution::TwoK),
+            "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=2560&h=1440&rs=1&c=4"
+        );
+        assert_eq!(
+            entry.download_url(DownloadResolution::OneK),
+            "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=1920&h=1080&rs=1&c=4"
         );
     }
 }

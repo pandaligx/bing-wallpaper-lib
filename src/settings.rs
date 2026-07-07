@@ -49,6 +49,48 @@ impl WallpaperTarget {
     }
 }
 
+/// 下载/设置桌面壁纸时使用的全局图片分辨率。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadResolution {
+    Original,
+    #[default]
+    FourK,
+    TwoK,
+    OneK,
+}
+
+impl DownloadResolution {
+    pub const ALL: [Self; 4] = [Self::Original, Self::FourK, Self::TwoK, Self::OneK];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Original => "原图",
+            Self::FourK => "4K",
+            Self::TwoK => "2K",
+            Self::OneK => "1K",
+        }
+    }
+
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::Original => "UHD",
+            Self::FourK => "3840×2160",
+            Self::TwoK => "2560×1440",
+            Self::OneK => "1920×1080",
+        }
+    }
+
+    pub fn status_label(self) -> &'static str {
+        match self {
+            Self::Original => "原图",
+            Self::FourK => "4K-3840×2160",
+            Self::TwoK => "2K-2560×1440",
+            Self::OneK => "1K-1920×1080",
+        }
+    }
+}
+
 /// 每日自动壁纸来源。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +135,8 @@ pub struct AppSettings {
     /// 设置桌面壁纸时的目标显示器；默认同步全部显示器。
     #[serde(default)]
     pub wallpaper_target: WallpaperTarget,
+    #[serde(default)]
+    pub download_resolution: DownloadResolution,
     /// 是否创建系统托盘图标并保持后台能力；默认关闭。
     #[serde(default = "default_background_resident_enabled")]
     pub background_resident_enabled: bool,
@@ -125,6 +169,7 @@ impl Default for AppSettings {
             download_dir: None,
             theme_preference: ThemePreference::default(),
             wallpaper_target: WallpaperTarget::default(),
+            download_resolution: DownloadResolution::default(),
             background_resident_enabled: true,
             startup_enabled: false,
             auto_wallpaper_enabled: false,

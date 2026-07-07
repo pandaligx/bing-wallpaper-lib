@@ -12,7 +12,9 @@
 use crate::downloader::Aria2Manager;
 use crate::fetcher;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
-use crate::settings::{AppSettings, AutoWallpaperSource, ThemePreference, WallpaperTarget};
+use crate::settings::{
+    AppSettings, AutoWallpaperSource, DownloadResolution, ThemePreference, WallpaperTarget,
+};
 use crate::wallpaper_setter;
 use crate::window_sizing;
 use chrono::{Datelike, Local, NaiveDate, Timelike};
@@ -40,6 +42,7 @@ use rand::seq::SliceRandom;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::HWND;
@@ -766,6 +769,22 @@ impl WallpaperLibrary {
         cx.notify();
     }
 
+    fn set_download_resolution(&mut self, resolution: DownloadResolution, cx: &mut Context<Self>) {
+        if self.settings.download_resolution == resolution {
+            return;
+        }
+        self.settings.download_resolution = resolution;
+        if let Err(err) = self.settings.save() {
+            self.set_status(format!("保存分辨率设置失败: {err}"), cx);
+            return;
+        }
+        self.set_status(
+            format!("下载和设置壁纸分辨率已切换为{}", resolution.status_label()),
+            cx,
+        );
+        cx.notify();
+    }
+
     fn refresh_monitors(&mut self, cx: &mut Context<Self>) {
         match wallpaper_setter::list_monitors() {
             Ok(monitors) => {
@@ -839,11 +858,12 @@ impl WallpaperLibrary {
         let aria2 = self.aria2.clone();
         let http = self.http.clone();
         let date = entry.date;
+        let resolution = self.settings.download_resolution;
         self.status = format!("正在下载 {} ...", entry.date).into();
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = run_download(&aria2, &http, &entry, &this, cx).await;
+            let result = run_download(&aria2, &http, &entry, resolution, &this, cx).await;
             let _ = this.update(cx, |this, cx| {
                 this.progress.remove(&date);
                 match result {
@@ -874,6 +894,7 @@ impl WallpaperLibrary {
         let total = entries.len();
         let aria2 = self.aria2.clone();
         let http = self.http.clone();
+        let resolution = self.settings.download_resolution;
         self.batch_progress = Some(BatchProgress {
             total,
             ..Default::default()
@@ -907,7 +928,8 @@ impl WallpaperLibrary {
                 }
 
                 let date = entry.date;
-                match manager.add_uri(&entry.url, &file_name).await {
+                let url = entry.download_url(resolution);
+                match manager.add_uri(&url, &file_name).await {
                     Ok(gid) => {
                         tasks.push((gid, date, false));
                         let _ = this.update(cx, |this, cx| {
@@ -1037,11 +1059,12 @@ impl WallpaperLibrary {
         let date = entry.date;
         let target = self.settings.wallpaper_target.clone();
         let target_label = self.wallpaper_target_label();
+        let resolution = self.settings.download_resolution;
         self.status = format!("正在将 {} 设置为{}壁纸...", entry.date, target_label).into();
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = run_download(&aria2, &http, &entry, &this, cx).await;
+            let result = run_download(&aria2, &http, &entry, resolution, &this, cx).await;
             let outcome = match result {
                 Ok(path) => match &target {
                     WallpaperTarget::All => wallpaper_setter::set_wallpaper_for_all_monitors(&path),
@@ -1608,13 +1631,15 @@ async fn run_download(
     aria2: &Rc<RefCell<Option<Rc<Aria2Manager>>>>,
     http: &Arc<dyn HttpClient>,
     entry: &WallpaperEntry,
+    resolution: DownloadResolution,
     this: &WeakEntity<WallpaperLibrary>,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<std::path::PathBuf> {
     let manager = ensure_aria2(aria2, http).await?;
     let filename = entry.file_name();
     let date = entry.date;
-    let gid = manager.add_uri(&entry.url, &filename).await?;
+    let url = entry.download_url(resolution);
+    let gid = manager.add_uri(&url, &filename).await?;
 
     loop {
         let status = manager.tell_status(&gid).await?;
@@ -1833,6 +1858,151 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn downloaded_image_info_text(path: &std::path::Path) -> String {
+    let size = std::fs::metadata(path)
+        .map(|metadata| format_bytes(metadata.len()))
+        .unwrap_or_else(|_| "--".to_string());
+    match image_dimensions(path) {
+        Some((width, height)) => format!("{width}×{height} · {size}"),
+        None => size,
+    }
+}
+
+fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    const HEADER_LIMIT: usize = 128 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut data = Vec::with_capacity(HEADER_LIMIT);
+    file.by_ref()
+        .take(HEADER_LIMIT as u64)
+        .read_to_end(&mut data)
+        .ok()?;
+
+    png_dimensions(&data)
+        .or_else(|| jpeg_dimensions(&data))
+        .or_else(|| webp_dimensions(&data))
+}
+
+fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let signature = b"\x89PNG\r\n\x1a\n";
+    if data.len() < 24 || &data[..8] != signature || &data[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(data[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(data[20..24].try_into().ok()?);
+    Some((width, height))
+}
+
+fn jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 4 || data[0] != 0xff || data[1] != 0xd8 {
+        return None;
+    }
+
+    let mut index = 2usize;
+    while index + 9 < data.len() {
+        while index < data.len() && data[index] != 0xff {
+            index += 1;
+        }
+        while index < data.len() && data[index] == 0xff {
+            index += 1;
+        }
+        if index >= data.len() {
+            break;
+        }
+
+        let marker = data[index];
+        index += 1;
+        if matches!(marker, 0xd8 | 0xd9 | 0x01) {
+            continue;
+        }
+        if index + 2 > data.len() {
+            break;
+        }
+
+        let segment_len = u16::from_be_bytes([data[index], data[index + 1]]) as usize;
+        if segment_len < 2 || index + segment_len > data.len() {
+            break;
+        }
+
+        if matches!(
+            marker,
+            0xc0 | 0xc1
+                | 0xc2
+                | 0xc3
+                | 0xc5
+                | 0xc6
+                | 0xc7
+                | 0xc9
+                | 0xca
+                | 0xcb
+                | 0xcd
+                | 0xce
+                | 0xcf
+        ) && segment_len >= 7
+        {
+            let height = u16::from_be_bytes([data[index + 3], data[index + 4]]) as u32;
+            let width = u16::from_be_bytes([data[index + 5], data[index + 6]]) as u32;
+            return Some((width, height));
+        }
+
+        index += segment_len;
+    }
+    None
+}
+
+fn webp_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if data.len() < 16 || &data[..4] != b"RIFF" || &data[8..12] != b"WEBP" {
+        return None;
+    }
+
+    let mut index = 12usize;
+    while index + 8 <= data.len() {
+        let chunk = &data[index..index + 4];
+        let len = u32::from_le_bytes(data[index + 4..index + 8].try_into().ok()?) as usize;
+        let payload = index + 8;
+        if payload + len > data.len() {
+            return None;
+        }
+
+        match chunk {
+            b"VP8X" if len >= 10 => {
+                let width = read_u24_le(&data[payload + 4..payload + 7])? + 1;
+                let height = read_u24_le(&data[payload + 7..payload + 10])? + 1;
+                return Some((width, height));
+            }
+            b"VP8 " if len >= 10 => {
+                let width =
+                    u16::from_le_bytes([data[payload + 6], data[payload + 7]]) as u32 & 0x3fff;
+                let height =
+                    u16::from_le_bytes([data[payload + 8], data[payload + 9]]) as u32 & 0x3fff;
+                return Some((width, height));
+            }
+            b"VP8L" if len >= 5 && data[payload] == 0x2f => {
+                let bits = u32::from_le_bytes([
+                    data[payload + 1],
+                    data[payload + 2],
+                    data[payload + 3],
+                    data[payload + 4],
+                ]);
+                let width = (bits & 0x3fff) + 1;
+                let height = ((bits >> 14) & 0x3fff) + 1;
+                return Some((width, height));
+            }
+            _ => {}
+        }
+
+        index = payload + len + (len % 2);
+    }
+    None
+}
+
+fn read_u24_le(data: &[u8]) -> Option<u32> {
+    Some(
+        data.first().copied()? as u32
+            | (data.get(1).copied()? as u32) << 8
+            | (data.get(2).copied()? as u32) << 16,
+    )
+}
+
 /// 人类可读的时长格式化（秒→中文“时分秒”形式）：`75` → `"1分12秒"`；`3720` → `"1时02分"`。
 fn format_duration(secs: u64) -> String {
     if secs >= 3600 {
@@ -1885,6 +2055,30 @@ impl Render for WallpaperLibrary {
                 cx.notify();
             }));
 
+        let resolution_children = DownloadResolution::ALL
+            .into_iter()
+            .map(|resolution| {
+                SidebarMenuItem::new(SharedString::from(format!(
+                    "{} {}",
+                    resolution.label(),
+                    resolution.detail()
+                )))
+                .active(self.settings.download_resolution == resolution)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_download_resolution(resolution, cx);
+                }))
+            })
+            .collect::<Vec<_>>();
+
+        let resolution_item = SidebarMenuItem::new(SharedString::from(format!(
+            "全局分辨率：{}",
+            self.settings.download_resolution.status_label()
+        )))
+        .icon(IconName::Frame)
+        .default_open(!sidebar_collapsed)
+        .click_to_toggle(true)
+        .children(resolution_children);
+
         let favorites_item = SidebarMenuItem::new("我的收藏")
             .icon(IconName::Heart)
             .active(view_mode == ViewMode::Favorites)
@@ -1915,6 +2109,12 @@ impl Render for WallpaperLibrary {
             ))
             .click_to_toggle(true)
             .children(vec![batch_download_item, downloaded_item]);
+
+        let nav_menu = SidebarMenu::new()
+            .child(home_item)
+            .child(resolution_item)
+            .child(favorites_item)
+            .child(download_center_item);
 
         let status = self.status.clone();
 
@@ -1948,12 +2148,8 @@ impl Render for WallpaperLibrary {
                                     this.child(
                                         v_flex()
                                             .min_w_0()
-                                            .child(
-                                                div()
-                                                    .font_bold()
-                                                    .child("Bing Daily Wallpaper (4K)"),
-                                            )
-                                            .child(div().text_xs().child("每日 4K 壁纸图库")),
+                                            .child(div().font_bold().child("Bing Daily Wallpaper"))
+                                            .child(div().text_xs().child("每日 Bing 壁纸图库")),
                                     )
                                 })
                                 .child(
@@ -1966,14 +2162,7 @@ impl Render for WallpaperLibrary {
                                 ),
                         ),
                     )
-                    .child(
-                        SidebarGroup::new("导航").child(
-                            SidebarMenu::new()
-                                .child(home_item)
-                                .child(favorites_item)
-                                .child(download_center_item),
-                        ),
-                    )
+                    .child(SidebarGroup::new("导航").child(nav_menu))
                     .when(!sidebar_collapsed, |this| {
                         this.child(SidebarGroup::new("归档").child(sidebar_menu))
                     })
@@ -3291,6 +3480,7 @@ impl WallpaperLibrary {
         let path_for_delete = path.clone();
         let path_for_checkbox = path.clone();
         let is_selected = self.downloaded_selected.contains(&path);
+        let info_text = downloaded_image_info_text(&path);
 
         v_flex()
             .group(group_name.clone())
@@ -3409,11 +3599,16 @@ impl WallpaperLibrary {
                     ),
             )
             .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(name),
+                v_flex()
+                    .gap_1()
+                    .child(div().text_xs().truncate().child(name))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(info_text),
+                    ),
             )
     }
 
