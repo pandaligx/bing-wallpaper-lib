@@ -3,7 +3,7 @@ name: Sync wallpaper archive
 on:
   workflow_dispatch:
   schedule:
-    - cron: "20 */4 * * *"
+    - cron: "20 2-23/4 * * *"
 
 permissions:
   contents: write
@@ -82,7 +82,8 @@ jobs:
           fi
 
           if timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee HEAD:main; then
-            timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee --tags
+            timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee --tags || \
+              echo "Gitee tag push skipped or partially rejected; archive main branch is already synced."
             exit 0
           fi
 

@@ -44,4 +44,5 @@ jobs:
           fi
 
           timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee HEAD:main
-          timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee --tags
+          timeout 180s git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=60 push gitee --tags || \
+            echo "Gitee tag push skipped or partially rejected; main branch is already synced."
