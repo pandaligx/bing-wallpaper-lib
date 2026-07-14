@@ -51,7 +51,7 @@ jobs:
 
       - name: Create or update Gitee release
         shell: bash
-        timeout-minutes: 8
+        timeout-minutes: 18
         env:
           RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
@@ -80,14 +80,14 @@ jobs:
           target_commitish="$(git rev-list -n 1 "${TAG_NAME}")"
           api_base="https://gitee.com/api/v5/repos/${GITEE_REPO}/releases"
 
-          curl_args=(-fsS --connect-timeout 30 --max-time 300 --retry 2 --retry-delay 5)
+          api_curl_args=(-fsS --connect-timeout 20 --max-time 60 --retry 1 --retry-delay 3)
+          upload_curl_args=(-fsS --connect-timeout 30 --max-time 900 --retry 1 --retry-delay 5)
 
-          release_json="$(curl "${curl_args[@]}" --get "${api_base}/tags/${TAG_NAME}" \
-            --data-urlencode "access_token=${GITEE_TOKEN}" || true)"
+          release_json="$(curl "${api_curl_args[@]}" --get "${api_base}/tags/${TAG_NAME}" || true)"
           release_id="$(node -e 'const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); if (!input) process.exit(0); const data=JSON.parse(input); if (data && data.id) console.log(data.id);' <<<"$release_json")"
 
           if [ -z "$release_id" ]; then
-            release_json="$(curl "${curl_args[@]}" -X POST "$api_base" \
+            release_json="$(curl "${api_curl_args[@]}" -X POST "$api_base" \
               -F "access_token=${GITEE_TOKEN}" \
               -F "tag_name=${TAG_NAME}" \
               -F "name=${release_name}" \
@@ -98,18 +98,15 @@ jobs:
           fi
 
           attachments_api="${api_base}/${release_id}/attach_files"
-          existing="$(curl "${curl_args[@]}" --get "$attachments_api" \
-            --data-urlencode "access_token=${GITEE_TOKEN}" \
-            --data-urlencode "per_page=100")"
 
           for file in dist/*.exe; do
             name="$(basename "$file")"
-            if node -e 'const fs=require("fs"); const name=process.argv[1]; const data=JSON.parse(fs.readFileSync(0,"utf8")); process.exit(data.some((asset) => asset.name === name) ? 0 : 1);' "$name" <<<"$existing"; then
+            if node -e 'const fs=require("fs"); const name=process.argv[1]; const data=JSON.parse(fs.readFileSync(0,"utf8")); const assets=Array.isArray(data) ? data : (data.attach_files || []); process.exit(assets.some((asset) => asset.name === name) ? 0 : 1);' "$name" <<<"$release_json"; then
               echo "Gitee Release asset already exists: $name"
               continue
             fi
 
-            curl "${curl_args[@]}" -X POST "$attachments_api" \
+            curl "${upload_curl_args[@]}" -X POST "$attachments_api" \
               -F "access_token=${GITEE_TOKEN}" \
               -F "file=@${file}" >/dev/null
             echo "Uploaded Gitee Release asset: $name"
