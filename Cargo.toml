@@ -1,6 +1,6 @@
 [package]
 name = "bing-wallpaper-lib"
-version = "0.2.30"
+version = "0.2.31"
 edition = "2021"
 description = "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
 default-run = "bing-wallpaper-lib"
@@ -32,6 +32,7 @@ http_client = {
   git = "https://github.com/zed-industries/zed",
   rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe"
 }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 reqwest_client = {
   git = "https://github.com/zed-industries/zed",
   rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe"
@@ -67,6 +68,11 @@ windows = {
 
 [build-dependencies]
 embed-resource = "3.0"
+
+[patch.crates-io]
+# proc-macro-error2 2.0.1 在新 Rust 中会触发 future-incompat；固定到上游 PR #14
+# 的最小修复提交，待 crates.io 发布包含该修复的新版本后可移除此 patch。
+proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
 
 [lints.clippy]
 too_many_arguments = "allow"

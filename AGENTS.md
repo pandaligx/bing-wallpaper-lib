@@ -36,7 +36,8 @@
   3. `https://fastly.jsdelivr.net/gh/zxyongyo/bing-daily-wallpaper@master/map.json`
   4. `https://raw.githubusercontent.com/zxyongyo/bing-daily-wallpaper/master/map.json`
 - 本项目内置快照为 `assets/data/zxyongyo-bing-wallpaper.json`。启动时会先加载本地缓存；若缓存不存在，
-  立即展示内置快照，避免无 VPN 或远程源响应慢时首页长时间空白。后台刷新成功后会写回本地缓存。
+  立即展示内置快照，避免无 VPN 或远程源响应慢时首页长时间空白。后台刷新时会把内置快照中缓存缺失的
+  历史日期补回，再写回本地缓存，避免旧缓存永久丢失某一天。
 - 自动同步：`.github/workflows/sync-wallpaper-archive.yml` 每 4 小时拉取上游 `map.json`，校验后更新
   `assets/data/zxyongyo-bing-wallpaper.json` 并提交到 GitHub；若 GitHub Actions secrets 中配置了
   `GITEE_USERNAME` / `GITEE_TOKEN`，还会同步推送到 Gitee；若 Git 推送到 Gitee 失败或超时，则会用
@@ -45,9 +46,9 @@
   因为软件优先读取的 raw 地址就是 `raw/main/assets/data/zxyongyo-bing-wallpaper.json`。
 - 最新数据补强：Bing 官方 `HPImageArchive.aspx` 只能稳定提供最近一小段历史（`idx=0`、`idx=8`），
   更深的 `idx` 会被服务端折回最近数据。因此 `fetch_all` 会先获取 zxyongyo 历史归档，再用 Bing 官方最近窗口覆盖同日期记录。
-- 去重策略：`merge_entries_prefer_primary` 同时按日期和 OHR 图片标识去重。由于 Bing 官方 API 与第三方归档
-  对“日期”的取法偶尔会相差一天，同一张图片可能出现在相邻日期；本项目优先保留 Bing 官方最近窗口中的记录，
-  避免首页出现重复卡片。
+- 日期与去重策略：Bing 官方 API 优先使用 `enddate` 作为中国区展示日期；缺少 `enddate` 时将 `startdate`
+  后移一天。`merge_entries_prefer_primary` 同时按日期和 OHR 图片标识合并：同一天优先使用官方记录；同一张图片
+  在官方 API 与第三方归档中相差一天时，以归档日期为准，避免 7 月 14 日被错误显示为 7 月 13 日。
 - 解析实现：`src/fetcher.rs` 中的 `parse_zxyongyo_archive` / `zxyongyo_image_to_entry` /
   `bing_image_to_entry` / `dedup_by_date` / `merge_entries_prefer_primary` / `fetch_all`，并附带单元测试覆盖
   JSON 解析、官方最近数据覆盖、跨日期同图去重、内置快照可解析等情况。
@@ -64,6 +65,7 @@ src/
 ├── model.rs             WallpaperEntry / MonthGroup 数据结构，按年月分组算法，缩略图 URL 转换
 ├── fetcher.rs           抓取 + 解析 zxyongyo map.json 与 Bing 官方最近窗口、去重、本地 JSON 缓存、"是否有新一天"检测
 ├── downloader.rs        Aria2Manager：管理内置 aria2c.exe 子进程 + JSON-RPC 客户端（见 §7、§12）
+├── local_thumbnails.rs  已下载壁纸磁盘缩略图：指纹、生成、校验、失效与清理
 ├── wallpaper_setter.rs  调用 Windows IDesktopWallpaper / SystemParametersInfoW 设置桌面壁纸，支持多显示器
 ├── updater.rs           检查 GitHub Releases 最新版本，下载 + 自我替换重启（见 §14.3）
 └── ui/
@@ -181,10 +183,10 @@ aria2c.exe 文件放在同目录"的方案**，而是：
    中的 `aria2c.exe`），放置在项目的 `assets/aria2c.exe`；
 2. `src/paths.rs` 中通过 `include_bytes!("../assets/aria2c.exe")` 把这个二进制**编译期直接嵌入**进我们自己的
    Rust 可执行文件里；
-3. 运行时首次需要下载时（`Aria2Manager::start`），`paths::ensure_aria2c()` 会把这份内嵌数据释放到
-   `%LOCALAPPDATA%\BingWallpaperLib\bin\aria2c.exe`（如果目标文件不存在或大小不一致才重新写入）；
-4. 之后以子进程方式启动这个释放出来的 `aria2c.exe`，加上 `--enable-rpc` 等参数，仅通过本地 HTTP JSON-RPC
-   （`http://127.0.0.1:16800/jsonrpc`）与其通信，调用官方支持的 `aria2.addUri` / `aria2.tellStatus` 等接口。
+3. 运行时每次需要下载时（`Aria2Manager::start`），`paths::extract_aria2c()` 会用 `create_new` 把内嵌数据释放为
+   `%LOCALAPPDATA%\BingWallpaperLib\bin\aria2c-<随机 UUID>.exe`，避免高权限进程执行可被预先替换的固定路径文件；
+4. 之后以子进程方式启动这个临时 `aria2c.exe`，为 RPC 随机分配本机端口和随机 secret，仅监听
+   `127.0.0.1`，调用 `aria2.addUri` / `aria2.tellStatus` 等官方接口；退出时等待子进程结束并删除临时 exe。
 
 这样最终交付物依然是**单个 exe 文件**，符合"打包成 exe"的要求，同时严格通过 aria2 官方 RPC 接口完成下载，
 没有重新发明下载逻辑。发布物通过 GitHub Release 附件分发，详见 §7.3。
@@ -964,8 +966,7 @@ v0.2.29 针对 GPUI 图片资源缓存做了两层治理：
    `clear_thumbnail_cache`，再隐藏/最小化窗口。这样长距离滚动后进入后台常驻时，不会继续保留主页/月份列表积累的
    远程缩略图缓存。
 
-维护注意：本地“已下载的壁纸”画廊仍直接显示本地文件，不走远程缩略图 LRU；如果以后本地画廊也出现大量图片导致的
-内存压力，可复用同一个 `BoundedImageCache` 思路单独为本地文件加上缓存上限。
+自 v0.2.31 起，本地“已下载的壁纸”画廊已改为磁盘小尺寸缩略图 + 独立小容量 `BoundedImageCache`；实现细节见 §28.2。
 
 ## 27. 全局分辨率与已下载信息展示（v0.2.30）
 
@@ -985,3 +986,37 @@ v0.2.30 新增 `settings.rs::DownloadResolution`，并作为 `AppSettings::downl
 “下载中心 · 已下载的壁纸”卡片通过 `downloaded_image_info_text(...)` 读取本地图片文件头并展示
 `宽×高 · 文件大小`。当前支持 JPG / PNG / WebP 的尺寸解析；解析失败时仍显示文件大小。该逻辑只读取文件前
 128 KiB，避免为了展示元信息而把整张大图读入内存。
+
+## 28. 历史日期修复、本地缩略图与下载链路加固（v0.2.31）
+
+### 28.1 历史日期完整性
+
+`local_seed_entries()` 不再在“缓存非空”时完全忽略内置快照，而是以快照为历史基线、用缓存覆盖同日期记录并补充
+快照之后的新日期。这样旧版本缓存即使漏掉 `2020-04-04`，后台刷新也会自动补回并写入新缓存。
+
+Bing 官方 `HPImageArchive.aspx` 的 `startdate` 在中国区实际展示边界上可能早一天。`BingArchiveImage` 现在解析
+`enddate` 并优先作为 `WallpaperEntry::date`；缺少该字段时使用 `startdate + 1 天`。合并官方近期窗口与归档时：
+
+- 同日期记录优先采用官方标题、版权信息和 URL；
+- 同 OHR 图片跨日期冲突时保留归档日期，不允许官方较早日期删除归档中的正确日期；
+- 内置快照测试明确要求 2020 年 4 月有 30 条并包含 `2020-04-04`。
+
+### 28.2 本地画廊磁盘缩略图
+
+`src/local_thumbnails.rs` 为已下载壁纸生成 440×248 JPEG 缩略图。缓存键包含版本、完整源路径、文件长度和修改时间，
+源文件改变后旧缩略图自然失效。解码设置最大尺寸与内存限制，先写 `.tmp.jpg` 再原子改名；损坏源图、损坏缓存及
+中途失败都会清理残留文件。UI 通过独立的小容量 `BoundedImageCache` 保留已缩小纹理，并在后台串行生成，避免
+并发解码多张 4K 原图造成内存峰值。
+
+测试必须调用 `ensure_in_dir` / `cached_for_in_dir` 并为每个用例创建唯一临时缓存目录，不能写入真实
+`%LOCALAPPDATA%\BingWallpaperLib`，否则并行测试或受限构建环境会互相干扰。
+
+### 28.3 aria2 与自更新安全边界
+
+- `paths::extract_aria2c()` 使用 `create_new` 创建每进程随机 exe；`Aria2Manager` 使用随机空闲端口与随机 RPC
+  secret，所有 JSON-RPC 调用携带 `token:<secret>`，并限制响应体为 1 MiB。
+- 远程归档 JSON 限制为 32 MiB，Gitee/GitHub Release API 响应限制为 2 MiB。
+- Release 附件名必须匹配 `bing-wallpaper-lib-vX.Y.Z-x64.exe` 的安全字符集合；下载后必须是普通文件、至少
+  1 MiB 且以 `MZ` 开头。
+- 自更新脚本把新程序复制回当前 exe 原路径后再启动，确保开机自启注册表和用户快捷方式不会指向被删除的旧文件名；
+  批处理路径中的 `%` 必须转义为 `%%`。

@@ -19,6 +19,7 @@ use anyhow::{bail, Context, Result};
 use futures::AsyncReadExt;
 use http_client::{HttpClient, HttpRequestExt, Request};
 use serde::{de::DeserializeOwned, Deserialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,6 +32,7 @@ const RELEASES_API_URL: &str =
 const GITEE_REPO_HTML_URL: &str = "https://gitee.com/pandaligx/bing-wallpaper-lib";
 const GITEE_RELEASES_API_URL: &str =
     "https://gitee.com/api/v5/repos/pandaligx/bing-wallpaper-lib/releases/latest";
+const MAX_RELEASE_API_BYTES: u64 = 2 * 1024 * 1024;
 
 /// 当前编译时的版本号（来自 `Cargo.toml` 的 `package.version`）。
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -85,6 +87,14 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+fn is_release_executable_name(name: &str) -> bool {
+    name.starts_with("bing-wallpaper-lib-v")
+        && name.ends_with("-x64.exe")
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+}
+
 fn github_release_download_url(tag: &str, asset_name: &str) -> String {
     format!("{REPO_HTML_URL}/releases/download/{tag}/{asset_name}")
 }
@@ -122,9 +132,13 @@ async fn get_json<T: DeserializeOwned>(http: &Arc<dyn HttpClient>, url: &str) ->
     let mut body = Vec::new();
     response
         .body_mut()
+        .take(MAX_RELEASE_API_BYTES + 1)
         .read_to_end(&mut body)
         .await
         .with_context(|| format!("读取响应失败: {url}"))?;
+    if body.len() as u64 > MAX_RELEASE_API_BYTES {
+        bail!("接口响应超过大小限制: {url}");
+    }
 
     serde_json::from_slice(&body).with_context(|| format!("解析响应 JSON 失败: {url}"))
 }
@@ -138,7 +152,7 @@ async fn gitee_asset_for_tag(
     let assets: Vec<GiteeAsset> = get_json(http, &gitee_release_assets_api_url(release.id)).await?;
 
     Ok(assets.into_iter().find(|asset| {
-        asset.name.ends_with(".exe") && asset_name.is_none_or(|name| asset.name == name)
+        is_release_executable_name(&asset.name) && asset_name.is_none_or(|name| asset.name == name)
     }))
 }
 
@@ -190,11 +204,10 @@ async fn check_github_for_update(http: &Arc<dyn HttpClient>) -> Result<Option<Re
     let Some(asset) = release
         .assets
         .iter()
-        .find(|a| a.name.ends_with(".exe"))
-        .or_else(|| release.assets.first())
+        .find(|asset| is_release_executable_name(&asset.name))
         .cloned()
     else {
-        return Ok(None);
+        bail!("GitHub Release {} 未找到 exe 附件", release.tag_name);
     };
 
     let version = release.tag_name.trim_start_matches('v').to_string();
@@ -251,6 +264,10 @@ pub fn update_dir() -> Result<PathBuf> {
 }
 
 /// 生成负责"等待旧进程退出 → 复制新版 exe → 重新启动 → 清理旧文件/临时文件"的批处理脚本内容。
+fn batch_path(path: &Path) -> String {
+    path.display().to_string().replace('%', "%%")
+}
+
 fn build_relaunch_script(new_exe: &Path, old_exe: &Path, final_exe: &Path) -> String {
     format!(
         "@echo off\r\n\
@@ -273,22 +290,33 @@ fn build_relaunch_script(new_exe: &Path, old_exe: &Path, final_exe: &Path) -> St
          start \"\" \"{old}\"\r\n\
          :cleanup\r\n\
          del \"%~f0\" >nul 2>&1\r\n",
-        new = new_exe.display(),
-        old = old_exe.display(),
-        final = final_exe.display(),
+        new = batch_path(new_exe),
+        old = batch_path(old_exe),
+        final = batch_path(final_exe),
     )
 }
 
 /// 写出并以隐藏窗口方式启动"替换 + 重启"脚本。调用方在此之后应立即调用
 /// `App::quit()` 让当前进程退出，脚本会在等待期过后接管完成实际替换。
 ///
-/// 新版本会使用 Release asset 的文件名复制到当前 exe 所在目录；这样即使用户从
-/// `bing-wallpaper-lib-v0.2.20-x64.exe` 或自定义的 `必应每日壁纸.exe` 启动，更新后
-/// 也会变成类似 `bing-wallpaper-lib-v0.2.25-x64.exe` 的新版文件名。
+/// 新版本覆盖到当前 exe 的原路径，避免用户启用开机自启后，注册表仍指向已被
+/// 删除的旧版本文件名。
 pub fn spawn_relaunch(new_exe: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(new_exe).context("读取新版可执行文件信息失败")?;
+    if !metadata.is_file() || metadata.len() < 1024 * 1024 {
+        bail!("下载的更新文件大小异常");
+    }
+    let mut header = [0u8; 2];
+    std::fs::File::open(new_exe)
+        .context("打开新版可执行文件失败")?
+        .read_exact(&mut header)
+        .context("读取新版可执行文件头失败")?;
+    if header != *b"MZ" {
+        bail!("下载的更新文件不是有效的 Windows 可执行文件");
+    }
+
     let old_exe = std::env::current_exe().context("获取当前可执行文件路径失败")?;
-    let asset_name = new_exe.file_name().context("获取新版可执行文件名失败")?;
-    let final_exe = old_exe.with_file_name(asset_name);
+    let final_exe = old_exe.clone();
     let script_path = new_exe.with_file_name("apply_update.bat");
     let script = build_relaunch_script(new_exe, &old_exe, &final_exe);
     std::fs::write(&script_path, script).context("写入更新脚本失败")?;
@@ -332,19 +360,27 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_script_uses_new_release_file_name() {
+    fn relaunch_script_preserves_current_executable_path() {
         let new_exe = Path::new(
             r"C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe",
         );
         let old_exe = Path::new(r"C:\Users\me\Desktop\必应每日壁纸.exe");
-        let final_exe = Path::new(r"C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe");
-        let script = build_relaunch_script(new_exe, old_exe, final_exe);
+        let script = build_relaunch_script(new_exe, old_exe, old_exe);
 
-        assert!(script.contains(r#"copy /Y "C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe" "C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe""#));
-        assert!(
-            script.contains(r#"start "" "C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe""#)
-        );
-        assert!(script.contains(r#"del "C:\Users\me\Desktop\必应每日壁纸.exe""#));
+        assert!(script.contains(r#"copy /Y "C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe" "C:\Users\me\Desktop\必应每日壁纸.exe""#));
+        assert!(script.contains(r#"start "" "C:\Users\me\Desktop\必应每日壁纸.exe""#));
+        assert!(script.contains(r#"if /I not "C:\Users\me\Desktop\必应每日壁纸.exe"=="C:\Users\me\Desktop\必应每日壁纸.exe" del "C:\Users\me\Desktop\必应每日壁纸.exe""#));
+    }
+
+    #[test]
+    fn accepts_only_expected_release_executable_names() {
+        assert!(is_release_executable_name(
+            "bing-wallpaper-lib-v0.2.30-x64.exe"
+        ));
+        assert!(!is_release_executable_name("checksums.exe"));
+        assert!(!is_release_executable_name(
+            "bing-wallpaper-lib-v0.2.30-%PATH%-x64.exe"
+        ));
     }
 
     #[test]

@@ -41,7 +41,7 @@ use http_client::HttpClient;
 use rand::seq::SliceRandom;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -72,6 +72,14 @@ const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.0;
 /// 远程缩略图最多保留的数量。超出后会释放最久未使用的图片纹理，避免滚动完整历史后
 /// 进程内存随图片数量无限增长。
 const THUMBNAIL_IMAGE_CACHE_ITEMS: usize = 120;
+
+/// 本地画廊只保留少量已经缩小的图片纹理，避免滚动后持续累积。
+const DOWNLOADED_THUMBNAIL_CACHE_ITEMS: usize = 24;
+
+/// 已下载壁纸画廊的固定卡片布局参数。
+const DOWNLOADED_GRID_CARD_WIDTH: f32 = 220.0;
+const DOWNLOADED_GRID_GAP: f32 = 16.0;
+const DOWNLOADED_GRID_ROW_HEIGHT: f32 = 178.0;
 
 fn image_frame(
     source: impl Into<ImageSource>,
@@ -267,6 +275,7 @@ pub struct WallpaperLibrary {
     selected_key: Option<String>,
     status: SharedString,
     aria2: Rc<RefCell<Option<Rc<Aria2Manager>>>>,
+    aria2_start_lock: Rc<smol::lock::Mutex<()>>,
     http: Arc<dyn HttpClient>,
     /// 正在下载中的条目的实时进度（百分比 0.0~100.0），按日期索引。
     progress: HashMap<NaiveDate, f32>,
@@ -285,6 +294,20 @@ pub struct WallpaperLibrary {
     home_scroll_handle: VirtualListScrollHandle,
     /// 远程缩略图 LRU 缓存，限制主页/月份列表滚动时保留的图片数量。
     thumbnail_cache: Entity<BoundedImageCache>,
+    /// 已下载壁纸虚拟网格的滚动状态句柄。
+    downloaded_scroll_handle: VirtualListScrollHandle,
+    /// 本地画廊缩略图的独立小容量 LRU，只缓存实际缩小后的图片。
+    downloaded_thumbnail_cache: Entity<BoundedImageCache>,
+    /// 等待后台串行生成的本地缩略图，避免同时解码多张 4K 原图。
+    downloaded_thumbnail_queue: VecDeque<(
+        std::path::PathBuf,
+        crate::local_thumbnails::SourceFingerprint,
+        u64,
+    )>,
+    downloaded_thumbnail_pending: HashSet<crate::local_thumbnails::SourceFingerprint>,
+    downloaded_thumbnail_failures: HashSet<crate::local_thumbnails::SourceFingerprint>,
+    downloaded_thumbnail_epoch: u64,
+    downloaded_thumbnail_worker_running: bool,
     /// 侧边导航栏是否处于折叠（仅图标）状态。
     sidebar_collapsed: bool,
     /// 设置浮层是否展开（左下角，类似抖音侧边栏设置菜单）。
@@ -346,6 +369,7 @@ impl WallpaperLibrary {
             selected_key: None,
             status: "正在加载壁纸列表...".into(),
             aria2: Rc::new(RefCell::new(None)),
+            aria2_start_lock: Rc::new(smol::lock::Mutex::new(())),
             http: cx.http_client(),
             progress: HashMap::new(),
             favorites: crate::favorites::load(),
@@ -354,6 +378,14 @@ impl WallpaperLibrary {
             update_progress: Rc::new(RefCell::new(None)),
             home_scroll_handle: VirtualListScrollHandle::new(),
             thumbnail_cache: cx.new(|cx| BoundedImageCache::new(THUMBNAIL_IMAGE_CACHE_ITEMS, cx)),
+            downloaded_scroll_handle: VirtualListScrollHandle::new(),
+            downloaded_thumbnail_cache: cx
+                .new(|cx| BoundedImageCache::new(DOWNLOADED_THUMBNAIL_CACHE_ITEMS, cx)),
+            downloaded_thumbnail_queue: VecDeque::new(),
+            downloaded_thumbnail_pending: HashSet::new(),
+            downloaded_thumbnail_failures: HashSet::new(),
+            downloaded_thumbnail_epoch: 0,
+            downloaded_thumbnail_worker_running: false,
             sidebar_collapsed: false,
             settings_panel_open: false,
             settings_section: None,
@@ -371,10 +403,24 @@ impl WallpaperLibrary {
         self.aria2.clone()
     }
 
+    fn cancel_downloaded_thumbnail_work(&mut self) {
+        self.downloaded_thumbnail_epoch = self.downloaded_thumbnail_epoch.wrapping_add(1);
+        self.downloaded_thumbnail_queue.clear();
+        self.downloaded_thumbnail_pending.clear();
+    }
+
+    fn clear_downloaded_thumbnail_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_downloaded_thumbnail_work();
+        self.downloaded_thumbnail_cache.update(cx, |cache, cx| {
+            cache.clear(window, cx);
+        });
+    }
+
     fn clear_thumbnail_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.thumbnail_cache.update(cx, |cache, cx| {
             cache.clear(window, cx);
         });
+        self.clear_downloaded_thumbnail_cache(window, cx);
     }
 
     /// 使用最新抓取到的壁纸条目刷新界面状态。
@@ -478,10 +524,23 @@ impl WallpaperLibrary {
             .collect()
     }
 
-    fn select(&mut self, key: String, cx: &mut Context<Self>) {
-        self.selected_key = Some(key);
-        self.view_mode = ViewMode::MonthDetail;
+    fn set_view_mode(&mut self, view_mode: ViewMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view_mode == ViewMode::Downloaded && view_mode != ViewMode::Downloaded {
+            self.clear_downloaded_thumbnail_cache(window, cx);
+        }
+        if view_mode == ViewMode::Downloaded {
+            let files = self.downloaded_files();
+            if let Err(err) = crate::local_thumbnails::prune(&files) {
+                log::warn!("清理本地壁纸缩略图失败: {err:#}");
+            }
+        }
+        self.view_mode = view_mode;
         cx.notify();
+    }
+
+    fn select(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_key = Some(key);
+        self.set_view_mode(ViewMode::MonthDetail, window, cx);
     }
 
     fn favorite_entries(&self) -> Vec<WallpaperEntry> {
@@ -856,6 +915,7 @@ impl WallpaperLibrary {
 
     fn start_download(&mut self, entry: WallpaperEntry, cx: &mut Context<Self>) {
         let aria2 = self.aria2.clone();
+        let aria2_start_lock = self.aria2_start_lock.clone();
         let http = self.http.clone();
         let date = entry.date;
         let resolution = self.settings.download_resolution;
@@ -863,7 +923,16 @@ impl WallpaperLibrary {
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = run_download(&aria2, &http, &entry, resolution, &this, cx).await;
+            let result = run_download(
+                &aria2,
+                &aria2_start_lock,
+                &http,
+                &entry,
+                resolution,
+                &this,
+                cx,
+            )
+            .await;
             let _ = this.update(cx, |this, cx| {
                 this.progress.remove(&date);
                 match result {
@@ -893,6 +962,7 @@ impl WallpaperLibrary {
 
         let total = entries.len();
         let aria2 = self.aria2.clone();
+        let aria2_start_lock = self.aria2_start_lock.clone();
         let http = self.http.clone();
         let resolution = self.settings.download_resolution;
         self.batch_progress = Some(BatchProgress {
@@ -905,9 +975,10 @@ impl WallpaperLibrary {
             let mut completed = 0usize;
             let mut skipped = 0usize;
             let mut failed = 0usize;
-            let mut tasks = Vec::new();
+            let mut pending: VecDeque<WallpaperEntry> = entries.into();
+            let mut active: Vec<(String, NaiveDate)> = Vec::new();
 
-            let manager = match ensure_aria2(&aria2, &http).await {
+            let manager = match ensure_aria2(&aria2, &aria2_start_lock, &http).await {
                 Ok(manager) => manager,
                 Err(err) => {
                     let _ = this.update(cx, |this, cx| {
@@ -918,47 +989,43 @@ impl WallpaperLibrary {
                 }
             };
 
-            for entry in entries {
-                let file_name = entry.file_name();
-                let existing = crate::paths::wallpapers_dir().map(|dir| dir.join(&file_name));
-                if existing.as_ref().is_ok_and(|path| path.exists()) {
-                    completed += 1;
-                    skipped += 1;
-                    continue;
-                }
-
-                let date = entry.date;
-                let url = entry.download_url(resolution);
-                match manager.add_uri(&url, &file_name).await {
-                    Ok(gid) => {
-                        tasks.push((gid, date, false));
-                        let _ = this.update(cx, |this, cx| {
-                            this.progress.insert(date, 0.0);
-                            this.batch_progress = Some(BatchProgress {
-                                completed,
-                                total,
-                                skipped,
-                                failed,
-                            });
-                            this.set_status(
-                                format!("批量下载{label}: 已提交 {} 个并发任务", tasks.len()),
-                                cx,
-                            );
-                        });
-                    }
-                    Err(_) => {
+            const MAX_ACTIVE_DOWNLOADS: usize = 16;
+            while !pending.is_empty() || !active.is_empty() {
+                while active.len() < MAX_ACTIVE_DOWNLOADS {
+                    let Some(entry) = pending.pop_front() else {
+                        break;
+                    };
+                    let file_name = entry.file_name();
+                    let existing = crate::paths::wallpapers_dir().map(|dir| dir.join(&file_name));
+                    if existing.as_ref().is_ok_and(|path| path.exists()) {
                         completed += 1;
-                        failed += 1;
-                    }
-                }
-            }
-
-            while tasks.iter().any(|(_, _, done)| !*done) {
-                let mut progress_updates = Vec::new();
-                for (gid, date, done) in tasks.iter_mut() {
-                    if *done {
+                        skipped += 1;
                         continue;
                     }
+
+                    let date = entry.date;
+                    let url = entry.download_url(resolution);
+                    match manager.add_uri(&url, &file_name).await {
+                        Ok(gid) => {
+                            active.push((gid, date));
+                            let _ = this.update(cx, |this, cx| {
+                                this.progress.insert(date, 0.0);
+                                cx.notify();
+                            });
+                        }
+                        Err(_) => {
+                            completed += 1;
+                            failed += 1;
+                        }
+                    }
+                }
+
+                let mut progress_updates = Vec::new();
+                let mut finished_dates = Vec::new();
+                let mut index = 0;
+                while index < active.len() {
+                    let (gid, date) = &active[index];
+                    let mut finished = false;
                     match manager.tell_status(gid).await {
                         Ok(status) => {
                             let state = status
@@ -968,12 +1035,12 @@ impl WallpaperLibrary {
                             let completed_len: u64 = status
                                 .get("completedLength")
                                 .and_then(serde_json::Value::as_str)
-                                .and_then(|s| s.parse().ok())
+                                .and_then(|value| value.parse().ok())
                                 .unwrap_or(0);
                             let total_len: u64 = status
                                 .get("totalLength")
                                 .and_then(serde_json::Value::as_str)
-                                .and_then(|s| s.parse().ok())
+                                .and_then(|value| value.parse().ok())
                                 .unwrap_or(0);
                             let percent = if total_len > 0 {
                                 completed_len as f32 / total_len as f32 * 100.0
@@ -984,29 +1051,32 @@ impl WallpaperLibrary {
 
                             match state {
                                 "complete" => {
-                                    *done = true;
                                     completed += 1;
+                                    finished = true;
                                 }
                                 "error" | "removed" => {
-                                    *done = true;
                                     completed += 1;
                                     failed += 1;
+                                    finished = true;
                                 }
                                 _ => {}
                             }
                         }
                         Err(_) => {
-                            *done = true;
                             completed += 1;
                             failed += 1;
+                            finished = true;
                         }
+                    }
+
+                    if finished {
+                        let (_, date) = active.swap_remove(index);
+                        finished_dates.push(date);
+                    } else {
+                        index += 1;
                     }
                 }
 
-                let finished_dates: Vec<_> = tasks
-                    .iter()
-                    .filter_map(|(_, date, done)| (*done).then_some(*date))
-                    .collect();
                 let _ = this.update(cx, |this, cx| {
                     for (date, percent) in progress_updates {
                         this.progress.insert(date, percent);
@@ -1022,15 +1092,19 @@ impl WallpaperLibrary {
                     });
                     this.set_status(
                         format!(
-                            "批量下载{label}: {completed}/{total}（跳过 {skipped}，失败 {failed}）"
+                            "批量下载{label}: {completed}/{total}（活动 {}，待提交 {}，跳过 {skipped}，失败 {failed}）",
+                            active.len(),
+                            pending.len()
                         ),
                         cx,
                     );
                 });
 
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(500))
-                    .await;
+                if !active.is_empty() {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(500))
+                        .await;
+                }
             }
 
             let _ = this.update(cx, |this, cx| {
@@ -1055,6 +1129,7 @@ impl WallpaperLibrary {
         cx: &mut Context<Self>,
     ) {
         let aria2 = self.aria2.clone();
+        let aria2_start_lock = self.aria2_start_lock.clone();
         let http = self.http.clone();
         let date = entry.date;
         let target = self.settings.wallpaper_target.clone();
@@ -1064,7 +1139,16 @@ impl WallpaperLibrary {
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = run_download(&aria2, &http, &entry, resolution, &this, cx).await;
+            let result = run_download(
+                &aria2,
+                &aria2_start_lock,
+                &http,
+                &entry,
+                resolution,
+                &this,
+                cx,
+            )
+            .await;
             let outcome = match result {
                 Ok(path) => match &target {
                     WallpaperTarget::All => wallpaper_setter::set_wallpaper_for_all_monitors(&path),
@@ -1132,6 +1216,8 @@ impl WallpaperLibrary {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         self.downloaded_selected.remove(&path);
+        crate::local_thumbnails::remove(&path);
+        self.cancel_downloaded_thumbnail_work();
         match std::fs::remove_file(&path) {
             Ok(()) => self.set_status(format!("已删除 {name}"), cx),
             Err(err) => self.set_status(format!("删除 {name} 失败: {err}"), cx),
@@ -1148,7 +1234,9 @@ impl WallpaperLibrary {
         let total = paths.len();
         let mut deleted = 0usize;
         let mut failed = 0usize;
+        self.cancel_downloaded_thumbnail_work();
         for path in paths {
+            crate::local_thumbnails::remove(&path);
             match std::fs::remove_file(&path) {
                 Ok(()) => deleted += 1,
                 Err(_) => failed += 1,
@@ -1164,29 +1252,40 @@ impl WallpaperLibrary {
     /// `aria2.changeGlobalOption` 实时生效，影响之后新提交的下载任务。
     fn apply_download_dir(&mut self, path_str: String, cx: &mut Context<Self>) {
         let trimmed = path_str.trim();
-        self.settings.download_dir = if trimmed.is_empty() {
+        let candidate = if trimmed.is_empty() {
             None
         } else {
             Some(std::path::PathBuf::from(trimmed))
         };
+        let validated_dir = match &candidate {
+            Some(dir) => std::fs::create_dir_all(dir).map(|()| dir.clone()),
+            None => crate::paths::default_wallpapers_dir()
+                .map_err(|err| std::io::Error::other(format!("创建默认下载目录失败: {err}"))),
+        };
+        let dir = match validated_dir {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.set_status(format!("下载路径无效: {err}"), cx);
+                return;
+            }
+        };
 
+        let previous = self.settings.download_dir.clone();
+        self.settings.download_dir = candidate;
         if let Err(err) = self.settings.save() {
+            self.settings.download_dir = previous;
             self.set_status(format!("保存设置失败: {err}"), cx);
             return;
         }
+        self.cancel_downloaded_thumbnail_work();
+        self.set_status(format!("已保存下载路径: {}", dir.display()), cx);
 
-        match self.settings.effective_download_dir() {
-            Ok(dir) => {
-                self.set_status(format!("已保存下载路径: {}", dir.display()), cx);
-                let manager = self.aria2.borrow().clone();
-                if let Some(manager) = manager {
-                    cx.spawn(async move |_this, _cx| {
-                        let _ = manager.change_download_dir(&dir).await;
-                    })
-                    .detach();
-                }
-            }
-            Err(err) => self.set_status(format!("下载路径无效: {err}"), cx),
+        let manager = self.aria2.borrow().clone();
+        if let Some(manager) = manager {
+            cx.spawn(async move |_this, _cx| {
+                let _ = manager.change_download_dir(&dir).await;
+            })
+            .detach();
         }
     }
 
@@ -1211,16 +1310,26 @@ impl WallpaperLibrary {
         cx.notify();
     }
 
-    fn clear_cache(&mut self, cx: &mut Context<Self>) {
-        match crate::paths::cache_file() {
-            Ok(path) => match std::fs::remove_file(&path) {
-                Ok(()) => self.set_status("已清空本地壁纸缓存，下次刷新会重新写入", cx),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    self.set_status("本地壁纸缓存已经为空", cx);
+    fn clear_cache(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wallpaper_cache_result = crate::paths::cache_file().and_then(|path| {
+            std::fs::remove_file(path).or_else(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(err.into())
                 }
-                Err(err) => self.set_status(format!("清空缓存失败: {err}"), cx),
-            },
-            Err(err) => self.set_status(format!("定位缓存文件失败: {err}"), cx),
+            })
+        });
+        let thumbnail_cache_result = crate::local_thumbnails::clear();
+        self.downloaded_thumbnail_failures.clear();
+        self.clear_downloaded_thumbnail_cache(window, cx);
+
+        match (wallpaper_cache_result, thumbnail_cache_result) {
+            (Ok(()), Ok(())) => {
+                self.set_status("已清空壁纸列表与本地缩略图缓存，下次使用时会重新生成", cx)
+            }
+            (Err(err), _) => self.set_status(format!("清空壁纸列表缓存失败: {err}"), cx),
+            (_, Err(err)) => self.set_status(format!("清空本地缩略图缓存失败: {err}"), cx),
         }
     }
 
@@ -1407,11 +1516,21 @@ impl WallpaperLibrary {
         self.open_update_progress_dialog(release.clone(), window, cx);
 
         let aria2 = self.aria2.clone();
+        let aria2_start_lock = self.aria2_start_lock.clone();
         let http = self.http.clone();
         let progress = self.update_progress.clone();
 
         cx.spawn(async move |this, cx| {
-            let result = run_update_download(&aria2, &http, &release, &progress, &this, cx).await;
+            let result = run_update_download(
+                &aria2,
+                &aria2_start_lock,
+                &http,
+                &release,
+                &progress,
+                &this,
+                cx,
+            )
+            .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 *this.update_progress.borrow_mut() = None;
                 window.close_dialog(cx);
@@ -1616,8 +1735,13 @@ fn open_in_explorer(path: &str) {
 
 async fn ensure_aria2(
     aria2: &Rc<RefCell<Option<Rc<Aria2Manager>>>>,
+    start_lock: &Rc<smol::lock::Mutex<()>>,
     http: &Arc<dyn HttpClient>,
 ) -> anyhow::Result<Rc<Aria2Manager>> {
+    if let Some(existing) = aria2.borrow().clone() {
+        return Ok(existing);
+    }
+    let _start_guard = start_lock.lock().await;
     if let Some(existing) = aria2.borrow().clone() {
         return Ok(existing);
     }
@@ -1629,13 +1753,14 @@ async fn ensure_aria2(
 /// 下载指定壁纸并实时上报进度（通过定期轮询 aria2 的 `tell_status` 实现）。
 async fn run_download(
     aria2: &Rc<RefCell<Option<Rc<Aria2Manager>>>>,
+    aria2_start_lock: &Rc<smol::lock::Mutex<()>>,
     http: &Arc<dyn HttpClient>,
     entry: &WallpaperEntry,
     resolution: DownloadResolution,
     this: &WeakEntity<WallpaperLibrary>,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let manager = ensure_aria2(aria2, http).await?;
+    let manager = ensure_aria2(aria2, aria2_start_lock, http).await?;
     let filename = entry.file_name();
     let date = entry.date;
     let url = entry.download_url(resolution);
@@ -1699,13 +1824,14 @@ async fn run_download(
 /// 已下/总字节/速度推送到“下载中”弹窗的 builder 闭包，同时 `cx.notify()` 触发重新渲染。
 async fn run_update_download(
     aria2: &Rc<RefCell<Option<Rc<Aria2Manager>>>>,
+    aria2_start_lock: &Rc<smol::lock::Mutex<()>>,
     http: &Arc<dyn HttpClient>,
     release: &crate::updater::ReleaseInfo,
     progress: &Rc<RefCell<Option<UpdateProgress>>>,
     this: &WeakEntity<WallpaperLibrary>,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let manager = ensure_aria2(aria2, http).await?;
+    let manager = ensure_aria2(aria2, aria2_start_lock, http).await?;
     let dir = crate::updater::update_dir()?;
     let filename = release.asset_name.clone();
     let mut download_urls = vec![release.download_url.clone()];
@@ -2038,8 +2164,8 @@ impl Render for WallpaperLibrary {
                 month_children.push(
                     SidebarMenuItem::new(SharedString::from(label))
                         .active(is_active)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select(key.clone(), cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select(key.clone(), window, cx);
                         })),
                 );
             }
@@ -2050,9 +2176,8 @@ impl Render for WallpaperLibrary {
         let home_item = SidebarMenuItem::new("主页")
             .icon(IconName::GalleryVerticalEnd)
             .active(view_mode == ViewMode::Home)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.view_mode = ViewMode::Home;
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_view_mode(ViewMode::Home, window, cx);
             }));
 
         let resolution_children = DownloadResolution::ALL
@@ -2082,23 +2207,20 @@ impl Render for WallpaperLibrary {
         let favorites_item = SidebarMenuItem::new("我的收藏")
             .icon(IconName::Heart)
             .active(view_mode == ViewMode::Favorites)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.view_mode = ViewMode::Favorites;
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_view_mode(ViewMode::Favorites, window, cx);
             }));
 
         let batch_download_item = SidebarMenuItem::new("批量下载")
             .active(view_mode == ViewMode::DownloadBatch)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.view_mode = ViewMode::DownloadBatch;
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_view_mode(ViewMode::DownloadBatch, window, cx);
             }));
 
         let downloaded_item = SidebarMenuItem::new("已下载的壁纸")
             .active(view_mode == ViewMode::Downloaded)
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.view_mode = ViewMode::Downloaded;
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.set_view_mode(ViewMode::Downloaded, window, cx);
             }));
 
         let download_center_item = SidebarMenuItem::new("下载中心")
@@ -2186,7 +2308,9 @@ impl Render for WallpaperLibrary {
                 ViewMode::DownloadBatch => self
                     .render_batch_download_view(status, cx)
                     .into_any_element(),
-                ViewMode::Downloaded => self.render_downloaded_view(status, cx).into_any_element(),
+                ViewMode::Downloaded => self
+                    .render_downloaded_view(status, window, cx)
+                    .into_any_element(),
                 ViewMode::MonthDetail => self
                     .render_month_view(selected_key, status, cx)
                     .into_any_element(),
@@ -2343,6 +2467,56 @@ impl WallpaperLibrary {
     ) -> impl IntoElement {
         image_cache(self.thumbnail_cache.clone())
             .child(self.render_image_frame(source, width, height, cx))
+    }
+
+    fn render_downloaded_thumbnail_frame(
+        &self,
+        source: &std::path::Path,
+        width: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fingerprint = crate::local_thumbnails::fingerprint(source).ok();
+        let thumbnail = fingerprint
+            .as_ref()
+            .and_then(crate::local_thumbnails::cached_for);
+        if let Some(thumbnail) = thumbnail {
+            image_cache(self.downloaded_thumbnail_cache.clone())
+                .child(self.render_image_frame(thumbnail, width, height, cx))
+                .into_any_element()
+        } else {
+            let placeholder = if crate::local_thumbnails::is_downloading(source) {
+                "壁纸下载中..."
+            } else if fingerprint
+                .as_ref()
+                .is_some_and(|fingerprint| self.downloaded_thumbnail_failures.contains(fingerprint))
+            {
+                "缩略图生成失败，请点击刷新重试"
+            } else if fingerprint.is_none() {
+                "无法读取本地图片"
+            } else {
+                "正在生成缩略图..."
+            };
+            div()
+                .relative()
+                .w(px(width))
+                .h(px(height))
+                .rounded(cx.theme().radius)
+                .overflow_hidden()
+                .bg(cx.theme().muted)
+                .child(
+                    v_flex()
+                        .absolute()
+                        .inset_0()
+                        .items_center()
+                        .justify_center()
+                        .gap_1()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::Frame).size_6())
+                        .child(div().text_xs().child(placeholder)),
+                )
+                .into_any_element()
+        }
     }
 
     fn render_settings_panel(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2770,9 +2944,9 @@ impl WallpaperLibrary {
                         .label("清空壁纸缓存")
                         .outline()
                         .w_full()
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
                             view_for_clear.update(cx, |this, cx| {
-                                this.clear_cache(cx);
+                                this.clear_cache(window, cx);
                             });
                         }),
                 )
@@ -3287,6 +3461,101 @@ impl WallpaperLibrary {
             )
     }
 
+    fn queue_downloaded_thumbnails(
+        &mut self,
+        paths: impl IntoIterator<Item = std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        for path in paths {
+            if crate::local_thumbnails::is_downloading(&path) {
+                continue;
+            }
+            let Ok(fingerprint) = crate::local_thumbnails::fingerprint(&path) else {
+                continue;
+            };
+            if crate::local_thumbnails::cached_for(&fingerprint).is_some()
+                || self.downloaded_thumbnail_failures.contains(&fingerprint)
+                || !self
+                    .downloaded_thumbnail_pending
+                    .insert(fingerprint.clone())
+            {
+                continue;
+            }
+            self.downloaded_thumbnail_queue.push_back((
+                path,
+                fingerprint,
+                self.downloaded_thumbnail_epoch,
+            ));
+        }
+
+        if self.downloaded_thumbnail_worker_running || self.downloaded_thumbnail_queue.is_empty() {
+            return;
+        }
+        self.downloaded_thumbnail_worker_running = true;
+
+        cx.spawn(async move |this, cx| loop {
+            let (path, fingerprint, epoch) = match this.update(cx, |this, _cx| {
+                let request = this.downloaded_thumbnail_queue.pop_front();
+                if request.is_none() {
+                    this.downloaded_thumbnail_worker_running = false;
+                }
+                request
+            }) {
+                Ok(Some(request)) => request,
+                Ok(None) | Err(_) => return,
+            };
+            let source = path.clone();
+            let expected = fingerprint.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::local_thumbnails::ensure(&source, &expected) })
+                .await;
+
+            let should_continue = match this.update(cx, |this, cx| {
+                this.downloaded_thumbnail_pending.remove(&fingerprint);
+                if epoch == this.downloaded_thumbnail_epoch {
+                    if let Err(err) = &result {
+                        if !crate::local_thumbnails::is_downloading(&path)
+                            && crate::local_thumbnails::fingerprint(&path).ok().as_ref()
+                                == Some(&fingerprint)
+                        {
+                            this.downloaded_thumbnail_failures
+                                .insert(fingerprint.clone());
+                        }
+                        log::warn!("生成本地壁纸缩略图失败: {err:#}");
+                    }
+                    cx.notify();
+                }
+                let should_continue = !this.downloaded_thumbnail_queue.is_empty();
+                if !should_continue {
+                    this.downloaded_thumbnail_worker_running = false;
+                }
+                should_continue
+            }) {
+                Ok(should_continue) => should_continue,
+                Err(_) => return,
+            };
+
+            if !should_continue {
+                return;
+            }
+        })
+        .detach();
+    }
+
+    fn downloaded_grid_columns(&self, window: &Window) -> usize {
+        let sidebar_width = if self.sidebar_collapsed {
+            px(SIDEBAR_COLLAPSED_WIDTH)
+        } else {
+            px(SIDEBAR_EXPANDED_WIDTH)
+        };
+        let available_width = window.viewport_size().width - sidebar_width - px(56.0);
+        let columns = ((available_width + px(DOWNLOADED_GRID_GAP))
+            / px(DOWNLOADED_GRID_CARD_WIDTH + DOWNLOADED_GRID_GAP))
+        .floor() as usize;
+        columns.max(1)
+    }
+
     /// 扫描当前生效的壁纸下载目录，返回已下载的图片文件列表（按文件名倒序，
     /// 文件名以日期开头，因此倒序即最新在前）。
     fn downloaded_files(&self) -> Vec<std::path::PathBuf> {
@@ -3299,6 +3568,7 @@ impl WallpaperLibrary {
                 entries
                     .filter_map(|entry| entry.ok())
                     .map(|entry| entry.path())
+                    .filter(|path| path.is_file() && !crate::local_thumbnails::is_downloading(path))
                     .filter(|path| {
                         path.extension()
                             .and_then(|ext| ext.to_str())
@@ -3320,6 +3590,7 @@ impl WallpaperLibrary {
     fn render_downloaded_view(
         &self,
         status: SharedString,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let files = self.downloaded_files();
@@ -3329,6 +3600,14 @@ impl WallpaperLibrary {
         let dir_display = crate::paths::wallpapers_dir()
             .map(|d| d.display().to_string())
             .unwrap_or_default();
+        let columns = self.downloaded_grid_columns(window);
+        let rows: Rc<Vec<Vec<std::path::PathBuf>>> =
+            Rc::new(files.chunks(columns).map(|chunk| chunk.to_vec()).collect());
+        let item_sizes = Rc::new(
+            (0..rows.len())
+                .map(|_| size(px(1.), px(DOWNLOADED_GRID_ROW_HEIGHT)))
+                .collect::<Vec<_>>(),
+        );
 
         let view_for_select_all = cx.entity();
         let files_for_select_all = files.clone();
@@ -3411,7 +3690,13 @@ impl WallpaperLibrary {
                                     .label("刷新")
                                     .outline()
                                     .small()
-                                    .on_click(cx.listener(|_, _, _, cx| cx.notify())),
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.downloaded_thumbnail_failures.clear();
+                                        this.clear_downloaded_thumbnail_cache(window, cx);
+                                        this.downloaded_scroll_handle
+                                            .set_offset(point(px(0.), px(0.)));
+                                        cx.notify();
+                                    })),
                             )
                             .child(
                                 Button::new("downloaded-open-dir")
@@ -3429,38 +3714,50 @@ impl WallpaperLibrary {
                 self.render_status_alert("downloaded-status-alert", &status),
                 |this, alert| this.child(alert),
             )
-            .child(
-                div()
-                    .id("downloaded-scroll")
+            .child(if files.is_empty() {
+                v_flex()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .child(if files.is_empty() {
-                        v_flex()
-                            .items_center()
-                            .justify_center()
-                            .h_full()
-                            .gap_2()
-                            .child(div().text_lg().font_bold().child("还没有已下载的壁纸"))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("在首页、归档或批量下载中下载壁纸后会显示在这里"),
-                            )
-                            .into_any_element()
-                    } else {
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .child(div().text_lg().font_bold().child("还没有已下载的壁纸"))
+                    .child(
                         div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_4()
-                            .children(
-                                files
-                                    .into_iter()
-                                    .map(|path| self.render_downloaded_card(path, cx)),
-                            )
-                            .into_any_element()
-                    }),
-            )
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("在首页、归档或批量下载中下载壁纸后会显示在这里"),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .id("downloaded-scroll-wrap")
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_virtual_list(
+                            cx.entity().clone(),
+                            "downloaded-wallpaper-rows",
+                            item_sizes,
+                            move |view, visible_range, _window, cx| {
+                                visible_range
+                                    .filter_map(|row_index| rows.get(row_index).cloned())
+                                    .map(|row| {
+                                        view.queue_downloaded_thumbnails(row.iter().cloned(), cx);
+                                        h_flex().gap_4().pb_4().children(
+                                            row.into_iter()
+                                                .map(|path| view.render_downloaded_card(path, cx)),
+                                        )
+                                    })
+                                    .collect()
+                            },
+                        )
+                        .track_scroll(&self.downloaded_scroll_handle)
+                        .pr_2(),
+                    )
+                    .vertical_scrollbar(&self.downloaded_scroll_handle)
+                    .into_any_element()
+            })
     }
 
     /// 已下载壁纸画廊中的单张卡片：点击图片本身预览（弹窗内可设为桌面壁纸/删除），
@@ -3493,7 +3790,7 @@ impl WallpaperLibrary {
                     .h(px(124.))
                     .rounded(cx.theme().radius)
                     .overflow_hidden()
-                    .child(self.render_image_frame(path.clone(), 220., 124., cx))
+                    .child(self.render_downloaded_thumbnail_frame(&path, 220., 124., cx))
                     .child(
                         div()
                             .absolute()
@@ -3628,12 +3925,14 @@ impl WallpaperLibrary {
             .unwrap_or_default();
         let path_for_title = path.clone();
         let (dialog_width, image_width, image_height) = preview_dialog_dimensions(window);
+        let preview_cache = RetainAllImageCache::new(cx);
 
         window.open_dialog(cx, move |dialog, _window, cx| {
             let view_for_delete = view.clone();
             let view_for_wall = view.clone();
             let path_for_delete = path.clone();
             let path_for_wall = path.clone();
+            let preview_cache = preview_cache.clone();
 
             dialog
                 .title(
@@ -3647,7 +3946,12 @@ impl WallpaperLibrary {
                     v_flex()
                         .gap_3()
                         .p_4()
-                        .child(image_frame(path.clone(), image_width, image_height, cx))
+                        .child(image_cache(preview_cache).child(image_frame(
+                            path.clone(),
+                            image_width,
+                            image_height,
+                            cx,
+                        )))
                         .child(div().text_sm().truncate().child(name.clone())),
                 )
                 .footer(

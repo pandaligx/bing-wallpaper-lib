@@ -7,7 +7,7 @@
 use crate::model::WallpaperEntry;
 use crate::paths::cache_file;
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{Days, NaiveDate};
 use futures::AsyncReadExt;
 use http_client::{HttpClient, HttpRequestExt, Request};
 use serde::Deserialize;
@@ -30,6 +30,7 @@ const ZXYONGYO_ARCHIVE_URLS: &[&str] = &[
 ];
 
 const BUNDLED_ZXYONGYO_ARCHIVE: &str = include_str!("../assets/data/zxyongyo-bing-wallpaper.json");
+const MAX_REMOTE_JSON_BYTES: u64 = 32 * 1024 * 1024;
 
 /// 去重：同一天可能存在两条记录（历史上偶发现象），保留第一条（列表中最靠前的一条）。
 pub fn dedup_by_date(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
@@ -43,18 +44,37 @@ pub fn dedup_by_date(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
     result
 }
 
-/// 合并两份壁纸列表：同一日期优先保留 primary 中的记录，fallback 只补齐缺失日期。
+/// 合并 Bing 官方近期列表与 zxyongyo 归档。
+///
+/// 同一日期优先使用官方记录；同一图片被两边标成不同日期时，以归档日期为准。
+/// Bing 官方接口的日期边界偶尔会比中国区实际展示日期早一天，不能因此删除归档中
+/// 日期正确的记录。
 fn merge_entries_prefer_primary(
     primary: Vec<WallpaperEntry>,
     fallback: Vec<WallpaperEntry>,
 ) -> Vec<WallpaperEntry> {
-    let mut entries = dedup_by_date(primary);
-    let mut seen_dates: HashSet<NaiveDate> = entries.iter().map(|entry| entry.date).collect();
-    let mut seen_images: HashSet<String> = entries.iter().filter_map(image_key).collect();
+    let mut entries = dedup_by_date(fallback);
 
-    for entry in dedup_by_date(fallback) {
-        let duplicate_image = image_key(&entry).is_some_and(|key| !seen_images.insert(key));
-        if !duplicate_image && seen_dates.insert(entry.date) {
+    for entry in dedup_by_date(primary) {
+        let same_image_index = image_key(&entry).and_then(|key| {
+            entries
+                .iter()
+                .position(|existing| image_key(existing).as_deref() == Some(key.as_str()))
+        });
+
+        if let Some(index) = same_image_index {
+            if entries[index].date == entry.date {
+                entries[index] = entry;
+            }
+            continue;
+        }
+
+        if let Some(index) = entries
+            .iter()
+            .position(|existing| existing.date == entry.date)
+        {
+            entries[index] = entry;
+        } else {
             entries.push(entry);
         }
     }
@@ -84,6 +104,8 @@ struct BingArchiveResponse {
 #[derive(Debug, Deserialize)]
 struct BingArchiveImage {
     startdate: String,
+    #[serde(default)]
+    enddate: Option<String>,
     urlbase: String,
     copyright: String,
     #[serde(default)]
@@ -144,7 +166,16 @@ async fn fetch_recent_from_bing_source(
 }
 
 fn bing_image_to_entry(image: BingArchiveImage) -> Option<WallpaperEntry> {
-    let date = NaiveDate::parse_from_str(&image.startdate, "%Y%m%d").ok()?;
+    let start_date = NaiveDate::parse_from_str(&image.startdate, "%Y%m%d").ok()?;
+    let date = image
+        .enddate
+        .as_deref()
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y%m%d").ok())
+        .unwrap_or_else(|| {
+            start_date
+                .checked_add_days(Days::new(1))
+                .unwrap_or(start_date)
+        });
     Some(WallpaperEntry {
         date,
         headline: non_empty_string(image.title),
@@ -221,20 +252,43 @@ fn non_empty_string(value: String) -> Option<String> {
 }
 
 fn local_seed_entries() -> Vec<WallpaperEntry> {
+    let bundled = bundled_entries();
     load_cache()
         .ok()
         .flatten()
         .filter(|entries| !entries.is_empty())
-        .unwrap_or_else(bundled_entries)
+        .map(|cached| merge_entries_prefer_primary(cached, bundled.clone()))
+        .unwrap_or(bundled)
+}
+
+fn archive_covers_seed(archive: &[WallpaperEntry], seed: &[WallpaperEntry]) -> bool {
+    if seed.is_empty() {
+        return !archive.is_empty();
+    }
+    let archive_oldest = archive.iter().map(|entry| entry.date).min();
+    let seed_oldest = seed.iter().map(|entry| entry.date).min();
+    let keeps_history =
+        matches!((archive_oldest, seed_oldest), (Some(remote), Some(local)) if remote <= local);
+    let keeps_expected_count = archive.len().saturating_mul(10) >= seed.len().saturating_mul(9);
+    keeps_history && keeps_expected_count
 }
 
 /// 拉取 zxyongyo 历史归档与 Bing 官方最近窗口，合并后按日期倒序返回。
 pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>> {
+    let local_seed = local_seed_entries();
     let archive = match fetch_zxyongyo_archive(http.clone()).await {
-        Ok(entries) => entries,
+        Ok(entries) if archive_covers_seed(&entries, &local_seed) => entries,
+        Ok(entries) => {
+            log::warn!(
+                "zxyongyo 历史归档疑似不完整（远端 {} 张，本地 {} 张），继续使用本地历史数据",
+                entries.len(),
+                local_seed.len()
+            );
+            local_seed
+        }
         Err(err) => {
             log::warn!("zxyongyo 历史归档不可用，使用本地缓存或内置快照: {err}");
-            local_seed_entries()
+            local_seed
         }
     };
 
@@ -263,9 +317,13 @@ async fn fetch_text(http: Arc<dyn HttpClient>, url: &str) -> Result<String> {
     let mut body = Vec::new();
     response
         .body_mut()
+        .take(MAX_REMOTE_JSON_BYTES + 1)
         .read_to_end(&mut body)
         .await
         .context("读取响应内容失败")?;
+    if body.len() as u64 > MAX_REMOTE_JSON_BYTES {
+        bail!("响应内容超过大小限制");
+    }
     String::from_utf8(body).context("响应内容不是合法的 UTF-8 文本")
 }
 
@@ -323,6 +381,18 @@ mod tests {
         let entries = bundled_entries();
         assert!(!entries.is_empty());
         assert!(entries.windows(2).all(|pair| pair[0].date >= pair[1].date));
+
+        let april_2020: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                entry.date >= NaiveDate::from_ymd_opt(2020, 4, 1).unwrap()
+                    && entry.date <= NaiveDate::from_ymd_opt(2020, 4, 30).unwrap()
+            })
+            .collect();
+        assert_eq!(april_2020.len(), 30);
+        assert!(april_2020
+            .iter()
+            .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap()));
     }
 
     #[test]
@@ -409,6 +479,7 @@ mod tests {
     fn converts_bing_archive_image_to_entry() {
         let image = BingArchiveImage {
             startdate: "20260713".to_string(),
+            enddate: Some("20260714".to_string()),
             urlbase: "/th?id=OHR.NavajoSandstone_ZH-CN5009673011".to_string(),
             copyright: "羚羊峡谷，纳瓦霍族保留地，亚利桑那州，美国 (© Mark Skalny/Getty Images)"
                 .to_string(),
@@ -417,7 +488,7 @@ mod tests {
         };
 
         let entry = bing_image_to_entry(image).unwrap();
-        assert_eq!(entry.date, NaiveDate::from_ymd_opt(2026, 7, 13).unwrap());
+        assert_eq!(entry.date, NaiveDate::from_ymd_opt(2026, 7, 14).unwrap());
         assert_eq!(entry.headline.as_deref(), Some("为摇滚而生"));
         assert!(entry
             .url
@@ -449,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_same_image_from_fallback_even_when_date_differs() {
+    fn keeps_archive_date_when_official_api_is_one_day_early() {
         let recent = vec![WallpaperEntry {
             date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
             headline: Some("紫色花海".to_string()),
@@ -471,8 +542,48 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].date,
-            NaiveDate::from_ymd_opt(2026, 7, 4).unwrap()
+            NaiveDate::from_ymd_opt(2026, 7, 5).unwrap()
         );
-        assert_eq!(entries[0].date_heading(), "2026-07-04 紫色花海");
+        assert_eq!(entries[0].date_heading(), "2026-07-05 紫色花海");
+    }
+
+    #[test]
+    fn bundled_archive_backfills_a_date_missing_from_cache() {
+        let make_entry = |day, image: &str| WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2020, 4, day).unwrap(),
+            headline: None,
+            title: format!("2020-04-{day:02}"),
+            url: format!("https://cn.bing.com/th?id=OHR.{image}_ZH-CN_UHD.jpg"),
+            copyright_link: None,
+        };
+        let cached = vec![make_entry(3, "April03"), make_entry(5, "April05")];
+        let bundled = vec![
+            make_entry(3, "April03"),
+            make_entry(4, "QingmingCandle2020"),
+            make_entry(5, "April05"),
+        ];
+
+        let entries = merge_entries_prefer_primary(cached, bundled);
+        assert_eq!(entries.len(), 3);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap()));
+    }
+
+    #[test]
+    fn rejects_archive_that_drops_historical_coverage() {
+        let make_entry = |day| WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+            headline: None,
+            title: format!("Wallpaper {day}"),
+            url: format!("https://example.com/{day}.jpg"),
+            copyright_link: None,
+        };
+        let seed: Vec<_> = (1..=10).map(make_entry).collect();
+        let complete: Vec<_> = (1..=10).map(make_entry).collect();
+        let truncated: Vec<_> = (5..=10).map(make_entry).collect();
+
+        assert!(archive_covers_seed(&complete, &seed));
+        assert!(!archive_covers_seed(&truncated, &seed));
     }
 }

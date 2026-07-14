@@ -13,6 +13,8 @@ use anyhow::{bail, Context, Result};
 use futures::AsyncReadExt;
 use http_client::HttpClient;
 use serde_json::{json, Value};
+use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,28 +27,35 @@ use std::time::Duration;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// aria2 RPC 监听端口。
-const RPC_PORT: u16 = 16800;
-/// aria2 RPC 鉴权密钥（仅本机进程间通信使用，不对外暴露）。
-const RPC_SECRET: &str = "bing-wallpaper-lib-local";
+const MAX_RPC_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 pub struct Aria2Manager {
     child: Child,
+    exe_path: PathBuf,
     http: Arc<dyn HttpClient>,
     rpc_url: String,
+    rpc_secret: String,
 }
 
 impl Aria2Manager {
     /// 启动 aria2c 常驻进程（RPC 模式）。
     pub async fn start(http: Arc<dyn HttpClient>) -> Result<Self> {
-        let exe_path = crate::paths::ensure_aria2c()?;
+        let exe_path = crate::paths::extract_aria2c()?;
         let download_dir = crate::paths::wallpapers_dir()?;
+        let port_probe =
+            TcpListener::bind(("127.0.0.1", 0)).context("为 aria2 RPC 分配本机端口失败")?;
+        let rpc_port = port_probe
+            .local_addr()
+            .context("读取 aria2 RPC 本机端口失败")?
+            .port();
+        drop(port_probe);
+        let rpc_secret = uuid::Uuid::new_v4().simple().to_string();
 
         let mut command = Command::new(&exe_path);
         command
             .arg("--enable-rpc")
-            .arg(format!("--rpc-listen-port={RPC_PORT}"))
-            .arg(format!("--rpc-secret={RPC_SECRET}"))
+            .arg(format!("--rpc-listen-port={rpc_port}"))
+            .arg(format!("--rpc-secret={rpc_secret}"))
             .arg("--rpc-listen-all=false")
             .arg("--rpc-allow-origin-all=false")
             .arg(format!("--dir={}", download_dir.display()))
@@ -70,27 +79,42 @@ impl Aria2Manager {
             command.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = command.spawn().context("启动内置 aria2c.exe 失败")?;
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = std::fs::remove_file(&exe_path);
+                return Err(err).context("启动内置 aria2c.exe 失败");
+            }
+        };
 
-        let rpc_url = format!("http://127.0.0.1:{RPC_PORT}/jsonrpc");
+        let rpc_url = format!("http://127.0.0.1:{rpc_port}/jsonrpc");
 
-        let manager = Self {
+        let mut manager = Self {
             child,
+            exe_path,
             http,
             rpc_url,
+            rpc_secret,
         };
         manager.wait_until_ready().await?;
         Ok(manager)
     }
 
     /// 等待 aria2 RPC 服务就绪（进程刚启动时需要一点时间打开监听端口）。
-    async fn wait_until_ready(&self) -> Result<()> {
+    async fn wait_until_ready(&mut self) -> Result<()> {
         for _ in 0..30 {
+            if let Some(status) = self.child.try_wait().context("检查 aria2c.exe 状态失败")? {
+                bail!("aria2c.exe 在 RPC 就绪前退出: {status}");
+            }
             if self
                 .rpc_call("aria2.getVersion", json!([self.secret_token()]))
                 .await
                 .is_ok()
             {
+                if let Some(status) = self.child.try_wait().context("检查 aria2c.exe 状态失败")?
+                {
+                    bail!("aria2c.exe 在 RPC 检查后退出: {status}");
+                }
                 return Ok(());
             }
             smol::Timer::after(Duration::from_millis(200)).await;
@@ -99,7 +123,7 @@ impl Aria2Manager {
     }
 
     fn secret_token(&self) -> String {
-        format!("token:{RPC_SECRET}")
+        format!("token:{}", self.rpc_secret)
     }
 
     async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
@@ -120,9 +144,13 @@ impl Aria2Manager {
         let mut buf = Vec::new();
         response
             .body_mut()
+            .take(MAX_RPC_RESPONSE_BYTES + 1)
             .read_to_end(&mut buf)
             .await
             .context("读取 aria2 RPC 响应失败")?;
+        if buf.len() as u64 > MAX_RPC_RESPONSE_BYTES {
+            bail!("aria2 RPC 响应超过大小限制");
+        }
         let resp: Value = serde_json::from_slice(&buf).context("解析 aria2 RPC 响应失败")?;
 
         if let Some(err) = resp.get("error") {
@@ -207,5 +235,7 @@ impl Drop for Aria2Manager {
         // 保险丝机制：即使未显式调用 shutdown，也要在 Aria2Manager 被
         // 销毁时终止内置的 aria2c.exe 进程，避免它变成孤儿进程残留在后台。
         let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.exe_path);
     }
 }

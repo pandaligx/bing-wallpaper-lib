@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "bing-wallpaper-lib"
-version = "0.2.30"
+version = "0.2.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -731,6 +731,7 @@ dependencies = [
  "gpui-component",
  "gpui_platform",
  "http_client",
+ "image",
  "log",
  "rand 0.8.6",
  "raw-window-handle",
@@ -4932,8 +4933,7 @@ dependencies = [
 [[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
+source = "git+https://github.com/GnomedDev/proc-macro-error-2?rev=53ff94b61c678593158db1a3d50269c6f0de0db7#53ff94b61c678593158db1a3d50269c6f0de0db7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4942,8 +4942,7 @@ dependencies = [
 [[package]]
 name = "proc-macro-error2"
 version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
+source = "git+https://github.com/GnomedDev/proc-macro-error-2?rev=53ff94b61c678593158db1a3d50269c6f0de0db7#53ff94b61c678593158db1a3d50269c6f0de0db7"
 dependencies = [
  "proc-macro-error-attr2",
  "proc-macro2",

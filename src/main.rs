@@ -21,6 +21,7 @@ mod elevate;
 mod favorites;
 mod fetcher;
 mod folder_picker;
+mod local_thumbnails;
 mod model;
 mod paths;
 mod settings;

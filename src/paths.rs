@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use std::io::Write;
 use std::path::PathBuf;
 
 /// 应用显示名称，用于数据目录、关于弹窗等。
@@ -43,6 +44,13 @@ pub fn favorites_file() -> Result<PathBuf> {
     Ok(app_data_dir()?.join("favorites.json"))
 }
 
+/// 已下载壁纸画廊的小尺寸缩略图缓存目录。
+pub fn downloaded_thumbnails_dir() -> Result<PathBuf> {
+    let dir = app_data_dir()?.join("downloaded-thumbnails");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// 内部工具目录：`%LOCALAPPDATA%\BingWallpaperLib\bin`，用于释放内嵌的 aria2c.exe。
 pub fn tools_dir() -> Result<PathBuf> {
     let dir = app_data_dir()?.join("bin");
@@ -50,18 +58,28 @@ pub fn tools_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// 确保 aria2c.exe 已释放到本地工具目录，返回其完整路径。
+/// 将内嵌 aria2c.exe 释放为本次进程专用的随机文件，返回其完整路径。
 ///
-/// aria2c.exe 以 `include_bytes!` 的形式静态嵌入到本程序的可执行文件中，
-/// 因此发布时只需分发单个 exe，无需附带任何外部 DLL 或额外文件。
-pub fn ensure_aria2c() -> Result<PathBuf> {
-    let target = tools_dir()?.join("aria2c.exe");
-    let need_write = match std::fs::metadata(&target) {
-        Ok(meta) => meta.len() != ARIA2C_BYTES.len() as u64,
-        Err(_) => true,
-    };
-    if need_write {
-        std::fs::write(&target, ARIA2C_BYTES).context("释放内置 aria2c.exe 失败")?;
+/// 不复用固定文件名，避免应用以管理员权限启动后执行被普通用户进程预先替换的
+/// `%LOCALAPPDATA%` 文件。调用方应在 aria2 子进程退出后删除返回的临时文件。
+pub fn extract_aria2c() -> Result<PathBuf> {
+    let dir = tools_dir()?;
+    for _ in 0..8 {
+        let target = dir.join(format!("aria2c-{}.exe", uuid::Uuid::new_v4().simple()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(mut file) => {
+                file.write_all(ARIA2C_BYTES)
+                    .context("释放内置 aria2c.exe 失败")?;
+                file.flush().context("刷新内置 aria2c.exe 失败")?;
+                return Ok(target);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err).context("创建内置 aria2c.exe 临时文件失败"),
+        }
     }
-    Ok(target)
+    bail!("无法创建唯一的 aria2c.exe 临时文件")
 }
