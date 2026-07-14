@@ -251,7 +251,7 @@ fn non_empty_string(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn local_seed_entries() -> Vec<WallpaperEntry> {
+pub fn local_entries() -> Vec<WallpaperEntry> {
     let bundled = bundled_entries();
     load_cache()
         .ok()
@@ -275,16 +275,18 @@ fn archive_covers_seed(archive: &[WallpaperEntry], seed: &[WallpaperEntry]) -> b
 
 /// 拉取 zxyongyo 历史归档与 Bing 官方最近窗口，合并后按日期倒序返回。
 pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>> {
-    let local_seed = local_seed_entries();
+    let local_seed = local_entries();
     let archive = match fetch_zxyongyo_archive(http.clone()).await {
-        Ok(entries) if archive_covers_seed(&entries, &local_seed) => entries,
+        Ok(entries) if archive_covers_seed(&entries, &local_seed) => {
+            merge_entries_prefer_primary(entries, local_seed)
+        }
         Ok(entries) => {
             log::warn!(
-                "zxyongyo 历史归档疑似不完整（远端 {} 张，本地 {} 张），继续使用本地历史数据",
+                "zxyongyo 历史归档疑似不完整（远端 {} 张，本地 {} 张），合并并保留本地历史数据",
                 entries.len(),
                 local_seed.len()
             );
-            local_seed
+            merge_entries_prefer_primary(entries, local_seed)
         }
         Err(err) => {
             log::warn!("zxyongyo 历史归档不可用，使用本地缓存或内置快照: {err}");
@@ -393,6 +395,23 @@ mod tests {
         assert!(april_2020
             .iter()
             .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap()));
+
+        let april_2025 = entries
+            .iter()
+            .filter(|entry| {
+                entry.date >= NaiveDate::from_ymd_opt(2025, 4, 1).unwrap()
+                    && entry.date <= NaiveDate::from_ymd_opt(2025, 4, 30).unwrap()
+            })
+            .count();
+        let may_2025 = entries
+            .iter()
+            .filter(|entry| {
+                entry.date >= NaiveDate::from_ymd_opt(2025, 5, 1).unwrap()
+                    && entry.date <= NaiveDate::from_ymd_opt(2025, 5, 31).unwrap()
+            })
+            .count();
+        assert_eq!(april_2025, 30);
+        assert_eq!(may_2025, 31);
     }
 
     #[test]
@@ -568,6 +587,25 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap()));
+    }
+
+    #[test]
+    fn remote_archive_cannot_drop_dates_from_local_seed() {
+        let make_entry = |day, image: &str| WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2025, 5, day).unwrap(),
+            headline: None,
+            title: format!("2025-05-{day:02}"),
+            url: format!("https://cn.bing.com/th?id=OHR.{image}_ZH-CN_UHD.jpg"),
+            copyright_link: None,
+        };
+        let remote = vec![make_entry(6, "May06"), make_entry(7, "May07")];
+        let local_seed = vec![make_entry(5, "May05"), make_entry(6, "May06")];
+
+        let entries = merge_entries_prefer_primary(remote, local_seed);
+        assert_eq!(entries.len(), 3);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.date == NaiveDate::from_ymd_opt(2025, 5, 5).unwrap()));
     }
 
     #[test]

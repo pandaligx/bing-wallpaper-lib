@@ -13,6 +13,8 @@
 //! 仍保留控制台，便于开发调试查看日志输出。应用图标通过 `build.rs` + `ico/icon.rc`
 //! 以数字资源 ID `1` 嵌入（`gpui` 在 Windows 上按此固定 ID 查找窗口/任务栏图标，
 //! 详见 AGENTS.md）。
+// MSVC 链接 GUI 可执行文件时会在 stdout 报告导入库创建进度；这是正常信息，不是链接诊断。
+#![cfg_attr(target_os = "windows", allow(linker_messages))]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
@@ -212,12 +214,8 @@ fn main() {
 
         let view_for_update = view.clone();
         cx.spawn(async move |cx| {
-            // 优先加载本地缓存；首次安装或缓存缺失时先展示内置历史快照，避免网络慢时首屏空白。
-            let initial_entries = fetcher::load_cache()
-                .ok()
-                .flatten()
-                .filter(|entries| !entries.is_empty())
-                .unwrap_or_else(fetcher::bundled_entries);
+            // 合并本地缓存与内置快照，旧缓存缺失历史日期时也能在首屏立即补齐。
+            let initial_entries = fetcher::local_entries();
             if !initial_entries.is_empty() {
                 let _ = window.update(cx, |_, _, app_cx| {
                     view.update(app_cx, |this, cx| {

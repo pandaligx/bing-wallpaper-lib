@@ -33,7 +33,7 @@
 
 | | |
 |---|---|
-| 📅 **全部历史壁纸** | 自动拉取 zxyongyo/bing-daily-wallpaper 归档的每日必应壁纸，优先访问本项目 Gitee 国内镜像，失败后回退 jsDelivr/GitHub，左侧导航栏按年 / 月分类，可折叠收起；内置快照会自动补齐旧缓存缺失的历史日期。 |
+| 📅 **全部历史壁纸** | 自动拉取 zxyongyo/bing-daily-wallpaper 归档的每日必应壁纸，优先访问本项目 Gitee 国内镜像，失败后回退 jsDelivr/GitHub，左侧导航栏按年 / 月分类，可折叠收起；内置快照和人工核验修正表会自动补齐旧缓存、远程源缺失的历史日期。 |
 | 🔄 **自动增量更新** | 每 30 分钟检查一次是否有新的一天壁纸发布，检测到后自动更新列表与本地缓存。 |
 | 🖼️ **首页网格视图** | 默认展示最近壁纸网格，使用虚拟列表按可见区域渲染，右侧可拖动滚动条 + 右下角“回到顶部”按钮；点击图片可放大预览，悬停按钮可直接设为桌面壁纸并收藏。远程缩略图使用 LRU 图片缓存，长距离滚动后不会把所有已浏览图片长期保留在内存中。 |
 | ⬇️ **高速下载引擎** | 基于 [aria2](https://github.com/aria2/aria2) 的 JSON-RPC 接口，多连接分片、不限速，下载时有实时进度条。下载文件名会保留日期、Bing 短标题、景物地点信息，并自动清理 Windows 非法字符。 |
@@ -99,6 +99,8 @@ cargo build --release                        # 发布构建
 [`assets/data/zxyongyo-bing-wallpaper.json`](assets/data/zxyongyo-bing-wallpaper.json)，并同步到
 [Gitee 国内镜像](https://gitee.com/pandaligx/bing-wallpaper-lib)，软件运行时优先访问 Gitee raw 地址，
 失败后回退 jsDelivr / GitHub；Bing 官方 `HPImageArchive.aspx` API 用于补强最近发布的壁纸数据。
+同步过程会合并经过两份独立中国区归档交叉核验的修正表，当前已补齐 2025 年 4 月和 5 月缺失的 21 张壁纸；
+软件启动及后台刷新也会把内置快照与本地缓存、远程归档合并，避免不完整远程源再次删除已补齐日期。
 本项目仅负责抓取、解析、展示与下载，不拥有壁纸版权，图片版权归原摄影师 / 版权方所有。
 
 ## 下载引擎

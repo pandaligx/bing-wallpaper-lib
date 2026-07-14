@@ -39,7 +39,9 @@
   立即展示内置快照，避免无 VPN 或远程源响应慢时首页长时间空白。后台刷新时会把内置快照中缓存缺失的
   历史日期补回，再写回本地缓存，避免旧缓存永久丢失某一天。
 - 自动同步：`.github/workflows/sync-wallpaper-archive.yml` 每 4 小时拉取上游 `map.json`，校验后更新
-  `assets/data/zxyongyo-bing-wallpaper.json` 并提交到 GitHub；若 GitHub Actions secrets 中配置了
+  `assets/data/zxyongyo-bing-wallpaper.json` 并提交到 GitHub。同步时会合并
+  `assets/data/zxyongyo-bing-wallpaper-corrections.json` 中经过交叉核验的缺失记录，以免上游归档缺口在下一次同步时
+  覆盖本项目的完整快照；若 GitHub Actions secrets 中配置了
   `GITEE_USERNAME` / `GITEE_TOKEN`，还会同步推送到 Gitee；若 Git 推送到 Gitee 失败或超时，则会用
   Gitee Contents API 兜底更新该 `map.json` 文件。`.github/workflows/mirror-to-gitee.yml`
   会在 GitHub `main` 分支每次 push 后把代码与 tag 同步到 Gitee。Gitee 仓库默认分支应保持为 `main`，
@@ -991,7 +993,7 @@ v0.2.30 新增 `settings.rs::DownloadResolution`，并作为 `AppSettings::downl
 
 ### 28.1 历史日期完整性
 
-`local_seed_entries()` 不再在“缓存非空”时完全忽略内置快照，而是以快照为历史基线、用缓存覆盖同日期记录并补充
+`local_entries()` 不再在“缓存非空”时完全忽略内置快照，而是以快照为历史基线、用缓存覆盖同日期记录并补充
 快照之后的新日期。这样旧版本缓存即使漏掉 `2020-04-04`，后台刷新也会自动补回并写入新缓存。
 
 Bing 官方 `HPImageArchive.aspx` 的 `startdate` 在中国区实际展示边界上可能早一天。`BingArchiveImage` 现在解析
@@ -1020,3 +1022,18 @@ Bing 官方 `HPImageArchive.aspx` 的 `startdate` 在中国区实际展示边界
   1 MiB 且以 `MZ` 开头。
 - 自更新脚本把新程序复制回当前 exe 原路径后再启动，确保开机自启注册表和用户快捷方式不会指向被删除的旧文件名；
   批处理路径中的 `%` 必须转义为 `%%`。
+
+## 29. 2025 年 4–5 月归档补全与缓存保护（v0.2.32）
+
+上游 `map.json` 缺少 `2025-04-09`、`2025-04-16` 至 `2025-04-30`、`2025-05-01` 至
+`2025-05-05` 共 21 条中国区壁纸。本项目通过两份独立中国区历史归档交叉核对日期、中文标题、OHR 图片标识和
+版权信息后，将记录维护在 `assets/data/zxyongyo-bing-wallpaper-corrections.json`。自动同步工作流每次下载上游
+数据后都会按日期合并该修正表，再生成 `assets/data/zxyongyo-bing-wallpaper.json`，因此上游持续缺失也不会把
+本项目快照重新还原为 4 月 14 张、5 月 26 张。
+
+运行时必须同时保护旧缓存和内置数据：
+
+- 启动首屏调用 `fetcher::local_entries()`，先合并缓存与内置快照，不再直接展示非空旧缓存；
+- 后台获取远程归档后，无论完整性检查是否通过，都以远程记录为主、以内置快照和本地缓存为回退进行合并；
+- 远程源缺失任意历史日期时不能删除本地已有日期，合并结果会写回 `wallpapers_cache.json`；
+- 内置快照测试要求 2025 年 4 月为 30 条、5 月为 31 条，并有回归测试保证不完整远程归档不能删除本地日期。

@@ -15,6 +15,7 @@ jobs:
     env:
       ARCHIVE_SOURCE_URL: https://raw.githubusercontent.com/zxyongyo/bing-daily-wallpaper/master/map.json
       ARCHIVE_TARGET_PATH: assets/data/zxyongyo-bing-wallpaper.json
+      ARCHIVE_CORRECTIONS_PATH: assets/data/zxyongyo-bing-wallpaper-corrections.json
       GITEE_REPO: pandaligx/bing-wallpaper-lib
     steps:
       - name: Checkout
@@ -31,10 +32,25 @@ jobs:
           const fs = require("fs");
           const source = "/tmp/zxyongyo-bing-wallpaper.json";
           const target = process.env.ARCHIVE_TARGET_PATH;
+          const correctionsPath = process.env.ARCHIVE_CORRECTIONS_PATH;
           const data = JSON.parse(fs.readFileSync(source, "utf8"));
           if (!data || !Array.isArray(data.images) || data.images.length < 1000) {
             throw new Error("Wallpaper archive does not look valid.");
           }
+
+          const corrections = JSON.parse(fs.readFileSync(correctionsPath, "utf8"));
+          if (!corrections || !Array.isArray(corrections.images)) {
+            throw new Error("Wallpaper archive corrections do not look valid.");
+          }
+
+          const imagesByDate = new Map(data.images.map((image) => [image.date, image]));
+          for (const image of corrections.images) {
+            if (!image.date || !image.url_4k) {
+              throw new Error("Wallpaper archive correction is missing required fields.");
+            }
+            imagesByDate.set(image.date, image);
+          }
+          data.images = [...imagesByDate.values()].sort((a, b) => b.date.localeCompare(a.date));
           fs.writeFileSync(target, JSON.stringify(data));
           NODE
 
