@@ -2,6 +2,7 @@
 //!
 //! 每个新增字段都应使用 `#[serde(default)]`，以兼容旧版本写入的配置文件。
 
+use crate::i18n::LanguagePreference;
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
@@ -22,11 +23,11 @@ impl ThemePreference {
         AppSettings::load().theme_preference
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: LanguagePreference) -> &'static str {
         match self {
-            Self::System => "跟随系统",
-            Self::Light => "白天模式",
-            Self::Dark => "夜间模式",
+            Self::System => language.t("System"),
+            Self::Light => language.t("Light"),
+            Self::Dark => language.t("Dark"),
         }
     }
 }
@@ -63,9 +64,9 @@ pub enum DownloadResolution {
 impl DownloadResolution {
     pub const ALL: [Self; 4] = [Self::Original, Self::FourK, Self::TwoK, Self::OneK];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: LanguagePreference) -> &'static str {
         match self {
-            Self::Original => "原图",
+            Self::Original => language.t("Original"),
             Self::FourK => "4K",
             Self::TwoK => "2K",
             Self::OneK => "1K",
@@ -81,9 +82,9 @@ impl DownloadResolution {
         }
     }
 
-    pub fn status_label(self) -> &'static str {
+    pub fn status_label(self, language: LanguagePreference) -> &'static str {
         match self {
-            Self::Original => "原图",
+            Self::Original => language.t("Original"),
             Self::FourK => "4K-3840×2160",
             Self::TwoK => "2K-2560×1440",
             Self::OneK => "1K-1920×1080",
@@ -105,11 +106,11 @@ pub enum AutoWallpaperSource {
 }
 
 impl AutoWallpaperSource {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: LanguagePreference) -> &'static str {
         match self {
-            Self::Latest => "每日最新壁纸",
-            Self::RandomAll => "随机全部历史",
-            Self::RandomFavorites => "随机我的收藏",
+            Self::Latest => language.t("Latest daily wallpaper"),
+            Self::RandomAll => language.t("Random from all history"),
+            Self::RandomFavorites => language.t("Random from favorites"),
         }
     }
 }
@@ -132,6 +133,9 @@ pub struct AppSettings {
     /// 主题偏好；默认跟随 Windows 系统深色/浅色模式。
     #[serde(default)]
     pub theme_preference: ThemePreference,
+    /// 界面语言；默认跟随 Windows，无法识别时回退到英文。
+    #[serde(default)]
+    pub language: LanguagePreference,
     /// 设置桌面壁纸时的目标显示器；默认同步全部显示器。
     #[serde(default)]
     pub wallpaper_target: WallpaperTarget,
@@ -168,6 +172,7 @@ impl Default for AppSettings {
         Self {
             download_dir: None,
             theme_preference: ThemePreference::default(),
+            language: LanguagePreference::default(),
             wallpaper_target: WallpaperTarget::default(),
             download_resolution: DownloadResolution::default(),
             background_resident_enabled: true,
@@ -216,5 +221,27 @@ impl AppSettings {
         } else {
             crate::paths::default_wallpapers_dir()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_without_language_follow_the_system() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.language, LanguagePreference::System);
+    }
+
+    #[test]
+    fn language_preference_round_trips_through_json() {
+        let settings = AppSettings {
+            language: LanguagePreference::French,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.language, LanguagePreference::French);
     }
 }

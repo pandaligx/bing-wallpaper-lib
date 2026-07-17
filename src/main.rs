@@ -23,6 +23,7 @@ mod elevate;
 mod favorites;
 mod fetcher;
 mod folder_picker;
+mod i18n;
 mod local_thumbnails;
 mod model;
 mod paths;
@@ -38,7 +39,7 @@ mod window_sizing;
 use gpui::*;
 use gpui_component::theme::ThemeMode;
 use gpui_component::{Root, Theme};
-use settings::ThemePreference;
+use settings::{AppSettings, ThemePreference};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -72,7 +73,7 @@ fn main() {
         cx.set_http_client(Arc::new(http_client));
 
         gpui_component::init(cx);
-        gpui_component::set_locale("zh-CN");
+        gpui_component::set_locale(AppSettings::load().language.gpui_locale());
 
         let start_in_background = std::env::args().any(|arg| arg == "--background")
             && settings::AppSettings::load().background_resident_enabled;

@@ -396,6 +396,16 @@ mod tests {
             .iter()
             .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap()));
 
+        let january_26_2024 = entries
+            .iter()
+            .find(|entry| entry.date == NaiveDate::from_ymd_opt(2024, 1, 26).unwrap())
+            .expect("the corrected 2024-01-26 wallpaper must be bundled");
+        assert_eq!(january_26_2024.headline.as_deref(), Some("不是夜猫子"));
+        assert!(january_26_2024
+            .url
+            .contains("OHR.HawkOwl_ZH-CN3401920167_UHD.jpg"));
+        assert!(january_26_2024.url.contains("w=3840&h=2160"));
+
         let april_2025 = entries
             .iter()
             .filter(|entry| {

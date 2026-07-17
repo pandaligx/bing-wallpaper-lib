@@ -83,29 +83,30 @@ unsafe fn show_context_menu(hwnd: HWND) {
     };
 
     let settings = crate::settings::AppSettings::load();
-    append_menu_item(menu, ID_SHOW, "打开主窗口", false);
+    let language = settings.language;
+    append_menu_item(menu, ID_SHOW, language.t("Open main window"), false);
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     append_menu_item(
         menu,
         ID_TOGGLE_STARTUP,
-        "开机自启",
+        language.t("Startup"),
         settings.startup_enabled,
     );
     append_menu_item(
         menu,
         ID_TOGGLE_RESIDENT,
-        "后台常驻",
+        language.t("Run in background"),
         settings.background_resident_enabled,
     );
     append_menu_item(
         menu,
         ID_TOGGLE_AUTO,
-        "每日自动壁纸",
+        language.t("Change wallpaper daily"),
         settings.auto_wallpaper_enabled,
     );
-    append_menu_item(menu, ID_CHANGE_NOW, "按自动壁纸来源立即更换", false);
+    append_menu_item(menu, ID_CHANGE_NOW, language.t("Change once now"), false);
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    append_menu_item(menu, ID_EXIT, "退出", false);
+    append_menu_item(menu, ID_EXIT, language.t("Exit"), false);
 
     let mut point = POINT::default();
     if GetCursorPos(&mut point).is_ok() {
