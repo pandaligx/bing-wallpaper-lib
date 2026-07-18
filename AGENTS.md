@@ -1058,3 +1058,28 @@ Bing 官方 `HPImageArchive.aspx` 的 `startdate` 在中国区实际展示边界
 `AppSettings::language` 持久化，左侧栏底部设置按钮右侧的国旗按钮负责切换语言。支持跟随系统、简体中文、
 English、日本語、한국어、Русский、Français；无法识别的系统语言回退到英文。默认项目主页为英文
 `README.md`，简体中文主页为 `README.zh-CN.md`。
+
+## 31. 多语言完整性、首页描述布局与 Windows 周期壁纸任务（v0.2.34）
+
+### 31.1 多语言与首页卡片布局
+
+托盘菜单、退出选择、更新通知、动态状态提示和设置面板中的文字现在统一跟随
+`AppSettings::language`，避免切换到日语等非中文语言后仍混入英文或中文。运行时包含动态日期、路径和错误详情的旧中文状态由
+`LanguagePreference::localize_status` 归一为当前语言的状态文案；新增静态界面文字必须继续登记到六种非系统语言目录并补充回归测试。
+
+多显示器设置中的按钮使用可换行布局，避免英文和俄文长文本溢出按钮范围。首页卡片标题与描述均允许两行显示，虚拟列表行高同步增加为
+`HOME_GRID_ROW_HEIGHT = 273`，避免 `2019-01-19` 等较长描述只显示一半或与下一行卡片重叠。
+
+### 31.2 Windows 周期壁纸任务
+
+`src/task_scheduler.rs` 通过 Windows Task Scheduler COM API 注册
+`BingWallpaperLibPeriodicWallpaper`，不依赖 `schtasks.exe`。任务包含当前用户登录触发器和周期时间触发器，周期范围为 1～1439
+分钟；设置 `StartWhenAvailable = true`、`WakeToRun = false`、`MultipleInstances = IgnoreNew`，因此错过任务后会补执行一次、不会唤醒电脑，也不会重叠启动多个下载进程。
+
+任务操作指向当前 exe 并传入 `--scheduled-wallpaper`。`main.rs` 在普通单实例检测之前识别该参数，进入
+`src/scheduled_wallpaper.rs::run_once` 的无界面一次性模式：获取并合并壁纸列表、按全局分辨率下载、应用到当前显示器目标，成功后立即退出。该模式即使主窗口已经运行也可独立执行。
+
+`AppSettings` 新增周期任务开关、总分钟数、每天首次最新壁纸开关、后续随机来源和
+`last_periodic_latest_date`。每天首次成功执行可使用 Bing 最新壁纸；当天后续任务从全部历史或收藏中随机选择，收藏为空时回退到全部历史。只有下载并成功设置最新壁纸后才写入当天标记，失败时下次任务仍可重试。
+
+新计划任务与旧 `HKCU\\...\\Run` 开机自启互斥：启用计划任务时先注册任务，再关闭旧开机自启；任一步骤或设置持久化失败都会回滚。每次周期任务设置完成后进程都会退出，适合无需后台常驻的自动换壁纸场景。原有每天固定时间执行一次的自动壁纸功能保持不变。

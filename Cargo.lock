@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "bing-wallpaper-lib"
-version = "0.2.33"
+version = "0.2.34"
 dependencies = [
  "anyhow",
  "chrono",

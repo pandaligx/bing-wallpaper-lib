@@ -26,10 +26,20 @@ A native Windows application built with Rust, GPUI, and gpui-component. It combi
 - Batch downloads for all history, the selected month, favorites, or a date range.
 - One-click wallpaper setting with all-monitor and individual-monitor targets.
 - Scheduled daily wallpaper changes, startup launch, background mode, and a system tray menu.
+- Optional Windows Task Scheduler integration: run once at user logon and then every 1 minute to 23 hours 59 minutes, use Bing's latest wallpaper for the first successful run each day, and choose later wallpapers randomly from history or favorites. Each scheduled run exits after changing the wallpaper.
 - Light, dark, or system theme and automatic update checks through Gitee and GitHub Releases.
 - A single statically linked executable with no separate Visual C++ runtime or aria2 installation required.
 
 Use the flag button next to the Settings button in the lower-left sidebar to change the interface language. The selection is saved and applied immediately.
+
+## Automatic wallpaper schedules
+
+The original once-per-day schedule remains available. Version 0.2.34 also adds an independent Windows scheduled-task mode under **Settings → Automatic wallpaper**:
+
+- The task runs when the current user logs on and repeats at the selected hours/minutes interval.
+- It does not wake the computer. A missed run starts once Windows becomes available again.
+- The first successful run of each day can use Bing's latest wallpaper; later runs can use random history or random favorites. Empty favorites automatically fall back to history.
+- Every task invocation changes the wallpaper and exits. Enabling this mode disables the older registry-based startup entry so the two startup mechanisms cannot conflict.
 
 ## Download
 

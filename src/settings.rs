@@ -115,8 +115,36 @@ impl AutoWallpaperSource {
     }
 }
 
+/// Windows 任务计划周期执行时，在“当天首张最新壁纸”之后使用的随机来源。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeriodicWallpaperSource {
+    /// 从全部历史壁纸中随机选择。
+    #[default]
+    RandomAll,
+    /// 从收藏中随机选择；收藏为空时回退到全部历史。
+    RandomFavorites,
+}
+
+impl PeriodicWallpaperSource {
+    pub fn label(self, language: LanguagePreference) -> &'static str {
+        match self {
+            Self::RandomAll => language.t("Random from all history"),
+            Self::RandomFavorites => language.t("Random from favorites"),
+        }
+    }
+}
+
 fn default_auto_wallpaper_hour() -> u8 {
     8
+}
+
+fn default_periodic_interval_minutes() -> u16 {
+    60
+}
+
+fn default_periodic_daily_first_latest() -> bool {
+    true
 }
 
 fn default_background_resident_enabled() -> bool {
@@ -165,6 +193,21 @@ pub struct AppSettings {
     /// 上次自动执行日期，用于避免同一天重复执行。
     #[serde(default)]
     pub last_auto_wallpaper_date: Option<NaiveDate>,
+    /// 是否已注册“登录 + 周期重复”的 Windows 壁纸任务计划。
+    #[serde(default)]
+    pub periodic_task_enabled: bool,
+    /// 周期任务的重复间隔（总分钟数），有效范围 1~1439。
+    #[serde(default = "default_periodic_interval_minutes")]
+    pub periodic_interval_minutes: u16,
+    /// 每个自然日首次执行周期任务时是否优先使用 Bing 最新壁纸。
+    #[serde(default = "default_periodic_daily_first_latest")]
+    pub periodic_daily_first_latest: bool,
+    /// 当天首次执行之后的壁纸随机来源。
+    #[serde(default)]
+    pub periodic_wallpaper_source: PeriodicWallpaperSource,
+    /// 上次成功使用“当天首张最新壁纸”的日期。
+    #[serde(default)]
+    pub last_periodic_latest_date: Option<NaiveDate>,
 }
 
 impl Default for AppSettings {
@@ -183,11 +226,26 @@ impl Default for AppSettings {
             auto_wallpaper_minute: 0,
             auto_wallpaper_exit_after_done: false,
             last_auto_wallpaper_date: None,
+            periodic_task_enabled: false,
+            periodic_interval_minutes: default_periodic_interval_minutes(),
+            periodic_daily_first_latest: true,
+            periodic_wallpaper_source: PeriodicWallpaperSource::default(),
+            last_periodic_latest_date: None,
         }
     }
 }
 
 impl AppSettings {
+    pub const MIN_PERIODIC_INTERVAL_MINUTES: u16 = 1;
+    pub const MAX_PERIODIC_INTERVAL_MINUTES: u16 = 23 * 60 + 59;
+
+    pub fn normalized_periodic_interval_minutes(&self) -> u16 {
+        self.periodic_interval_minutes.clamp(
+            Self::MIN_PERIODIC_INTERVAL_MINUTES,
+            Self::MAX_PERIODIC_INTERVAL_MINUTES,
+        )
+    }
+
     fn file_path() -> Result<PathBuf> {
         Ok(crate::paths::app_data_dir()?.join("settings.json"))
     }
@@ -243,5 +301,33 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let restored: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.language, LanguagePreference::French);
+    }
+
+    #[test]
+    fn old_settings_get_safe_periodic_task_defaults() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.periodic_task_enabled);
+        assert_eq!(settings.periodic_interval_minutes, 60);
+        assert!(settings.periodic_daily_first_latest);
+        assert_eq!(
+            settings.periodic_wallpaper_source,
+            PeriodicWallpaperSource::RandomAll
+        );
+        assert_eq!(settings.last_periodic_latest_date, None);
+    }
+
+    #[test]
+    fn periodic_interval_is_clamped_to_supported_range() {
+        let mut settings = AppSettings {
+            periodic_interval_minutes: 0,
+            ..Default::default()
+        };
+        assert_eq!(settings.normalized_periodic_interval_minutes(), 1);
+
+        settings.periodic_interval_minutes = u16::MAX;
+        assert_eq!(
+            settings.normalized_periodic_interval_minutes(),
+            23 * 60 + 59
+        );
     }
 }

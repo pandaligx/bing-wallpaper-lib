@@ -14,7 +14,8 @@ use crate::fetcher;
 use crate::i18n::LanguagePreference;
 use crate::model::{group_by_month, MonthGroup, WallpaperEntry};
 use crate::settings::{
-    AppSettings, AutoWallpaperSource, DownloadResolution, ThemePreference, WallpaperTarget,
+    AppSettings, AutoWallpaperSource, DownloadResolution, PeriodicWallpaperSource, ThemePreference,
+    WallpaperTarget,
 };
 use crate::wallpaper_setter;
 use crate::window_sizing;
@@ -62,7 +63,7 @@ const HOME_GRID_CARD_WIDTH: f32 = 260.0;
 const HOME_GRID_GAP: f32 = 16.0;
 
 /// 首页虚拟网格中单行的固定高度，用于 `VirtualList` 计算可见范围。
-const HOME_GRID_ROW_HEIGHT: f32 = 245.0;
+const HOME_GRID_ROW_HEIGHT: f32 = 273.0;
 
 /// 展开侧边栏的近似宽度，用于按窗口宽度计算首页虚拟网格列数。
 const SIDEBAR_EXPANDED_WIDTH: f32 = 260.0;
@@ -338,6 +339,8 @@ impl WallpaperLibrary {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut settings = AppSettings::load();
         settings.startup_enabled = crate::startup::is_enabled();
+        settings.periodic_task_enabled = crate::task_scheduler::is_enabled();
+        settings.periodic_interval_minutes = settings.normalized_periodic_interval_minutes();
         let initial_dir_text = settings
             .download_dir
             .as_ref()
@@ -458,12 +461,12 @@ impl WallpaperLibrary {
             .iter()
             .flat_map(|g| g.entries.iter().cloned())
             .collect();
-        self.status = format!("共 {} 张壁纸", entries.len()).into();
-        cx.notify();
+        self.set_status(format!("共 {} 张壁纸", entries.len()), cx);
     }
 
     pub fn set_status(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.status = message.into();
+        let message = message.into().to_string();
+        self.status = self.settings.language.localize_status(&message).into();
         cx.notify();
     }
 
@@ -593,6 +596,15 @@ impl WallpaperLibrary {
 
     pub fn toggle_startup_enabled(&mut self, cx: &mut Context<Self>) {
         let enabled = !self.settings.startup_enabled;
+        if enabled && self.settings.periodic_task_enabled {
+            self.set_status(
+                self.settings
+                    .language
+                    .t("Disable periodic task before enabling startup"),
+                cx,
+            );
+            return;
+        }
         match crate::startup::set_enabled(enabled) {
             Ok(()) => {
                 self.settings.startup_enabled = enabled;
@@ -608,6 +620,155 @@ impl WallpaperLibrary {
             }
             Err(err) => self.set_status(format!("修改开机自启失败: {err}"), cx),
         }
+    }
+
+    pub fn toggle_periodic_task_enabled(&mut self, cx: &mut Context<Self>) {
+        let language = self.settings.language;
+        let interval = self.settings.normalized_periodic_interval_minutes();
+
+        if self.settings.periodic_task_enabled {
+            if let Err(err) = crate::task_scheduler::unregister() {
+                self.set_status(
+                    format!("{}: {err}", language.t("Failed to disable periodic task")),
+                    cx,
+                );
+                return;
+            }
+
+            self.settings.periodic_task_enabled = false;
+            if let Err(err) = self.settings.save() {
+                let _ = crate::task_scheduler::register(interval);
+                self.settings.periodic_task_enabled = true;
+                self.set_status(
+                    format!("{}: {err}", language.t("Failed to save periodic settings")),
+                    cx,
+                );
+                return;
+            }
+
+            self.set_status(language.t("Periodic task disabled"), cx);
+            return;
+        }
+
+        if let Err(err) = crate::task_scheduler::register(interval) {
+            self.set_status(
+                format!("{}: {err}", language.t("Failed to enable periodic task")),
+                cx,
+            );
+            return;
+        }
+
+        let startup_was_enabled = self.settings.startup_enabled;
+        if startup_was_enabled {
+            if let Err(err) = crate::startup::set_enabled(false) {
+                let _ = crate::task_scheduler::unregister();
+                self.set_status(
+                    format!("{}: {err}", language.t("Failed to disable old startup")),
+                    cx,
+                );
+                return;
+            }
+        }
+
+        self.settings.startup_enabled = false;
+        self.settings.periodic_task_enabled = true;
+        self.settings.periodic_interval_minutes = interval;
+        self.settings.last_periodic_latest_date = None;
+        if let Err(err) = self.settings.save() {
+            let _ = crate::task_scheduler::unregister();
+            if startup_was_enabled {
+                let _ = crate::startup::set_enabled(true);
+            }
+            self.settings.startup_enabled = startup_was_enabled;
+            self.settings.periodic_task_enabled = false;
+            self.set_status(
+                format!("{}: {err}", language.t("Failed to save periodic settings")),
+                cx,
+            );
+            return;
+        }
+
+        self.set_status(language.t("Periodic task enabled"), cx);
+    }
+
+    fn set_periodic_interval(&mut self, hour: u8, minute: u8, cx: &mut Context<Self>) {
+        let language = self.settings.language;
+        let requested = u16::from(hour.min(23)) * 60 + u16::from(minute.min(59));
+        let interval = requested.clamp(
+            AppSettings::MIN_PERIODIC_INTERVAL_MINUTES,
+            AppSettings::MAX_PERIODIC_INTERVAL_MINUTES,
+        );
+        let previous = self.settings.periodic_interval_minutes;
+
+        if self.settings.periodic_task_enabled {
+            if let Err(err) = crate::task_scheduler::register(interval) {
+                self.set_status(
+                    format!("{}: {err}", language.t("Failed to update periodic task")),
+                    cx,
+                );
+                return;
+            }
+        }
+
+        self.settings.periodic_interval_minutes = interval;
+        if let Err(err) = self.settings.save() {
+            self.settings.periodic_interval_minutes = previous;
+            if self.settings.periodic_task_enabled {
+                let _ = crate::task_scheduler::register(previous);
+            }
+            self.set_status(
+                format!("{}: {err}", language.t("Failed to save periodic settings")),
+                cx,
+            );
+            return;
+        }
+
+        self.set_status(language.t("Periodic interval updated"), cx);
+    }
+
+    fn toggle_periodic_daily_first_latest(&mut self, cx: &mut Context<Self>) {
+        self.settings.periodic_daily_first_latest = !self.settings.periodic_daily_first_latest;
+        self.settings.last_periodic_latest_date = None;
+        if let Err(err) = self.settings.save() {
+            self.settings.periodic_daily_first_latest = !self.settings.periodic_daily_first_latest;
+            self.set_status(
+                format!(
+                    "{}: {err}",
+                    self.settings.language.t("Failed to save periodic settings")
+                ),
+                cx,
+            );
+            return;
+        }
+        self.set_status(self.settings.language.t("Periodic settings saved"), cx);
+    }
+
+    fn set_periodic_wallpaper_source(
+        &mut self,
+        source: PeriodicWallpaperSource,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.settings.periodic_wallpaper_source;
+        self.settings.periodic_wallpaper_source = source;
+        if let Err(err) = self.settings.save() {
+            self.settings.periodic_wallpaper_source = previous;
+            self.set_status(
+                format!(
+                    "{}: {err}",
+                    self.settings.language.t("Failed to save periodic settings")
+                ),
+                cx,
+            );
+            return;
+        }
+        self.set_status(
+            format!(
+                "{}: {}",
+                self.settings.language.t("Periodic wallpaper source"),
+                source.label(self.settings.language)
+            ),
+            cx,
+        );
     }
 
     pub fn toggle_background_resident_enabled(&mut self, cx: &mut Context<Self>) {
@@ -729,28 +890,29 @@ impl WallpaperLibrary {
 
     fn open_close_choice_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.entity();
+        let language = self.settings.language;
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let view_for_minimize = view.clone();
             dialog
-                .title("退出必应每日壁纸库？")
+                .title(language.t("Exit app title"))
                 .w(px(460.))
                 .child(
                     v_flex()
                         .gap_2()
                         .p_4()
-                        .child(div().text_sm().child("后台常驻当前未开启。你想直接退出程序，还是仅最小化到系统托盘继续后台运行？"))
+                        .child(div().text_sm().child(language.t("Exit app prompt")))
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(_cx.theme().muted_foreground)
-                                .child("选择“最小化到托盘”不会自动开启开机自启；如需开机后台运行，请在设置里开启开机自启。"),
+                                .child(language.t("Minimize tray hint")),
                         ),
                 )
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("close-choice-minimize")
-                                .label("最小化到托盘")
+                                .label(language.t("Minimize to tray"))
                                 .outline()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -762,7 +924,7 @@ impl WallpaperLibrary {
                         )
                         .child(
                             Button::new("close-choice-exit")
-                                .label("退出程序")
+                                .label(language.t("Exit application"))
                                 .danger()
                                 .on_click(|_, _window, cx| {
                                     cx.quit();
@@ -907,8 +1069,8 @@ impl WallpaperLibrary {
                 self.set_status(
                     format!(
                         "请选择 {} 至 {} 之间的日期",
-                        format_date_cn(earliest),
-                        format_date_cn(latest)
+                        format_date(earliest),
+                        format_date(latest)
                     ),
                     cx,
                 );
@@ -938,7 +1100,11 @@ impl WallpaperLibrary {
         let http = self.http.clone();
         let date = entry.date;
         let resolution = self.settings.download_resolution;
-        self.status = format!("正在下载 {} ...", entry.date).into();
+        self.status = self
+            .settings
+            .language
+            .localize_status(&format!("正在下载 {} ...", entry.date))
+            .into();
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -1154,7 +1320,14 @@ impl WallpaperLibrary {
         let target = self.settings.wallpaper_target.clone();
         let target_label = self.wallpaper_target_label();
         let resolution = self.settings.download_resolution;
-        self.status = format!("正在将 {} 设置为{}壁纸...", entry.date, target_label).into();
+        self.status = self
+            .settings
+            .language
+            .localize_status(&format!(
+                "正在将 {} 设置为{}壁纸...",
+                entry.date, target_label
+            ))
+            .into();
         self.progress.insert(date, 0.0);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -1326,13 +1499,22 @@ impl WallpaperLibrary {
             ThemePreference::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         }
         self.set_status(
-            format!("Theme: {}", preference.label(self.settings.language)),
+            format!(
+                "{}: {}",
+                self.settings.language.t("Appearance"),
+                preference.label(self.settings.language)
+            ),
             cx,
         );
         cx.notify();
     }
 
-    fn set_language_preference(&mut self, language: LanguagePreference, cx: &mut Context<Self>) {
+    fn set_language_preference(
+        &mut self,
+        language: LanguagePreference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let previous = self.settings.language;
         self.settings.language = language;
         if let Err(err) = self.settings.save() {
@@ -1342,6 +1524,16 @@ impl WallpaperLibrary {
         }
 
         gpui_component::set_locale(language.gpui_locale());
+        let default_dir_display = crate::paths::default_wallpapers_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        self.settings_dir_input.update(cx, |input, cx| {
+            input.set_placeholder(
+                format!("{}: {default_dir_display}", language.t("Default")),
+                window,
+                cx,
+            );
+        });
         self.language_panel_open = false;
         self.settings_panel_open = false;
         self.set_status(
@@ -1424,7 +1616,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("preview-download")
                                 .label(language.t("Download"))
-                                .tooltip("下载当前高清壁纸到本地目录")
+                                .tooltip(language.t("Download wallpaper tooltip"))
                                 .disabled(downloading)
                                 .on_click(move |_, window, cx| {
                                     let entry = entry_for_dl.clone();
@@ -1437,7 +1629,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("preview-set-wallpaper")
                                 .label(language.t("Set as wallpaper"))
-                                .tooltip("自动下载并按当前显示器设置应用为桌面壁纸")
+                                .tooltip(language.t("Set wallpaper tooltip"))
                                 .primary()
                                 .disabled(downloading)
                                 .on_click(move |_, window, cx| {
@@ -1463,12 +1655,15 @@ impl WallpaperLibrary {
                 Ok(Some(release)) => this.open_update_dialog(release, window, cx),
                 Ok(None) => {
                     if manual {
-                        window.push_notification("当前已是最新版本", cx);
+                        window
+                            .push_notification(this.settings.language.t("Already up to date"), cx);
                     }
                 }
                 Err(err) => {
                     if manual {
-                        window.push_notification(format!("检查更新失败: {err}"), cx);
+                        log::warn!("检查更新失败: {err:#}");
+                        window
+                            .push_notification(this.settings.language.t("Update check failed"), cx);
                     }
                 }
             });
@@ -1499,10 +1694,14 @@ impl WallpaperLibrary {
                     v_flex()
                         .gap_2()
                         .p_4()
-                        .child(div().text_sm().child(format!(
-                            "发现新版本 v{version}（当前 v{}），是否立即下载并更新？",
-                            crate::updater::CURRENT_VERSION
-                        )))
+                        .child(
+                            div().text_sm().child(
+                                language
+                                    .t("New version prompt")
+                                    .replace("{version}", &version)
+                                    .replace("{current}", crate::updater::CURRENT_VERSION),
+                            ),
+                        )
                         .child(
                             Button::new("update-view-release")
                                 .label(language.t("View release notes"))
@@ -1610,6 +1809,7 @@ impl WallpaperLibrary {
         cx: &mut Context<Self>,
     ) {
         let progress_handle = self.update_progress.clone();
+        let language = self.settings.language;
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let snapshot = progress_handle.borrow().unwrap_or_default();
             let (completed, total, speed) = (snapshot.completed, snapshot.total, snapshot.speed);
@@ -1635,7 +1835,11 @@ impl WallpaperLibrary {
             };
 
             dialog
-                .title(format!("正在下载新版本 v{}", release.version))
+                .title(
+                    language
+                        .t("Downloading version")
+                        .replace("{version}", &release.version),
+                )
                 .w(px(460.))
                 .child(
                     v_flex()
@@ -1655,20 +1859,20 @@ impl WallpaperLibrary {
                                     div()
                                         .text_xs()
                                         .opacity(0.7)
-                                        .child(format!("速度：{speed_text}")),
+                                        .child(format!("{}: {speed_text}", language.t("Speed"))),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .opacity(0.7)
-                                        .child(format!("剩余：{eta_text}")),
+                                        .child(format!("{}: {eta_text}", language.t("Remaining"))),
                                 ),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .opacity(0.6)
-                                .child("下载完成后应用会自动重启完成更新，请勿关闭。"),
+                                .child(language.t("Update restart hint")),
                         ),
                 )
         });
@@ -2011,8 +2215,8 @@ fn hwnd_from_window(window: &Window) -> Option<HWND> {
     }
 }
 
-fn format_date_cn(date: NaiveDate) -> String {
-    date.format("%Y年%m月%d日").to_string()
+fn format_date(date: NaiveDate) -> String {
+    date.format("%Y-%m-%d").to_string()
 }
 
 /// 人类可读的字节尺寸格式化：`1234567` → `"1.18 MiB"`。
@@ -2181,11 +2385,16 @@ fn read_u24_le(data: &[u8]) -> Option<u32> {
 /// 人类可读的时长格式化（秒→中文“时分秒”形式）：`75` → `"1分12秒"`；`3720` → `"1时02分"`。
 fn format_duration(secs: u64) -> String {
     if secs >= 3600 {
-        format!("{}时{:02}分", secs / 3600, (secs % 3600) / 60)
+        format!(
+            "{:02}:{:02}:{:02}",
+            secs / 3600,
+            (secs % 3600) / 60,
+            secs % 60
+        )
     } else if secs >= 60 {
-        format!("{}分{:02}秒", secs / 60, secs % 60)
+        format!("{:02}:{:02}", secs / 60, secs % 60)
     } else {
-        format!("{secs}秒")
+        format!("00:{secs:02}")
     }
 }
 
@@ -2485,9 +2694,9 @@ impl Render for WallpaperLibrary {
                                 .w_full()
                                 .when(candidate == language, |this| this.primary())
                                 .when(candidate != language, |this| this.ghost())
-                                .on_click(move |_, _, cx| {
+                                .on_click(move |_, window, cx| {
                                     view.update(cx, |this, cx| {
-                                        this.set_language_preference(candidate, cx);
+                                        this.set_language_preference(candidate, window, cx);
                                     });
                                 })
                         })),
@@ -2517,6 +2726,7 @@ impl WallpaperLibrary {
 
         h_flex()
             .id(id)
+            .gap_1()
             .justify_between()
             .items_center()
             .w_full()
@@ -2537,9 +2747,18 @@ impl WallpaperLibrary {
                     });
                 }
             })
-            .child(div().text_sm().font_bold().child(title))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .font_bold()
+                    .line_clamp(2)
+                    .child(title),
+            )
             .child(
                 Icon::new(IconName::ChevronRight)
+                    .flex_shrink_0()
                     .size_4()
                     .text_color(if opened {
                         cx.theme().accent
@@ -2561,11 +2780,18 @@ impl WallpaperLibrary {
             || normalized.contains("error")
             || normalized.contains("erreur")
             || normalized.contains("échec")
-            || normalized.contains("ошиб");
+            || normalized.contains("échoué")
+            || normalized.contains("ошиб")
+            || normalized.contains("не удалось");
         let is_warning = text.starts_with("请选择")
             || text.contains("不能")
             || text.contains("没有可")
-            || text.contains("为空");
+            || text.contains("为空")
+            || normalized.starts_with("please")
+            || text.contains("確認してください")
+            || text.contains("확인하세요")
+            || normalized.contains("проверьте")
+            || normalized.contains("vérifiez");
 
         if is_error {
             Some(Alert::error(id, text).small().into_any_element())
@@ -2642,17 +2868,18 @@ impl WallpaperLibrary {
                 .child(self.render_image_frame(thumbnail, width, height, cx))
                 .into_any_element()
         } else {
+            let language = self.settings.language;
             let placeholder = if crate::local_thumbnails::is_downloading(source) {
-                "壁纸下载中..."
+                language.t("Wallpaper downloading...")
             } else if fingerprint
                 .as_ref()
                 .is_some_and(|fingerprint| self.downloaded_thumbnail_failures.contains(fingerprint))
             {
-                "缩略图生成失败，请点击刷新重试"
+                language.t("Thumbnail generation failed")
             } else if fingerprint.is_none() {
-                "无法读取本地图片"
+                language.t("Cannot read local image")
             } else {
-                "正在生成缩略图..."
+                language.t("Generating thumbnail...")
             };
             div()
                 .relative()
@@ -2701,6 +2928,12 @@ impl WallpaperLibrary {
         let auto_source = self.settings.auto_wallpaper_source;
         let auto_hour = self.settings.auto_wallpaper_hour;
         let auto_minute = self.settings.auto_wallpaper_minute;
+        let periodic_enabled = self.settings.periodic_task_enabled;
+        let periodic_interval = self.settings.normalized_periodic_interval_minutes();
+        let periodic_hour = (periodic_interval / 60) as u8;
+        let periodic_minute = (periodic_interval % 60) as u8;
+        let periodic_daily_first_latest = self.settings.periodic_daily_first_latest;
+        let periodic_source = self.settings.periodic_wallpaper_source;
         let language = self.settings.language;
         let about_language = language;
 
@@ -2935,6 +3168,8 @@ impl WallpaperLibrary {
                 let view_for_auto = view.clone();
                 let view_for_auto_exit = view.clone();
                 let view_for_now = view.clone();
+                let view_for_periodic = view.clone();
+                let view_for_periodic_first = view.clone();
                 v_flex()
                     .gap_3()
                     .child(
@@ -2947,10 +3182,13 @@ impl WallpaperLibrary {
                         Checkbox::new("settings-startup-enabled")
                             .checked(startup_enabled)
                             .label(language.t("Startup"))
-                            .on_click(move |_, _, cx| {
-                                view_for_startup.update(cx, |this, cx| {
-                                    this.toggle_startup_enabled(cx);
-                                });
+                            .tooltip(language.t("Startup disabled by periodic task hint"))
+                            .when(!periodic_enabled, |this| {
+                                this.on_click(move |_, _, cx| {
+                                    view_for_startup.update(cx, |this, cx| {
+                                        this.toggle_startup_enabled(cx);
+                                    });
+                                })
                             }),
                     )
                     .child(
@@ -3188,6 +3426,209 @@ impl WallpaperLibrary {
                             .text_color(cx.theme().muted_foreground)
                             .child(language.t("Automatic wallpaper hint")),
                     )
+                    .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_bold()
+                            .child(language.t("Windows scheduled wallpaper")),
+                    )
+                    .child(
+                        Checkbox::new("settings-periodic-task-enabled")
+                            .checked(periodic_enabled)
+                            .label(language.t("Enable periodic task scheduler"))
+                            .on_click(move |_, _, cx| {
+                                view_for_periodic.update(cx, |this, cx| {
+                                    this.toggle_periodic_task_enabled(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{}: {:02} {} {:02} {}",
+                                language.t("Repeat interval"),
+                                periodic_hour,
+                                language.t("Hour"),
+                                periodic_minute,
+                                language.t("Minute")
+                            )),
+                    )
+                    .child(
+                        Checkbox::new("settings-periodic-first-latest")
+                            .checked(periodic_daily_first_latest)
+                            .label(
+                                language.t("Use latest Bing wallpaper for the first run each day"),
+                            )
+                            .on_click(move |_, _, cx| {
+                                view_for_periodic_first.update(cx, |this, cx| {
+                                    this.toggle_periodic_daily_first_latest(cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_bold()
+                            .child(language.t("Later wallpaper source")),
+                    )
+                    .child(
+                        div().flex().flex_wrap().gap_2().children(
+                            [
+                                PeriodicWallpaperSource::RandomAll,
+                                PeriodicWallpaperSource::RandomFavorites,
+                            ]
+                            .into_iter()
+                            .map(|source| {
+                                let view_for_source = view.clone();
+                                Button::new(SharedString::from(format!(
+                                    "periodic-source-{source:?}"
+                                )))
+                                .label(source.label(language))
+                                .small()
+                                .when(periodic_source == source, |this| this.primary())
+                                .when(periodic_source != source, |this| this.outline())
+                                .on_click(move |_, _, cx| {
+                                    view_for_source.update(cx, |this, cx| {
+                                        this.set_periodic_wallpaper_source(source, cx);
+                                    });
+                                })
+                            }),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_bold()
+                            .child(language.t("Repeat interval")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_start()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .w(px(120.))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(language.t("Hour")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("periodic-hour-scroll")
+                                            .h(px(180.))
+                                            .overflow_y_scroll()
+                                            .on_scroll_wheel(
+                                                |_event: &ScrollWheelEvent, _window, cx| {
+                                                    cx.stop_propagation()
+                                                },
+                                            )
+                                            .rounded(cx.theme().radius)
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .p_1()
+                                            .children((0u8..24).map(|hour| {
+                                                let selected = periodic_hour == hour;
+                                                let view_for_interval = view.clone();
+                                                Button::new(SharedString::from(format!(
+                                                    "periodic-hour-{hour}"
+                                                )))
+                                                .label(format!("{hour:02}"))
+                                                .small()
+                                                .w_full()
+                                                .when(selected, |this| this.primary())
+                                                .when(!selected, |this| this.ghost())
+                                                .on_click(move |_, _, cx| {
+                                                    view_for_interval.update(cx, |this, cx| {
+                                                        this.set_periodic_interval(
+                                                            hour,
+                                                            periodic_minute,
+                                                            cx,
+                                                        );
+                                                    });
+                                                })
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .w(px(120.))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(language.t("Minute")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("periodic-minute-scroll")
+                                            .h(px(180.))
+                                            .overflow_y_scroll()
+                                            .on_scroll_wheel(
+                                                |_event: &ScrollWheelEvent, _window, cx| {
+                                                    cx.stop_propagation()
+                                                },
+                                            )
+                                            .rounded(cx.theme().radius)
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .p_1()
+                                            .children((0u8..60).map(|minute| {
+                                                let selected = periodic_minute == minute;
+                                                let view_for_interval = view.clone();
+                                                Button::new(SharedString::from(format!(
+                                                    "periodic-minute-{minute}"
+                                                )))
+                                                .label(format!("{minute:02}"))
+                                                .small()
+                                                .w_full()
+                                                .when(selected, |this| this.primary())
+                                                .when(!selected, |this| this.ghost())
+                                                .on_click(move |_, _, cx| {
+                                                    view_for_interval.update(cx, |this, cx| {
+                                                        this.set_periodic_interval(
+                                                            periodic_hour,
+                                                            minute,
+                                                            cx,
+                                                        );
+                                                    });
+                                                })
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(language.t("Current selection")),
+                                    )
+                                    .child(div().text_2xl().font_bold().child(format!(
+                                        "{:02}:{:02}",
+                                        periodic_hour, periodic_minute
+                                    )))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(language.t("Periodic interval range hint")),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(language.t("Periodic task hint")),
+                    )
                     .into_any_element()
             }
             SettingsSection::Maintenance => v_flex()
@@ -3386,7 +3827,7 @@ impl WallpaperLibrary {
                             .small()
                             .outline()
                             .flex_shrink_0()
-                            .tooltip("重新从远程数据源获取壁纸列表；网络不可用时会继续使用内置列表")
+                            .tooltip(language.t("Refresh list tooltip"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.refresh_wallpaper_list(cx);
                             })),
@@ -3550,13 +3991,12 @@ impl WallpaperLibrary {
             .ok()
             .and_then(|limits| *limits);
         let date_range_hint: SharedString = match date_limits {
-            Some((earliest, latest)) => format!(
-                "可选范围：{} 至 {}；超出范围的日期会自动禁用。",
-                format_date_cn(earliest),
-                format_date_cn(latest)
-            )
-            .into(),
-            None => "壁纸列表加载完成后才能选择日期范围。".into(),
+            Some((earliest, latest)) => language
+                .t("Available date range")
+                .replace("{start}", &format_date(earliest))
+                .replace("{end}", &format_date(latest))
+                .into(),
+            None => language.t("Date range unavailable").into(),
         };
 
         v_flex()
@@ -3612,14 +4052,14 @@ impl WallpaperLibrary {
                                     .child(
                                         Button::new("batch-center-all")
                                             .label(language.t("All history"))
-                                            .tooltip("下载当前列表中的全部历史壁纸")
+                                            .tooltip(language.t("Download all history tooltip"))
                                             .outline()
                                             .disabled(batch_progress.is_some())
                                             .on_click(move |_, _, cx| {
                                                 let entries = all_entries.clone();
                                                 view_for_all.update(cx, |this, cx| {
                                                     this.start_batch_download(
-                                                        "全部历史壁纸",
+                                                        language.t("All history"),
                                                         entries,
                                                         cx,
                                                     );
@@ -3629,14 +4069,14 @@ impl WallpaperLibrary {
                                     .child(
                                         Button::new("batch-center-month")
                                             .label(language.t("Current month"))
-                                            .tooltip("下载左侧当前选中月份的壁纸")
+                                            .tooltip(language.t("Download current month tooltip"))
                                             .outline()
                                             .disabled(batch_progress.is_some())
                                             .on_click(move |_, _, cx| {
                                                 let entries = month_entries.clone();
                                                 view_for_month.update(cx, |this, cx| {
                                                     this.start_batch_download(
-                                                        "当前月份",
+                                                        language.t("Current month"),
                                                         entries,
                                                         cx,
                                                     );
@@ -3646,14 +4086,14 @@ impl WallpaperLibrary {
                                     .child(
                                         Button::new("batch-center-favorites")
                                             .label(language.t("Favorites"))
-                                            .tooltip("下载我的收藏中的全部壁纸")
+                                            .tooltip(language.t("Download favorites tooltip"))
                                             .outline()
                                             .disabled(batch_progress.is_some())
                                             .on_click(move |_, _, cx| {
                                                 let entries = favorite_entries.clone();
                                                 view_for_favorites.update(cx, |this, cx| {
                                                     this.start_batch_download(
-                                                        "我的收藏",
+                                                        language.t("Favorites"),
                                                         entries,
                                                         cx,
                                                     );
@@ -3681,7 +4121,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new("batch-center-date-range")
                                     .label(language.t("Download date range"))
-                                    .tooltip("下载日历中选中的日期范围壁纸")
+                                    .tooltip(language.t("Download range tooltip"))
                                     .outline()
                                     .disabled(batch_progress.is_some() || date_limits.is_none())
                                     .on_click(move |_, _, cx| {
@@ -3704,7 +4144,12 @@ impl WallpaperLibrary {
                         this.child(
                             v_flex()
                                 .gap_1()
-                                .child(div().text_sm().font_bold().child("下载进度"))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_bold()
+                                        .child(language.t("Download progress")),
+                                )
                                 .child(Progress::new("batch-center-progress").value(
                                     if progress.total == 0 {
                                         0.0
@@ -3717,10 +4162,12 @@ impl WallpaperLibrary {
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(format!(
-                                            "{}/{}，跳过 {}，失败 {}",
+                                            "{}/{} · {} {} · {} {}",
                                             progress.completed,
                                             progress.total,
+                                            language.t("Skipped"),
                                             progress.skipped,
+                                            language.t("Failed"),
                                             progress.failed
                                         )),
                                 ),
@@ -3916,7 +4363,7 @@ impl WallpaperLibrary {
                             .flex_wrap()
                             .child(
                                 Button::new("downloaded-select-all")
-                                    .tooltip("全选或取消全选当前下载目录中的壁纸")
+                                    .tooltip(language.t("Select all downloaded tooltip"))
                                     .label(if all_selected {
                                         language.t("Clear selection")
                                     } else {
@@ -3940,7 +4387,7 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-delete-selected")
-                                    .tooltip("删除当前勾选的本地壁纸文件")
+                                    .tooltip(language.t("Delete selected tooltip"))
                                     .label(format!(
                                         "{} ({selected_count})",
                                         language.t("Delete selected")
@@ -3956,7 +4403,7 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-refresh")
-                                    .tooltip("重新扫描下载目录")
+                                    .tooltip(language.t("Rescan downloads tooltip"))
                                     .label(language.t("Refresh"))
                                     .outline()
                                     .small()
@@ -3970,7 +4417,7 @@ impl WallpaperLibrary {
                             )
                             .child(
                                 Button::new("downloaded-open-dir")
-                                    .tooltip("在资源管理器中打开当前壁纸下载目录")
+                                    .tooltip(language.t("Open downloads tooltip"))
                                     .label(language.t("Open folder"))
                                     .outline()
                                     .small()
@@ -4000,7 +4447,7 @@ impl WallpaperLibrary {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("在首页、归档或批量下载中下载壁纸后会显示在这里"),
+                            .child(language.t("Downloaded empty hint")),
                     )
                     .into_any_element()
             } else {
@@ -4102,7 +4549,7 @@ impl WallpaperLibrary {
                                     "downloaded-check-{name}"
                                 )))
                                 .checked(is_selected)
-                                .tooltip("选择这张本地壁纸用于批量删除")
+                                .tooltip(language.t("Select local wallpaper tooltip"))
                                 .on_click({
                                     let view = cx.entity();
                                     move |_, _, cx| {
@@ -4135,7 +4582,7 @@ impl WallpaperLibrary {
                                             "downloaded-set-{name}"
                                         )))
                                         .label(language.t("Set as wallpaper"))
-                                        .tooltip("将这张本地图片设置为桌面壁纸")
+                                        .tooltip(language.t("Set local wallpaper tooltip"))
                                         .primary()
                                         .small()
                                         .flex_1()
@@ -4237,7 +4684,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("local-preview-delete")
                                 .label(language.t("Delete"))
-                                .tooltip("删除这张本地壁纸文件")
+                                .tooltip(language.t("Delete local wallpaper tooltip"))
                                 .danger()
                                 .on_click(move |_, window, cx| {
                                     let path = path_for_delete.clone();
@@ -4250,7 +4697,7 @@ impl WallpaperLibrary {
                         .child(
                             Button::new("local-preview-set-wallpaper")
                                 .label(language.t("Set as wallpaper"))
-                                .tooltip("将这张本地图片设置为桌面壁纸")
+                                .tooltip(language.t("Set local wallpaper tooltip"))
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     let path = path_for_wall.clone();
@@ -4340,7 +4787,7 @@ impl WallpaperLibrary {
         v_flex()
             .group(group_name.clone())
             .w(px(260.))
-            .h(px(224.))
+            .h(px(252.))
             .gap_2()
             .child(
                 div()
@@ -4401,7 +4848,7 @@ impl WallpaperLibrary {
                                             entry.date
                                         )))
                                         .label(language.t("Set as wallpaper"))
-                                        .tooltip("自动下载并按当前显示器设置应用为桌面壁纸")
+                                        .tooltip(language.t("Set wallpaper tooltip"))
                                         .primary()
                                         .small()
                                         .flex_1()
@@ -4454,9 +4901,9 @@ impl WallpaperLibrary {
             )
             .child(
                 v_flex()
-                    .h(px(62.))
+                    .h(px(90.))
                     .gap_1()
-                    .child(div().text_sm().font_bold().child(date_str))
+                    .child(div().text_sm().font_bold().line_clamp(2).child(date_str))
                     .child(
                         div()
                             .text_xs()
@@ -4499,7 +4946,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new(SharedString::from(format!("dl-{}", entry.date)))
                                     .label(language.t("Download"))
-                                    .tooltip("下载当前高清壁纸到本地目录")
+                                    .tooltip(language.t("Download wallpaper tooltip"))
                                     .disabled(progress.is_some())
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.start_download(entry_for_download.clone(), cx);
@@ -4508,7 +4955,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new(SharedString::from(format!("preview-{}", entry.date)))
                                     .label(language.t("Preview"))
-                                    .tooltip("打开高清大图预览")
+                                    .tooltip(language.t("Preview image tooltip"))
                                     .outline()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_preview_dialog(
@@ -4521,7 +4968,7 @@ impl WallpaperLibrary {
                             .child(
                                 Button::new(SharedString::from(format!("set-{}", entry.date)))
                                     .label(language.t("Set as wallpaper"))
-                                    .tooltip("自动下载并按当前显示器设置应用为桌面壁纸")
+                                    .tooltip(language.t("Set wallpaper tooltip"))
                                     .primary()
                                     .disabled(progress.is_some())
                                     .on_click(cx.listener(move |this, _, _, cx| {

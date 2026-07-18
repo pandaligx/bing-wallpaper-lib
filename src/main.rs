@@ -27,9 +27,11 @@ mod i18n;
 mod local_thumbnails;
 mod model;
 mod paths;
+mod scheduled_wallpaper;
 mod settings;
 mod single_instance;
 mod startup;
+mod task_scheduler;
 mod tray;
 mod ui;
 mod updater;
@@ -53,8 +55,23 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const AUTO_WALLPAPER_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 fn main() {
+    let scheduled_wallpaper_mode =
+        std::env::args().any(|argument| argument == "--scheduled-wallpaper");
+
     if !elevate::ensure_elevated() {
         // 已尝试以管理员身份重新启动自身，当前（非提权）进程直接退出。
+        return;
+    }
+
+    env_logger::init();
+
+    if scheduled_wallpaper_mode {
+        let http_client = reqwest_client::ReqwestClient::user_agent(paths::APP_NAME)
+            .expect("创建 HTTP 客户端失败");
+        if let Err(err) = smol::block_on(scheduled_wallpaper::run_once(Arc::new(http_client))) {
+            log::error!("周期壁纸任务执行失败: {err:#}");
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -62,8 +79,6 @@ fn main() {
         // 已有另一个实例在运行，已尝试将其窗口带到前台，当前进程直接退出。
         return;
     }
-
-    env_logger::init();
 
     let app = gpui_platform::application().with_assets(crate::assets::Assets);
 
