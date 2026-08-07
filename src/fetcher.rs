@@ -30,6 +30,8 @@ const ZXYONGYO_ARCHIVE_URLS: &[&str] = &[
 ];
 
 const BUNDLED_ZXYONGYO_ARCHIVE: &str = include_str!("../assets/data/zxyongyo-bing-wallpaper.json");
+const BUNDLED_ZXYONGYO_CORRECTIONS: &str =
+    include_str!("../assets/data/zxyongyo-bing-wallpaper-corrections.json");
 const MAX_REMOTE_JSON_BYTES: u64 = 32 * 1024 * 1024;
 
 /// 去重：同一天可能存在两条记录（历史上偶发现象），保留第一条（列表中最靠前的一条）。
@@ -94,6 +96,12 @@ fn image_key(entry: &WallpaperEntry) -> Option<String> {
 /// 读取随 exe 内置的壁纸列表快照（已按日期倒序）。
 pub fn bundled_entries() -> Vec<WallpaperEntry> {
     parse_zxyongyo_archive(BUNDLED_ZXYONGYO_ARCHIVE)
+}
+
+/// 用经过交叉核验的纠错记录覆盖缓存或远程归档中的同日错误数据。
+fn apply_bundled_corrections(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
+    let corrections = parse_zxyongyo_archive(BUNDLED_ZXYONGYO_CORRECTIONS);
+    merge_entries_prefer_primary(corrections, entries)
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,12 +261,13 @@ fn non_empty_string(value: String) -> Option<String> {
 
 pub fn local_entries() -> Vec<WallpaperEntry> {
     let bundled = bundled_entries();
-    load_cache()
+    let entries = load_cache()
         .ok()
         .flatten()
         .filter(|entries| !entries.is_empty())
         .map(|cached| merge_entries_prefer_primary(cached, bundled.clone()))
-        .unwrap_or(bundled)
+        .unwrap_or(bundled);
+    apply_bundled_corrections(entries)
 }
 
 fn archive_covers_seed(archive: &[WallpaperEntry], seed: &[WallpaperEntry]) -> bool {
@@ -293,6 +302,8 @@ pub async fn fetch_all(http: Arc<dyn HttpClient>) -> Result<Vec<WallpaperEntry>>
             local_seed
         }
     };
+    // 远程源尚未同步或仍含旧错误时，也必须以本地核验过的 corrections 为准。
+    let archive = apply_bundled_corrections(archive);
 
     match fetch_recent_from_bing_api(http).await {
         Ok(recent) => Ok(merge_entries_prefer_primary(recent, archive)),
@@ -405,6 +416,33 @@ mod tests {
             .url
             .contains("OHR.HawkOwl_ZH-CN3401920167_UHD.jpg"));
         assert!(january_26_2024.url.contains("w=3840&h=2160"));
+
+        let corrected_wallpapers = [
+            (
+                NaiveDate::from_ymd_opt(2024, 9, 17).unwrap(),
+                "明月千里寄相思",
+                "OHR.MidAutumnFestival2024_ZH-CN9096556094_UHD.jpg",
+            ),
+            (
+                NaiveDate::from_ymd_opt(2025, 11, 19).unwrap(),
+                "石头与符号，诉说一个民族的故事",
+                "OHR.BudapestParliament_ZH-CN1607028780_UHD.jpg",
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 7, 8).unwrap(),
+                "远古火山的回响",
+                "OHR.LakeAtitlan_ZH-CN1920221893_UHD.jpg",
+            ),
+        ];
+        for (date, headline, ohr_id) in corrected_wallpapers {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.date == date)
+                .unwrap_or_else(|| panic!("the corrected {date} wallpaper must be bundled"));
+            assert_eq!(entry.headline.as_deref(), Some(headline));
+            assert!(entry.url.contains(ohr_id));
+            assert!(entry.url.contains("w=3840&h=2160"));
+        }
 
         let april_2025 = entries
             .iter()
@@ -597,6 +635,26 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap()));
+    }
+
+    #[test]
+    fn bundled_corrections_override_a_stale_cached_url() {
+        let stale = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 8).unwrap(),
+            headline: Some("远古火山的回响".to_string()),
+            title: "阿蒂特兰湖的日出，危地马拉".to_string(),
+            url: "https://cn.bing.com/th?id=OHR.LakeAtitlan_ZH-CN3840221893_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=1920&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        };
+
+        let entries = apply_bundled_corrections(vec![stale]);
+        let repaired = entries
+            .iter()
+            .find(|entry| entry.date == NaiveDate::from_ymd_opt(2026, 7, 8).unwrap())
+            .expect("2026-07-08 correction should be present");
+
+        assert!(repaired.url.contains("OHR.LakeAtitlan_ZH-CN1920221893"));
+        assert!(!repaired.url.contains("3840221893"));
     }
 
     #[test]
