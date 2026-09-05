@@ -41,11 +41,6 @@ The original once-per-day schedule remains available. Version 0.2.34 also adds a
 - The first successful run of each day can use Bing's latest wallpaper; later runs can use random history or random favorites. Empty favorites automatically fall back to history.
 - Every task invocation changes the wallpaper and exits. Enabling this mode disables the older registry-based startup entry so the two startup mechanisms cannot conflict.
 
-## v0.2.36 fixes
-
-- Show the window after its first frame is ready, avoiding the brief white frame at startup.
-- Remove the system ICU DLL dependency and use older DirectWrite, DXGI, and DPI interfaces for Windows 10 versions before 1703. No manual ICU DLL copying is required.
-
 ## Download
 
 Users in mainland China can download the latest `bing-wallpaper-lib-vX.Y.Z-x64.exe` from [Gitee Releases](https://gitee.com/pandaligx/bing-wallpaper-lib/releases). The same executable is also available from [GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest).
