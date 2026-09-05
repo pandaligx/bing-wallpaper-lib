@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "bing-wallpaper-lib"
-version = "0.2.35"
+version = "0.2.36"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2726,7 +2726,6 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/zed-industries/zed?rev=1d217ee39d381ac101b7cf49d3d22451ac1093fe#1d217ee39d381ac101b7cf49d3d22451ac1093fe"
 dependencies = [
  "accesskit",
  "accesskit_windows",

@@ -179,9 +179,17 @@ rustflags = ["-C", "target-feature=+crt-static"]
 `kernel32.dll`、`user32.dll`、`gdi32.dll`、`d3d11.dll`、`dwrite.dll` 等 **Windows 系统自带的 DLL**，
 **不包含任何 VC++ 运行库 DLL**，符合"全新系统直接运行不报缺 DLL"的要求。
 
-> 唯一需要注意的系统级依赖是 `icuuc.dll`（ICU 国际化组件），这是 Windows 10 1903 及以上版本、以及全部
-> Windows 11 版本自带的系统组件，属于操作系统本身的一部分，不需要额外安装。若未来需要支持更老的 Windows 10
-> 版本，需要额外验证该 DLL 的可用性。
+> 自 v0.2.36 起，已移除系统 `icu.dll` / `icuuc.dll` 依赖。`vendor/gpui_windows` 保留锁定版本的最小兼容补丁：
+> 用 Rust 计算 UTF-16 字符串长度，改用 `IDWriteFactory3` 与自定义内存字体加载器、`IDXGIFactory2`，并为早期
+> Windows 10 提供 DPI API 回退。升级 GPUI 时必须保留或重新核对这些修复；可运行
+> `scripts/check_windows_imports.ps1` 检查发布 exe，运行 `cargo test -p gpui_windows --lib font_loader::tests`
+> 检查字体兼容层。旧系统兼容性仍应在对应 Windows 版本上实际验证。
+
+#### 首帧显示（v0.2.36）
+
+启动前先准备本地壁纸列表；Windows 窗口在隐藏状态下设置最终尺寸，首次 GPU 帧提交成功后再异步显示，避免空白边框闪现。
+隐藏窗口通过显式帧请求启动绘制，后台启动模式保持隐藏。相关实现位于 `src/main.rs` 与
+`vendor/gpui_windows/src/window.rs`，隐藏尺寸回归测试为 `hidden_window_placement_applies_size_without_showing_a_frame`。
 
 ### 6.2 aria2c.exe 的打包
 

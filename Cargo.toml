@@ -1,6 +1,6 @@
 [package]
 name = "bing-wallpaper-lib"
-version = "0.2.35"
+version = "0.2.36"
 edition = "2021"
 description = "必应每日壁纸库 - 每日自动获取并管理 Bing 每日壁纸"
 default-run = "bing-wallpaper-lib"
@@ -78,6 +78,9 @@ proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", r
 
 [lints.clippy]
 too_many_arguments = "allow"
+
+[patch."https://github.com/zed-industries/zed"]
+gpui_windows = { path = "vendor/gpui_windows" }
 
 [profile.release]
 opt-level = 3

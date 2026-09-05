@@ -41,6 +41,11 @@
 - 每天首次成功执行可优先使用 Bing 最新壁纸，后续可随机全部历史或随机我的收藏；收藏为空时自动回退到随机历史。
 - 每次任务更换壁纸后都会退出。启用计划任务会关闭旧的注册表开机自启，避免两种启动机制发生冲突。
 
+## v0.2.36 修复
+
+- 首帧绘制完成后再显示窗口，修复启动时先出现白边、再显示界面的闪烁。
+- 移除系统 ICU DLL 依赖，并调整 DirectWrite、DXGI 和 DPI 接口，改善 Windows 10 1703 以下版本兼容性，无需手动复制 ICU DLL。
+
 ## 下载使用
 
 中国大陆用户可优先从 [Gitee Releases](https://gitee.com/pandaligx/bing-wallpaper-lib/releases) 下载最新版 `bing-wallpaper-lib-vX.Y.Z-x64.exe`；也可从 [GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest) 下载同名文件。

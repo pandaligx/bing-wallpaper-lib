@@ -93,6 +93,9 @@ fn main() {
         let start_in_background = std::env::args().any(|arg| arg == "--background")
             && settings::AppSettings::load().background_resident_enabled;
 
+        // 在创建原生窗口前准备首屏数据，首帧直接展示本地列表；网络刷新仍在后台进行。
+        let initial_entries = fetcher::local_entries();
+
         // `appears_transparent: true` 关闭 Windows 原生标题栏绘制，改为由
         // `gpui_component::TitleBar`（见 ui/mod.rs）自行绘制沉浸式标题栏，
         // 使其背景色与下方内容区域一致（默认跟随主题 `background` 色）。
@@ -123,6 +126,9 @@ fn main() {
         let window = cx
             .open_window(window_options, move |window, cx| {
                 let view = cx.new(|cx| WallpaperLibrary::new(window, cx));
+                if !initial_entries.is_empty() {
+                    view.update(cx, |this, cx| this.set_entries(initial_entries, cx));
+                }
                 *view_holder_for_window.borrow_mut() = Some(view.clone());
 
                 window.on_window_should_close(cx, {
@@ -230,16 +236,6 @@ fn main() {
 
         let view_for_update = view.clone();
         cx.spawn(async move |cx| {
-            // 合并本地缓存与内置快照，旧缓存缺失历史日期时也能在首屏立即补齐。
-            let initial_entries = fetcher::local_entries();
-            if !initial_entries.is_empty() {
-                let _ = window.update(cx, |_, _, app_cx| {
-                    view.update(app_cx, |this, cx| {
-                        this.set_entries(initial_entries, cx);
-                    });
-                });
-            }
-
             refresh_once(&view, &window, cx).await;
 
             loop {
