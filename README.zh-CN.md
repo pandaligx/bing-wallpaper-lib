@@ -28,6 +28,7 @@
 - 支持每日自动壁纸、开机自启、后台常驻和系统托盘菜单。
 - 支持 Windows 计划任务：用户登录时执行，并可设置每隔 1 分钟至 23 小时 59 分钟自动更换；每天首次成功执行可使用 Bing 最新壁纸，后续可随机历史或随机收藏，每次执行完成后自动退出。
 - 支持浅色、深色、跟随系统主题，以及 Gitee / GitHub 自动更新。
+- 根据 Windows 的 DPI 缩放自动调整窗口大小并居中，支持 125%、150%、175%、200% 等缩放比例。
 - 单文件静态链接 exe，无需额外安装 Visual C++ 运行库或 aria2。
 
 点击左侧栏左下角“设置”按钮右侧的国旗按钮即可切换界面语言，选择会自动保存并立即生效。
@@ -46,6 +47,8 @@
 中国大陆用户可优先从 [Gitee Releases](https://gitee.com/pandaligx/bing-wallpaper-lib/releases) 下载最新版 `bing-wallpaper-lib-vX.Y.Z-x64.exe`；也可从 [GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest) 下载同名文件。
 
 下载后直接双击运行，无需安装。程序启动时会请求管理员权限。
+
+自动更新后，程序保留在原目录并使用新版发行文件名；已启用的开机自启和计划任务路径会自动更新。
 
 ## 从源码构建
 

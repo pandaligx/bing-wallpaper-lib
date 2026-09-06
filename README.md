@@ -28,6 +28,7 @@ A native Windows application built with Rust, GPUI, and gpui-component. It combi
 - Scheduled daily wallpaper changes, startup launch, background mode, and a system tray menu.
 - Optional Windows Task Scheduler integration: run once at user logon and then every 1 minute to 23 hours 59 minutes, use Bing's latest wallpaper for the first successful run each day, and choose later wallpapers randomly from history or favorites. Each scheduled run exits after changing the wallpaper.
 - Light, dark, or system theme and automatic update checks through Gitee and GitHub Releases.
+- DPI-aware window sizing and centering for Windows display scaling, including 125%, 150%, 175%, and 200%.
 - A single statically linked executable with no separate Visual C++ runtime or aria2 installation required.
 
 Use the flag button next to the Settings button in the lower-left sidebar to change the interface language. The selection is saved and applied immediately.
@@ -46,6 +47,8 @@ The original once-per-day schedule remains available. Version 0.2.34 also adds a
 Users in mainland China can download the latest `bing-wallpaper-lib-vX.Y.Z-x64.exe` from [Gitee Releases](https://gitee.com/pandaligx/bing-wallpaper-lib/releases). The same executable is also available from [GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest).
 
 Run the downloaded executable directly. The application requests administrator permission at startup and does not require an installer.
+
+Automatic updates keep the application in its current folder and use the new release filename. Registered startup and scheduled-task paths are updated automatically.
 
 ## Build from source
 

@@ -65,6 +65,14 @@ fn main() {
 
     env_logger::init();
 
+    if std::env::args().any(|argument| argument == "--repair-update-paths") {
+        if let Err(err) = updater::repair_update_paths() {
+            log::error!("更新启动路径失败: {err:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if scheduled_wallpaper_mode {
         let http_client = reqwest_client::ReqwestClient::user_agent(paths::APP_NAME)
             .expect("创建 HTTP 客户端失败");
@@ -78,6 +86,12 @@ fn main() {
     if !single_instance::ensure_single_instance() {
         // 已有另一个实例在运行，已尝试将其窗口带到前台，当前进程直接退出。
         return;
+    }
+
+    match updater::finish_legacy_update() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => log::error!("校正更新后的程序文件名失败: {err:#}"),
     }
 
     let app = gpui_platform::application().with_assets(crate::assets::Assets);

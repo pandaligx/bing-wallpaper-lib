@@ -2603,6 +2603,7 @@ impl Render for WallpaperLibrary {
                 let view_for_overlay = cx.entity();
                 this.child(
                     div()
+                        .occlude()
                         .absolute()
                         .top_0()
                         .left_0()
@@ -2639,6 +2640,7 @@ impl Render for WallpaperLibrary {
                 let view_for_menu = cx.entity();
                 this.child(
                     div()
+                        .occlude()
                         .absolute()
                         .top_0()
                         .left_0()
@@ -2661,6 +2663,7 @@ impl Render for WallpaperLibrary {
                 )
                 .child(
                     v_flex()
+                        .occlude()
                         .absolute()
                         .left_3()
                         .bottom_12()
@@ -3669,6 +3672,7 @@ impl WallpaperLibrary {
         };
 
         h_flex()
+            .occlude()
             .relative()
             .w(px(panel_width))
             .h(px(panel_height))

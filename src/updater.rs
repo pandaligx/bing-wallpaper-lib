@@ -268,6 +268,53 @@ fn batch_path(path: &Path) -> String {
     path.display().to_string().replace('%', "%%")
 }
 
+fn updated_executable_path(new_exe: &Path, old_exe: &Path) -> Result<PathBuf> {
+    let name = new_exe.file_name().context("新版文件名为空")?;
+    if !name.to_str().is_some_and(is_release_executable_name) {
+        bail!("新版文件名不是有效的发行版名称");
+    }
+    Ok(old_exe.with_file_name(name))
+}
+
+/// Run from the new executable before removing the old one, so registered launches
+/// always point to a file that exists. A failure leaves the old executable intact.
+pub fn repair_update_paths() -> Result<()> {
+    if crate::startup::is_enabled() {
+        crate::startup::set_enabled(true)?;
+    }
+    if crate::task_scheduler::is_enabled() {
+        crate::task_scheduler::register(
+            crate::settings::AppSettings::load().normalized_periodic_interval_minutes(),
+        )?;
+    }
+    Ok(())
+}
+
+fn needs_legacy_filename_migration(name: &str, expected_name: &str) -> bool {
+    is_release_executable_name(name) && name != expected_name
+}
+
+/// Older updaters launch new bytes under the previous release's filename.
+/// Reuse the safe handover, but leave user-chosen ordinary launch names alone.
+pub fn finish_legacy_update() -> Result<bool> {
+    if std::env::args().any(|argument| argument == "--skip-update-filename-migration") {
+        return Ok(false);
+    }
+    let current = std::env::current_exe().context("读取当前程序路径失败")?;
+    let expected = format!("bing-wallpaper-lib-v{}-x64.exe", env!("CARGO_PKG_VERSION"));
+    if !current
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| needs_legacy_filename_migration(name, &expected))
+    {
+        return Ok(false);
+    }
+    let staged = update_dir()?.join(expected);
+    std::fs::copy(&current, &staged).context("准备版本文件名迁移失败")?;
+    spawn_relaunch(&staged)?;
+    Ok(true)
+}
+
 fn build_relaunch_script(new_exe: &Path, old_exe: &Path, final_exe: &Path) -> String {
     format!(
         "@echo off\r\n\
@@ -282,12 +329,14 @@ fn build_relaunch_script(new_exe: &Path, old_exe: &Path, final_exe: &Path) -> St
          ping -n 2 127.0.0.1 >nul\r\n\
          goto retry\r\n\
          :done\r\n\
+         start \"\" /wait \"{final}\" --repair-update-paths\r\n\
+         if errorlevel 1 goto failed\r\n\
          start \"\" \"{final}\"\r\n\
          if /I not \"{old}\"==\"{final}\" del \"{old}\" >nul 2>&1\r\n\
          if /I not \"{new}\"==\"{final}\" del \"{new}\" >nul 2>&1\r\n\
          goto cleanup\r\n\
          :failed\r\n\
-         start \"\" \"{old}\"\r\n\
+         start \"\" \"{old}\" --skip-update-filename-migration\r\n\
          :cleanup\r\n\
          del \"%~f0\" >nul 2>&1\r\n",
         new = batch_path(new_exe),
@@ -299,8 +348,7 @@ fn build_relaunch_script(new_exe: &Path, old_exe: &Path, final_exe: &Path) -> St
 /// 写出并以隐藏窗口方式启动"替换 + 重启"脚本。调用方在此之后应立即调用
 /// `App::quit()` 让当前进程退出，脚本会在等待期过后接管完成实际替换。
 ///
-/// 新版本覆盖到当前 exe 的原路径，避免用户启用开机自启后，注册表仍指向已被
-/// 删除的旧版本文件名。
+/// 新版本保存在当前目录，使用新版发行文件名，并在清理旧 exe 前迁移自启动路径。
 pub fn spawn_relaunch(new_exe: &Path) -> Result<()> {
     let metadata = std::fs::metadata(new_exe).context("读取新版可执行文件信息失败")?;
     if !metadata.is_file() || metadata.len() < 1024 * 1024 {
@@ -316,7 +364,7 @@ pub fn spawn_relaunch(new_exe: &Path) -> Result<()> {
     }
 
     let old_exe = std::env::current_exe().context("获取当前可执行文件路径失败")?;
-    let final_exe = old_exe.clone();
+    let final_exe = updated_executable_path(new_exe, &old_exe)?;
     let script_path = new_exe.with_file_name("apply_update.bat");
     let script = build_relaunch_script(new_exe, &old_exe, &final_exe);
     std::fs::write(&script_path, script).context("写入更新脚本失败")?;
@@ -360,16 +408,51 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_script_preserves_current_executable_path() {
+    fn update_uses_new_release_name_in_original_directory() {
         let new_exe = Path::new(
             r"C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe",
         );
-        let old_exe = Path::new(r"C:\Users\me\Desktop\必应每日壁纸.exe");
-        let script = build_relaunch_script(new_exe, old_exe, old_exe);
+        let old_exe = Path::new(r"C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.24-x64.exe");
+        let final_exe = updated_executable_path(new_exe, old_exe).unwrap();
+        assert_eq!(
+            final_exe,
+            Path::new(r"C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe")
+        );
+        let script = build_relaunch_script(new_exe, old_exe, &final_exe);
+        let repair = script.find("--repair-update-paths").unwrap();
+        let delete = script.find(" del ").unwrap();
+        assert!(repair < delete);
+        assert!(script[repair..delete].contains("if errorlevel 1 goto failed"));
+        assert!(
+            script.contains(r#"start "" "C:\Users\me\Desktop\bing-wallpaper-lib-v0.2.25-x64.exe""#)
+        );
+    }
 
-        assert!(script.contains(r#"copy /Y "C:\Users\me\AppData\Local\BingWallpaperLib\update\bing-wallpaper-lib-v0.2.25-x64.exe" "C:\Users\me\Desktop\必应每日壁纸.exe""#));
-        assert!(script.contains(r#"start "" "C:\Users\me\Desktop\必应每日壁纸.exe""#));
-        assert!(script.contains(r#"if /I not "C:\Users\me\Desktop\必应每日壁纸.exe"=="C:\Users\me\Desktop\必应每日壁纸.exe" del "C:\Users\me\Desktop\必应每日壁纸.exe""#));
+    #[test]
+    fn update_rejects_unexpected_names_and_escapes_batch_paths() {
+        assert!(updated_executable_path(Path::new("untrusted.exe"), Path::new("old.exe")).is_err());
+        assert_eq!(
+            batch_path(Path::new(r"C:\100%\new.exe")),
+            r"C:\100%%\new.exe"
+        );
+    }
+
+    #[test]
+    fn legacy_update_migrates_once_without_renaming_custom_launches() {
+        let expected = "bing-wallpaper-lib-v0.2.37-x64.exe";
+        assert!(needs_legacy_filename_migration(
+            "bing-wallpaper-lib-v0.2.36-x64.exe",
+            expected
+        ));
+        assert!(!needs_legacy_filename_migration(expected, expected));
+        assert!(!needs_legacy_filename_migration(
+            "必应每日壁纸.exe",
+            expected
+        ));
+        assert!(!needs_legacy_filename_migration(
+            "bing-wallpaper-lib.exe",
+            expected
+        ));
     }
 
     #[test]
