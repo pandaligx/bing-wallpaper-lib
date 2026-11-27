@@ -79,8 +79,12 @@ try {
     await app.waitFor("default-folder");
     await app.waitUntil(() => app.value("folder-path")?.endsWith("Wallpapers"));
     await app.press("default-folder");
+    await app.press("nav-favorites");
+    await app.press("card-favorite-2024-01-26");
+    await app.waitFor("card-favorite-2024-01-26", { state: "gone" });
   `);
   assert.equal(await readFile(join(data, "settings.pre-nsh.json"), "utf8"), settings);
+  assert.deepEqual(JSON.parse(await readFile(join(data, "favorites.json"), "utf8")), []);
   console.log(
     "PASS · legacy favorites, custom directory, partial exclusion, confirmed deletion, original digest and idempotent backup",
   );

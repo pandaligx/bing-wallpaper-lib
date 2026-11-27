@@ -36,11 +36,14 @@ Windows 11 菜单也使用独立旧配置保存了一个当前不存在的设备
 | 本地每连接限速，8 MiB | 4.054 s | 0.525 s | 0.526 s | 100.2% |
 | 实际 Bing，2026-11-26 的 4K 壁纸 | 0.881 s | 0.800 s | 1.004 s | 125.5% |
 | 实际 GitHub，0.2.37 Windows 附件 | 2.426 s | 2.451 s | 2.501 s | 102.0% |
+| 实际 GitCode，同一个 0.2.37 Windows 附件 | 0.668 s | 0.702 s | 0.732 s | 104.2% |
 
-每项用同一台机器、同一 URL 连跑五轮，计入进程启动和退出。受控服务器实测单流同时建立 1 条传输连接，新引擎和 aria2 均为 8 条。每个样本的 15 个输出哈希完全一致。Bing 第一次对比中 aria2 返回退出码 1，单次诊断下载和随后完整五轮均成功。以上统计取完整五轮。GitCode 真实附件仍待测量。
+每项用同一台机器、同一 URL 连跑五轮，计入进程启动和退出。受控服务器实测单流同时建立 1 条传输连接，新引擎和 aria2 均为 8 条。每个样本的 15 个输出哈希完全一致。Bing 第一次对比中 aria2 返回退出码 1，单次诊断下载和随后完整五轮均成功。以上统计取完整五轮。GitCode 的五轮结果均与 GitHub 原附件的 SHA-256 一致。
 
 ## 平台和发布边界
 
 GitHub Actions 生成开发测试包，Windows、macOS 通用 DMG 与 Linux AppImage 分别上传。窗口测试和已生成安装包的启动测试记录在工作流中。Mac Developer ID 公证、实际多屏、睡眠恢复和系统升级回滚需要对应环境验证。[原型 CI](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml)
 
-国内镜像指定为 `gcw_qWIjmve7/bing-wallpaper-lib`。本轮匿名请求尚未取得仓库、归档或发行附件。双站发布签名前会匿名下载并核对三个产物；测试签名使用临时密钥。发布端需要配置正式公钥、签名密钥以及 GitCode 仓库写权限。
+国内公开仓库 `gcw_qWIjmve7/bing-wallpaper-lib` 已建立并启用自动拉取。两端 main 的归档都有 3,000 个日期，截止 2026-11-27，字节数均为 1,785,998，SHA-256 均为 `919eb7e779019aca2f11030c994e2fd7e37e3b490eb521685756e33a121b6fec`。从 GitCode 的匿名 Release API 返回的附件中，按完整文件名筛出旧版 exe，再经 file-cdn.gitcode.com 读回，23,737,856 字节与 GitHub 原件一致。[国内旧版下载](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37)
+
+双站发布签名前会匿名下载并核对三个产物；测试签名使用临时密钥。发布端需要配置正式公钥、签名密钥以及 GitCode 仓库写权限。

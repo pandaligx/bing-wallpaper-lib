@@ -48,7 +48,28 @@ function LocalImage(props: {
     </View>
   );
 }
-export function LocalGallery() {
+function FileDetails(props: { name: string; revision: number }) {
+  const details = signal("");
+  effect(() => {
+    void props.revision;
+    let visible = true;
+    details.set("");
+    void Library.localDetails(props.name)
+      .then((raw) => {
+        if (!visible) return;
+        const info = JSON.parse(raw);
+        details.set(info.width + " × " + info.height + " · " + (info.bytes / 1048576).toFixed(2) + " MiB");
+      })
+      .catch((error) => {
+        if (visible) details.set(String(error));
+      });
+    return () => {
+      visible = false;
+    };
+  });
+  return <Text class="text-sm text-muted-foreground">{details()}</Text>;
+}
+export function LocalGallery(props: { sidebarWidth: number }) {
   let previewOpener: ViewRef | undefined;
   let closeButton: ViewRef | undefined;
   const closePreview = () => {
@@ -61,32 +82,10 @@ export function LocalGallery() {
     selection = signal<string[]>([]),
     preview = signal(""),
     confirm = signal<string[]>([]);
-  const revision = signal(0),
-    details = signal("");
+  const revision = signal(0);
   effect(() => {
     if (!preview() || confirm().length) return;
     return keymap.bind({ left: () => step(-1), right: () => step(1), escape: closePreview });
-  });
-  effect(() => {
-    const name = preview();
-    let visible = true;
-    details.set("");
-    if (name)
-      void Library.localDetails(name)
-        .then((raw) => {
-          if (visible) {
-            const info = JSON.parse(raw);
-            details.set(
-              info.width + " × " + info.height + " · " + (info.bytes / 1048576).toFixed(2) + " MiB",
-            );
-          }
-        })
-        .catch((error) => {
-          if (visible) status.set(String(error));
-        });
-    return () => {
-      visible = false;
-    };
   });
   const cache = new Map<string, string>();
   async function scan() {
@@ -99,6 +98,12 @@ export function LocalGallery() {
   run(scan);
   function toggle(name: string) {
     selection.update((s) => (s.includes(name) ? s.filter((n) => n !== name) : [...s, name]));
+  }
+  function applyLocal(name: string) {
+    run(async () => {
+      await Library.applyLocal(name);
+      status.set(t("Applied"));
+    });
   }
   async function remove() {
     const names = confirm();
@@ -143,7 +148,7 @@ export function LocalGallery() {
       <List
         each={files()}
         keyExtractor={(name) => name}
-        numColumns={columns()}
+        numColumns={columns(props.sidebarWidth)}
         estimatedItemSize={210}
         class="flex-1"
         contentStyle={{ gap: 10 }}
@@ -165,13 +170,30 @@ export function LocalGallery() {
               >
                 <LocalImage name={name()} revision={revision()} cache={cache} />
                 <Text class="px-2 py-1 text-foreground">{name()}</Text>
+                <FileDetails name={name()} revision={revision()} />
               </Button>
-              <Action
-                id={"select-" + name()}
-                primary={selection().includes(name())}
-                label={t("Select")}
-                press={() => toggle(name())}
-              />
+              <View class="flex-row flex-wrap gap-1 px-2 pb-2">
+                <Action
+                  compact
+                  id={"apply-local-" + name()}
+                  label={t("Set as wallpaper")}
+                  disabled={!canApply()}
+                  press={() => applyLocal(name())}
+                />
+                <Action
+                  compact
+                  id={"select-" + name()}
+                  primary={selection().includes(name())}
+                  label={t("Select")}
+                  press={() => toggle(name())}
+                />
+                <Action
+                  compact
+                  id={"delete-local-" + name()}
+                  label={t("Delete")}
+                  press={() => confirm.set([name()])}
+                />
+              </View>
             </View>
           );
         }}
@@ -197,7 +219,7 @@ export function LocalGallery() {
             >
               <LocalImage name={name()} preview cache={cache} />
               <Text class="font-semibold text-foreground">{name()}</Text>
-              <Text class="text-muted-foreground">{details()}</Text>
+              <FileDetails name={name()} revision={revision()} />
               <View class="flex-row flex-wrap gap-2">
                 <Action label={t("Previous")} press={() => step(-1)} />
                 <Action label={t("Next")} press={() => step(1)} />
@@ -205,12 +227,7 @@ export function LocalGallery() {
                   primary
                   disabled={!canApply()}
                   label={t("Set as wallpaper")}
-                  press={() =>
-                    run(async () => {
-                      await Library.applyLocal(name());
-                      status.set(t("Applied"));
-                    })
-                  }
+                  press={() => applyLocal(name())}
                 />
                 <Action label={t("Delete")} press={() => confirm.set([name()])} />
                 <Action

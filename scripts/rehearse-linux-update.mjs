@@ -28,11 +28,12 @@ const env = {
   BING_WALLPAPER_UPDATE_PUBLIC_KEY: publicKey.export({ format: "jwk" }).x,
 };
 const original = join(run, "target/nsh-release/BingWallpaperLib-v0.0.1-linux-x86_64.AppImage");
-const current = join(run, "portable.AppImage");
 const profile = join(env.XDG_CONFIG_HOME, "BingWallpaperLib");
 const staged = join(env.XDG_DATA_HOME, "BingWallpaperLib/updates/GitHub", version);
 
 async function exercise(input, success) {
+  // The previous AppImage runtime may still be exiting after its window was confirmed.
+  const current = join(run, success ? "upgrade.AppImage" : "rollback.AppImage");
   await copyFile(original, current);
   await chmod(current, 0o755);
   await copyFile(input, join(staged, name));

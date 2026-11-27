@@ -30,10 +30,51 @@ function closePreview() {
   previewOpener = undefined;
   if (opener) setTimeout(() => opener.focus(), 0);
 }
-export function columns() {
-  return Math.max(1, Math.floor((windowSize().width - (windowSize().width >= 800 ? 240 : 40)) / 230));
+export function columns(sidebarWidth: number) {
+  return Math.max(1, Math.floor((windowSize().width - sidebarWidth - 40) / 230));
 }
 const section = () => (page() === "month" ? month() : page());
+function CardActions(props: { photo: Photo }) {
+  const busy = () => active().includes(props.photo.date);
+  const progress = () => transfers().find((tr) => tr.date === props.photo.date && tr.state === "active");
+  return (
+    <View class="gap-1">
+      <View class="flex-row flex-wrap gap-1">
+        <Action
+          compact
+          id={"card-apply-" + props.photo.date}
+          label={t("Set as wallpaper")}
+          disabled={busy() || !canApply()}
+          press={() => download(props.photo, true)}
+        />
+        <Action
+          compact
+          id={"card-download-" + props.photo.date}
+          label={t("Download")}
+          disabled={busy()}
+          press={() => download(props.photo, false)}
+        />
+        <Action
+          compact
+          id={"card-favorite-" + props.photo.date}
+          label={t(saved().includes(props.photo.date) ? "Cancel favorite" : "Favorite")}
+          press={() => favorite(props.photo)}
+        />
+      </View>
+      <If when={progress()}>
+        {(tr) => (
+          <Progress
+            value={(100 * tr().received) / (tr().total || 1)}
+            indeterminate={!tr().total}
+            accessibilityLabel={t("Download progress")}
+            trackClass="h-2 rounded bg-muted"
+            indicatorClass="h-2 rounded bg-primary"
+          />
+        )}
+      </If>
+    </View>
+  );
+}
 function Featured(props: { photo: Photo }) {
   let imageButton: ViewRef | undefined;
   let previewButton: ViewRef | undefined;
@@ -71,23 +112,20 @@ function Featured(props: { photo: Photo }) {
             }}
             press={() => openPreview(photo(), previewButton)}
           />
-          <Action
-            label={t(saved().includes(photo().date) ? "Cancel favorite" : "Favorite")}
-            press={() => favorite(photo())}
-          />
         </View>
+        <CardActions photo={photo()} />
       </View>
     </View>
   );
 }
-export function Gallery() {
+export function Gallery(props: { sidebarWidth: number }) {
   let grid: ListRef | undefined;
   let previous = "";
   let version = 0;
   const list = computed(() => (page() === "home" ? photos().slice(1) : entries()));
   effect(() => {
     const key = section(),
-      count = columns();
+      count = columns(props.sidebarWidth);
     if (!count || !grid || previous === key + count) return;
     previous = key + count;
     const index = positions.get(key) ?? 0;
@@ -118,8 +156,8 @@ export function Gallery() {
         keyExtractor={(p) => p.date}
         class="flex-1"
         header={<If when={page() === "home" ? photos()[0] : undefined}>{(p) => <Featured photo={p()} />}</If>}
-        numColumns={columns()}
-        estimatedItemSize={206}
+        numColumns={columns(props.sidebarWidth)}
+        estimatedItemSize={275}
         initialScrollIndex={positions.get(section()) || undefined}
         onViewableItemsChange={({ viewableItems }) => {
           if (viewableItems.length) positions.set(section(), viewableItems[0].index);
@@ -129,23 +167,29 @@ export function Gallery() {
         {(photo) => {
           let opener: ViewRef | undefined;
           return (
-            <Button
-              ref={(node) => {
-                opener = node;
-              }}
-              testID={"photo-" + photo().date}
-              onPress={() => openPreview(photo(), opener)}
-              class="overflow-hidden rounded-lg border border-border bg-card hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring active:opacity-80"
-            >
-              <Thumbnail src={photo().thumbnail} />
-              <View class="gap-1 px-3 py-2">
-                <Text class="font-semibold text-foreground">{photo().headline || photo().date}</Text>
-                <Text class="text-sm text-muted-foreground">
-                  {photo().date}
-                  {saved().includes(photo().date) ? "  ★" : ""}
-                </Text>
+            <View class="overflow-hidden rounded-lg border border-border bg-card">
+              <Button
+                ref={(node) => {
+                  opener = node;
+                }}
+                testID={"photo-" + photo().date}
+                onPress={() => openPreview(photo(), opener)}
+                accessibilityLabel={t("Preview") + " · " + photo().date}
+                class="hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring active:opacity-80"
+              >
+                <Thumbnail src={photo().thumbnail} />
+                <View class="gap-1 px-3 py-2">
+                  <Text class="font-semibold text-foreground line-clamp-2">
+                    {photo().headline || photo().date}
+                  </Text>
+                  <Text class="text-sm text-muted-foreground">{photo().date}</Text>
+                  <Text class="text-sm text-muted-foreground line-clamp-2">{photo().description}</Text>
+                </View>
+              </Button>
+              <View class="px-2 pb-2">
+                <CardActions photo={photo()} />
               </View>
-            </Button>
+            </View>
           );
         }}
       </List>

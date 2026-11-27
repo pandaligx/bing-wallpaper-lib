@@ -92,6 +92,7 @@ function App() {
     else confirmingExit.set(true);
   };
   const drawer = signal(false),
+    sidebarCollapsed = signal(false),
     expanded = signal<string[]>([]),
     ready = signal(false);
   const index = computed(() => {
@@ -220,6 +221,7 @@ function App() {
     return () => clearInterval(timer);
   });
   const narrow = () => windowSize().width < 800;
+  const sidebarWidth = () => (narrow() ? (drawer() ? 150 : 0) : sidebarCollapsed() ? 0 : 194);
   const title = () =>
     page() === "month"
       ? month()
@@ -230,12 +232,8 @@ function App() {
         );
   return (
     <View class="flex-row flex-1 bg-background">
-      <If when={!narrow() || drawer()}>
-        <Scroll
-          testID="sidebar"
-          class="border-r border-border bg-card"
-          style={{ width: narrow() ? 150 : 194 }}
-        >
+      <If when={sidebarWidth() > 0}>
+        <Scroll testID="sidebar" class="border-r border-border bg-card" style={{ width: sidebarWidth() }}>
           <View class="gap-2 p-3">
             <Each of={destinations}>
               {(entry) => (
@@ -286,9 +284,14 @@ function App() {
       </If>
       <View class="flex-1 gap-3 p-4">
         <View class="flex-row flex-wrap items-center gap-3">
-          <If when={narrow()}>
-            <Action id="navigation" label={t("Navigation")} press={() => drawer.set(!drawer())} />
-          </If>
+          <Action
+            id="navigation"
+            label={t("Navigation")}
+            press={() => {
+              if (narrow()) drawer.set(!drawer());
+              else sidebarCollapsed.set(!sidebarCollapsed());
+            }}
+          />
           <Text testID="page-title" class="text-2xl font-semibold text-foreground">
             {title()}
           </Text>
@@ -300,10 +303,10 @@ function App() {
           <Region />
         </If>
         <If when={page() === "home" || page() === "month" || page() === "favorites"}>
-          <Gallery />
+          <Gallery sidebarWidth={sidebarWidth()} />
         </If>
         <If when={page() === "local"}>
-          <LocalGallery />
+          <LocalGallery sidebarWidth={sidebarWidth()} />
         </If>
         <If when={page() === "downloads"}>
           <DownloadCenter />

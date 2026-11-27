@@ -12,7 +12,7 @@ Browse daily Bing photography by year and month, keep favorites, and set a photo
 | macOS Intel and Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 or newer. Copy the app to Applications. Development builds use ad-hoc signing. |
 | Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | GTK 4.14+ and WebKitGTK 6.0. Make the AppImage executable before starting it. |
 
-Select a completed build of the rewrite branch to download its artifacts. Users of older Windows systems can still obtain version 0.2.37. [Development builds](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml) · [Windows 0.2.37](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37) · [Validation notes](desktop/VALIDATION.md)
+Select a completed build of the rewrite branch to download its artifacts. Users of older Windows systems can still obtain version 0.2.37. [Development builds](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml) · [Windows 0.2.37 on GitCode](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [Windows 0.2.37 on GitHub](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37) · [Validation notes](desktop/VALIDATION.md)
 
 ## Using the library
 
@@ -26,7 +26,7 @@ Select a completed build of the rewrite branch to download its artifacts. Users 
 
 Install the first NSH Windows build manually. Its new filename keeps it separate from the 0.2.37 updater. On first use it reads the existing `%LOCALAPPDATA%\BingWallpaperLib` profile. Configuration changes save the original bytes in `settings.pre-nsh.json`. Photos with a legacy `.aria2` control file stay outside the local gallery.
 
-Mainland China uses GitCode and other known regions use GitHub. The app asks when it cannot determine the region. You can change this choice independently of the display language. The public GitCode repository and signed production channel still require release verification. [GitCode project](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib) · [GitHub releases](https://github.com/pandaligx/bing-wallpaper-lib/releases)
+Mainland China uses GitCode and other known regions use GitHub. The app asks when it cannot determine the region. You can change this choice independently of the display language. Both archives and the legacy Windows downloads are available anonymously. The signed production channel is pending release acceptance. [GitCode project](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib) · [GitHub releases](https://github.com/pandaligx/bing-wallpaper-lib/releases)
 
 The bundled archive is synchronized every four hours and merged with verified corrections and recent Bing records. Wallpaper copyrights belong to their photographers and respective rights holders. [Upstream archive](https://github.com/zxyongyo/bing-daily-wallpaper) · [Corrections](assets/data/zxyongyo-bing-wallpaper-corrections.json)
 

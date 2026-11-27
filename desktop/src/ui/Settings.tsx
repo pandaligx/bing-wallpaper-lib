@@ -1,7 +1,7 @@
 import { Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { Library } from "wallpaper-native";
-import { checkUpdate, load, refresh, setSource, source } from "../library";
+import { checking, checkUpdate, load, refresh, setSource, source } from "../library";
 import { configure, preferences, run, startup, status, t } from "../preferences";
 import type { Preferences } from "../preferences";
 import { Action } from "./Action";
@@ -69,7 +69,8 @@ export function Settings() {
       { value: "", title: t("Sync all displays"), disabled: false },
       ...displays().map((m, index) => ({
         value: m.id,
-        title: m.width && m.height ? t("Display") + " " + (index + 1) + " · " + m.width + "×" + m.height : m.label,
+        title:
+          m.width && m.height ? t("Display") + " " + (index + 1) + " · " + m.width + "×" + m.height : m.label,
         disabled: false,
       })),
     ];
@@ -282,7 +283,12 @@ export function Settings() {
               })
             }
           />
-          <Action label={t("Check for updates")} disabled={!source()} press={() => void checkUpdate()} />
+          <Action
+            id="check-update"
+            label={t("Check for updates")}
+            disabled={!source() || checking()}
+            press={() => void checkUpdate()}
+          />
           <Action
             label={t("View release notes")}
             disabled={!source()}
