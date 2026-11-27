@@ -5,8 +5,15 @@ test("opens a dated preview, archive month, favorites, downloads, local gallery 
   await app.waitFor("latest-photo", { timeout: 30000 });
   await app.press("latest-photo");
   await app.waitFor("apply-photo");
-  await app.press("next-photo");
-  await app.press("close-preview");
+  const preview = () => app.texts().find((line) => /^\d{4}-\d{2}-\d{2} ·/.test(line));
+  const first = preview();
+  expect(typeof first).toBe("string");
+  await app.keyboard.press("right");
+  await app.waitUntil(() => !!preview() && preview() !== first);
+  await app.keyboard.press("left");
+  await app.waitFor(first!);
+  await app.keyboard.press("escape");
+  await app.waitFor("apply-photo", { state: "gone" });
   await app.press("nav-favorites");
   await app.press("nav-downloads");
   await app.waitFor("batch-all");

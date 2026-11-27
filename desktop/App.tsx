@@ -52,15 +52,23 @@ function UpdateProgress(props: { bytes?: number }) {
   const total = () => row()?.total || props.bytes || 0;
   const received = () => row()?.received || 0;
   const speed = () => row()?.speed || 0;
-  const remaining = () => speed() && total() ? Math.ceil(Math.max(0, total() - received()) / speed()) + " s" : "…";
+  const remaining = () =>
+    speed() && total() ? Math.ceil(Math.max(0, total() - received()) / speed()) + " s" : "…";
   return (
     <View class="gap-1">
-      <Progress value={total() ? 100 * received() / total() : 0} indeterminate={!row() || !total()}
-        accessibilityLabel={t("Download progress")} trackClass="h-2 rounded bg-muted" indicatorClass="h-2 rounded bg-primary" />
+      <Progress
+        value={total() ? (100 * received()) / total() : 0}
+        indeterminate={!row() || !total()}
+        accessibilityLabel={t("Download progress")}
+        trackClass="h-2 rounded bg-muted"
+        indicatorClass="h-2 rounded bg-primary"
+      />
       <Text class="text-sm text-muted-foreground">
         {(received() / 1048576).toFixed(1)} / {(total() / 1048576).toFixed(1)} MiB
-        {" · "}{t("Speed")} {Math.round(speed() / 1024)} KiB/s
-        {" · "}{t("Remaining")} {remaining()}
+        {" · "}
+        {t("Speed")} {Math.round(speed() / 1024)} KiB/s
+        {" · "}
+        {t("Remaining")} {remaining()}
       </Text>
     </View>
   );

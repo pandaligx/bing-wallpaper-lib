@@ -1,5 +1,5 @@
-import { computed, effect, Image, List, Text, View, windowSize } from "nsh";
-import type { ListRef } from "nsh";
+import { computed, effect, Image, keymap, List, Text, View, windowSize } from "nsh";
+import type { ListRef, ViewRef } from "nsh";
 import { Button, Dialog, Progress } from "nsh/base";
 import {
   active,
@@ -19,11 +19,24 @@ import { Action } from "./Action";
 import { releaseUnusedImages, Thumbnail } from "./Thumbnail";
 
 const positions = new Map<string, number>();
+let previewOpener: ViewRef | undefined;
+function openPreview(photo: Photo, opener?: ViewRef) {
+  previewOpener = opener;
+  selected.set(photo);
+}
+function closePreview() {
+  selected.set(null);
+  const opener = previewOpener;
+  previewOpener = undefined;
+  if (opener) setTimeout(() => opener.focus(), 0);
+}
 export function columns() {
   return Math.max(1, Math.floor((windowSize().width - (windowSize().width >= 800 ? 240 : 40)) / 230));
 }
 const section = () => (page() === "month" ? month() : page());
 function Featured(props: { photo: Photo }) {
+  let imageButton: ViewRef | undefined;
+  let previewButton: ViewRef | undefined;
   const photo = () => props.photo;
   const wide = () => windowSize().width >= 700;
   return (
@@ -36,8 +49,11 @@ function Featured(props: { photo: Photo }) {
     >
       <Button
         testID="latest-photo"
+        ref={(node) => {
+          imageButton = node;
+        }}
         accessibilityLabel={t("Preview") + " · " + photo().date}
-        onPress={() => selected.set(photo())}
+        onPress={() => openPreview(photo(), imageButton)}
         style={{ width: wide() ? "54%" : "100%" }}
       >
         <Image src={photo().preview} style={{ width: "100%", aspectRatio: 16 / 9 }} />
@@ -47,7 +63,14 @@ function Featured(props: { photo: Photo }) {
         <Text class="text-xl font-semibold text-foreground">{photo().headline || photo().date}</Text>
         <Text class="text-sm text-muted-foreground">{photo().description}</Text>
         <View class="flex-row flex-wrap gap-2">
-          <Action primary label={t("Preview")} press={() => selected.set(photo())} />
+          <Action
+            primary
+            label={t("Preview")}
+            buttonRef={(node) => {
+              previewButton = node;
+            }}
+            press={() => openPreview(photo(), previewButton)}
+          />
           <Action
             label={t(saved().includes(photo().date) ? "Cancel favorite" : "Favorite")}
             press={() => favorite(photo())}
@@ -103,27 +126,34 @@ export function Gallery() {
         }}
         contentStyle={{ gap: 10 }}
       >
-        {(photo) => (
-          <Button
-            testID={"photo-" + photo().date}
-            onPress={() => selected.set(photo())}
-            class="overflow-hidden rounded-lg border border-border bg-card hover:bg-accent active:opacity-80"
-          >
-            <Thumbnail src={photo().thumbnail} />
-            <View class="gap-1 px-3 py-2">
-              <Text class="font-semibold text-foreground">{photo().headline || photo().date}</Text>
-              <Text class="text-sm text-muted-foreground">
-                {photo().date}
-                {saved().includes(photo().date) ? "  ★" : ""}
-              </Text>
-            </View>
-          </Button>
-        )}
+        {(photo) => {
+          let opener: ViewRef | undefined;
+          return (
+            <Button
+              ref={(node) => {
+                opener = node;
+              }}
+              testID={"photo-" + photo().date}
+              onPress={() => openPreview(photo(), opener)}
+              class="overflow-hidden rounded-lg border border-border bg-card hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring active:opacity-80"
+            >
+              <Thumbnail src={photo().thumbnail} />
+              <View class="gap-1 px-3 py-2">
+                <Text class="font-semibold text-foreground">{photo().headline || photo().date}</Text>
+                <Text class="text-sm text-muted-foreground">
+                  {photo().date}
+                  {saved().includes(photo().date) ? "  ★" : ""}
+                </Text>
+              </View>
+            </Button>
+          );
+        }}
       </List>
     </View>
   );
 }
 export function Preview(props: { photo: Photo }) {
+  let closeButton: ViewRef | undefined;
   effect(() => () => {
     setTimeout(releaseUnusedImages, 0);
   });
@@ -134,6 +164,7 @@ export function Preview(props: { photo: Photo }) {
     const next = list()[index() + delta];
     if (next) selected.set(next);
   }
+  keymap.bind({ left: () => step(-1), right: () => step(1), escape: closePreview });
   const transfer = () => transfers().find((tr) => tr.date === item().date && tr.state === "active");
   return (
     <Dialog
@@ -141,17 +172,13 @@ export function Preview(props: { photo: Photo }) {
       animation="fade"
       class="m-auto rounded-xl bg-card"
       accessibilityLabel={item().headline ?? item().date}
+      onOpen={() => closeButton?.focus()}
       onOpenChange={({ open }) => {
-        if (!open) selected.set(null);
+        if (!open) closePreview();
       }}
     >
       <View
         class="gap-3 rounded-xl bg-card p-4"
-        onKeyDown={(e) => {
-          if (e.key === "ArrowLeft") step(-1);
-          if (e.key === "ArrowRight") step(1);
-          if (e.key === "Escape") selected.set(null);
-        }}
         style={{
           width: Math.max(
             248,
@@ -201,7 +228,14 @@ export function Preview(props: { photo: Photo }) {
             disabled={!canApply() || active().includes(item().date)}
             press={() => download(item(), true)}
           />
-          <Action id="close-preview" label={t("Close")} press={() => selected.set(null)} />
+          <Action
+            id="close-preview"
+            label={t("Close")}
+            buttonRef={(node) => {
+              closeButton = node;
+            }}
+            press={closePreview}
+          />
         </View>
       </View>
     </Dialog>

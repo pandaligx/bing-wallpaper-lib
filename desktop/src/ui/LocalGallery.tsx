@@ -1,4 +1,5 @@
-import { effect, Image, List, signal, Text, View, windowSize } from "nsh";
+import { effect, Image, keymap, List, signal, Text, View, windowSize } from "nsh";
+import type { ViewRef } from "nsh";
 import { Button, Dialog } from "nsh/base";
 import { Library } from "wallpaper-native";
 import { canApply, run, status, t } from "../preferences";
@@ -48,12 +49,24 @@ function LocalImage(props: {
   );
 }
 export function LocalGallery() {
+  let previewOpener: ViewRef | undefined;
+  let closeButton: ViewRef | undefined;
+  const closePreview = () => {
+    preview.set("");
+    const opener = previewOpener;
+    previewOpener = undefined;
+    if (opener) setTimeout(() => opener.focus(), 0);
+  };
   const files = signal<string[]>([]),
     selection = signal<string[]>([]),
     preview = signal(""),
     confirm = signal<string[]>([]);
   const revision = signal(0),
     details = signal("");
+  effect(() => {
+    if (!preview() || confirm().length) return;
+    return keymap.bind({ left: () => step(-1), right: () => step(1), escape: closePreview });
+  });
   effect(() => {
     const name = preview();
     let visible = true;
@@ -135,28 +148,42 @@ export function LocalGallery() {
         class="flex-1"
         contentStyle={{ gap: 10 }}
       >
-        {(name) => (
-          <View class="gap-1 overflow-hidden rounded-lg border border-border bg-card">
-            <Button onPress={() => preview.set(name())} accessibilityLabel={t("Preview") + " " + name()}>
-              <LocalImage name={name()} revision={revision()} cache={cache} />
-              <Text class="px-2 py-1 text-foreground">{name()}</Text>
-            </Button>
-            <Action
-              id={"select-" + name()}
-              primary={selection().includes(name())}
-              label={t("Select")}
-              press={() => toggle(name())}
-            />
-          </View>
-        )}
+        {(name) => {
+          let button: ViewRef | undefined;
+          return (
+            <View class="gap-1 overflow-hidden rounded-lg border border-border bg-card">
+              <Button
+                ref={(node) => {
+                  button = node;
+                }}
+                onPress={() => {
+                  previewOpener = button;
+                  preview.set(name());
+                }}
+                accessibilityLabel={t("Preview") + " " + name()}
+                class="focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <LocalImage name={name()} revision={revision()} cache={cache} />
+                <Text class="px-2 py-1 text-foreground">{name()}</Text>
+              </Button>
+              <Action
+                id={"select-" + name()}
+                primary={selection().includes(name())}
+                label={t("Select")}
+                press={() => toggle(name())}
+              />
+            </View>
+          );
+        }}
       </List>
       <If when={preview()}>
         {(name) => (
           <Dialog
             open
+            onOpen={() => closeButton?.focus()}
             class="m-auto rounded-xl bg-card"
             onOpenChange={({ open }) => {
-              if (!open) preview.set("");
+              if (!open) closePreview();
             }}
           >
             <View
@@ -166,11 +193,6 @@ export function LocalGallery() {
                   250,
                   Math.min(860, windowSize().width - 32, ((windowSize().height - 196) * 16) / 9),
                 ),
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowRight") step(1);
-                if (e.key === "ArrowLeft") step(-1);
-                if (e.key === "Escape") preview.set("");
               }}
             >
               <LocalImage name={name()} preview cache={cache} />
@@ -191,7 +213,14 @@ export function LocalGallery() {
                   }
                 />
                 <Action label={t("Delete")} press={() => confirm.set([name()])} />
-                <Action id="close-local" label={t("Close")} press={() => preview.set("")} />
+                <Action
+                  id="close-local"
+                  label={t("Close")}
+                  buttonRef={(node) => {
+                    closeButton = node;
+                  }}
+                  press={closePreview}
+                />
               </View>
             </View>
           </Dialog>

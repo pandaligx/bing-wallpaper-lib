@@ -1,4 +1,5 @@
 import { Text } from "nsh";
+import type { ViewRef } from "nsh";
 import { Button } from "nsh/base";
 interface ActionProps {
   id?: string;
@@ -6,10 +7,12 @@ interface ActionProps {
   press: () => void;
   primary?: boolean;
   disabled?: boolean;
+  buttonRef?: (button: ViewRef) => void;
 }
 export function Action(props: ActionProps) {
   return (
     <Button
+      ref={props.buttonRef}
       testID={props.id}
       accessibilityLabel={props.label}
       disabled={props.disabled}
