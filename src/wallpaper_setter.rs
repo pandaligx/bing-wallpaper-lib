@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::core::{Error, HRESULT, PCWSTR};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, RECT};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
     COINIT_APARTMENTTHREADED,
@@ -79,6 +80,15 @@ fn desktop_wallpaper() -> Result<(ComApartment, IDesktopWallpaper)> {
     Ok((apartment, wallpaper))
 }
 
+fn attached_rect(result: windows::core::Result<RECT>) -> windows::core::Result<Option<RECT>> {
+    match result {
+        // Windows also enumerates previously attached monitors with a saved wallpaper.
+        Ok(rect) => Ok((rect.right > rect.left && rect.bottom > rect.top).then_some(rect)),
+        Err(err) if matches!(err.code(), E_FAIL | E_INVALIDARG) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 /// 枚举当前 Windows 识别到的显示器。返回空列表通常表示系统/权限不支持 `IDesktopWallpaper`。
 pub fn list_monitors() -> Result<Vec<MonitorInfo>> {
     let (_apartment, wallpaper) = desktop_wallpaper()?;
@@ -88,13 +98,15 @@ pub fn list_monitors() -> Result<Vec<MonitorInfo>> {
     for index in 0..count {
         let monitor_id = unsafe { wallpaper.GetMonitorDevicePathAt(index) }
             .with_context(|| format!("读取显示器 {} 标识失败", index + 1))?;
-        let id = unsafe { monitor_id.to_string() }
-            .with_context(|| format!("显示器 {} 标识不是合法字符串", index + 1))?;
+        let id = unsafe { monitor_id.to_string() };
         unsafe { CoTaskMemFree(Some(monitor_id.as_ptr().cast())) };
+        let id = id.with_context(|| format!("显示器 {} 标识不是合法字符串", index + 1))?;
 
         let id_wide = to_wide(std::ffi::OsStr::new(&id));
-        let rect = unsafe { wallpaper.GetMonitorRECT(PCWSTR(id_wide.as_ptr())) }
-            .with_context(|| format!("读取显示器 {} 尺寸失败", index + 1))?;
+        let Some(rect) = attached_rect(unsafe { wallpaper.GetMonitorRECT(PCWSTR(id_wide.as_ptr())) })
+            .with_context(|| format!("读取显示器 {} 尺寸失败", index + 1))? else {
+            continue;
+        };
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
 
@@ -154,6 +166,9 @@ pub fn set_wallpaper_for_monitor(path: &Path, monitor_id: &str) -> Result<()> {
     let wallpaper_wide = to_wide(std::ffi::OsStr::new(&cleaned));
     let monitor_wide = to_wide(std::ffi::OsStr::new(monitor_id));
     let (_apartment, wallpaper) = desktop_wallpaper()?;
+    if attached_rect(unsafe { wallpaper.GetMonitorRECT(PCWSTR(monitor_wide.as_ptr())) })?.is_none() {
+        bail!("所选显示器已断开或暂时不可用；请重新连接后再试");
+    }
 
     unsafe {
         wallpaper
@@ -162,5 +177,21 @@ pub fn set_wallpaper_for_monitor(path: &Path, monitor_id: &str) -> Result<()> {
                 PCWSTR(wallpaper_wide.as_ptr()),
             )
             .context("调用 IDesktopWallpaper 设置指定显示器壁纸失败")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_displays_leave_the_attached_desktop_available() {
+        let connected = RECT { left: -1920, top: 0, right: 0, bottom: 1080 };
+        assert_eq!(attached_rect(Ok(connected)).unwrap(), Some(connected));
+        assert_eq!(attached_rect(Ok(RECT::default())).unwrap(), None);
+        for code in [E_FAIL, E_INVALIDARG] {
+            assert_eq!(attached_rect(Err(Error::from(code))).unwrap(), None);
+        }
+        assert!(attached_rect(Err(Error::from(windows::Win32::Foundation::E_ACCESSDENIED))).is_err());
     }
 }

@@ -49,7 +49,7 @@ export function Settings() {
   const path = signal(""),
     time = signal<string | null>(null),
     interval = signal<string | null>(null);
-  const displays = signal<{ id: string; label: string }[]>([]);
+  const displays = signal<{ id: string; label: string; width?: number; height?: number }[]>([]);
   function getDisplays() {
     try {
       displays.set(JSON.parse(Library.monitors()));
@@ -67,7 +67,11 @@ export function Settings() {
   const monitorOptions = () => {
     const options = [
       { value: "", title: t("Sync all displays"), disabled: false },
-      ...displays().map((m) => ({ value: m.id, title: m.label, disabled: false })),
+      ...displays().map((m, index) => ({
+        value: m.id,
+        title: m.width && m.height ? t("Display") + " " + (index + 1) + " · " + m.width + "×" + m.height : m.label,
+        disabled: false,
+      })),
     ];
     const current = s().wallpaper_target.monitor_id;
     if (current && !options.some((m) => m.value === current))
@@ -155,6 +159,7 @@ export function Settings() {
         <Heading label={t("Multi-monitor wallpaper")} />
         <View class="flex-row flex-wrap items-center gap-2">
           <ChoiceField
+            id="monitor-target"
             label={t("Multi-monitor wallpaper")}
             items={monitorOptions()}
             value={s().wallpaper_target.monitor_id ?? ""}

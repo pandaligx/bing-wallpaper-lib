@@ -34,6 +34,7 @@ const keys =
   );
 keys.push("Speed", "Remaining");
 const extras: Record<string, string[]> = {
+  Display: ["显示器", "ディスプレイ", "디스플레이", "Монитор", "Écran"],
   Close: ["关闭", "閉じる", "닫기", "Закрыть", "Fermer"],
   Previous: ["上一张", "前へ", "이전", "Назад", "Précédent"],
   Next: ["下一张", "次へ", "다음", "Далее", "Suivant"],
