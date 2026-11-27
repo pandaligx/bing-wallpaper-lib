@@ -32,6 +32,17 @@ pub fn favorites_file() -> Result<PathBuf> {
     Ok(app_data_dir()?.join("favorites.json"))
 }
 
+pub fn downloaded_thumbnails_dir() -> Result<PathBuf> {
+    let base = if cfg!(windows) {
+        app_data_dir()?
+    } else {
+        directory(dirs::cache_dir())?
+    };
+    let path = base.join("downloaded-thumbnails");
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
 pub fn config_dir() -> Result<PathBuf> {
     directory(
         dirs::config_dir()

@@ -6,9 +6,16 @@ publish = false
 
 [workspace]
 
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+
 [dependencies]
 nsh-core = { version = "=0.7.2", default-features = false }
 anyhow = "1"
+base64 = "0.23"
+ring = "0.17"
+semver = "1"
+sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 gosh-dl = { git = "https://github.com/goshitsarch-eng/gosh-dl", rev = "9f6ff470a854be7ff49dadc609207eb53da4bdbc", default-features = false, features = ["http", "storage"] }
@@ -21,9 +28,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 url = "2"
 fs2 = "0.4"
 log = "0.4"
+rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "wallpaper"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

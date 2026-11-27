@@ -1,0 +1,78 @@
+import { createHash, createPrivateKey, sign } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const repositories = [
+  ["GitHub", "https://api.github.com/repos/pandaligx/bing-wallpaper-lib/releases/tags/"],
+  ["GitCode", "https://api.gitcode.com/api/v5/repos/gcw_qWIjmve7/bing-wallpaper-lib/releases/tags/"],
+];
+
+async function fingerprint(stream, limit = Infinity) {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of stream) {
+    bytes += chunk.length;
+    if (bytes > limit) throw new Error("Attachment exceeds the expected size");
+    hash.update(chunk);
+  }
+  if (!bytes) throw new Error("Empty attachment");
+  return { bytes, sha256: hash.digest("hex") };
+}
+
+export async function makeManifest(directory, version) {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Expected a stable semantic version");
+  const files = [
+    ["windows", "x64", "10.0.17763", "windows-x64.exe"],
+    ["macos", "universal", "14.0", "macos-universal.dmg"],
+    ["linux", "x86_64", "GTK 4.14 and WebKitGTK 6.0", "linux-x86_64.AppImage"],
+  ];
+  const artifacts = [];
+  for (const [os, arch, minimumSystem, suffix] of files) {
+    const filename = `BingWallpaperLib-v${version}-${suffix}`;
+    const digest = await fingerprint(createReadStream(join(directory, filename)));
+    artifacts.push({ os, arch, minimumSystem, filename, ...digest });
+  }
+  return { format: 1, version, artifacts };
+}
+
+export async function verifyPublished(manifest, request = fetch) {
+  for (const [provider, api] of repositories) {
+    const response = await request(api + "v" + manifest.version, { signal: AbortSignal.timeout(30_000) });
+    if (!response.ok) throw new Error(`${provider} release API: HTTP ${response.status}`);
+    const release = await response.json();
+    if (release.tag_name !== "v" + manifest.version) throw new Error(`${provider}: wrong release tag`);
+    for (const asset of manifest.artifacts) {
+      const matches = release.assets.filter(row => row.name === asset.filename);
+      if (matches.length !== 1) throw new Error(`${provider}: expected exactly one ${asset.filename}`);
+      const url = new URL(matches[0].browser_download_url);
+      if (url.protocol !== "https:" || url.username || url.password) throw new Error("Invalid attachment URL");
+      const download = await request(url, { signal: AbortSignal.timeout(600_000) });
+      if (!download.ok || !download.body) throw new Error(`${provider} ${asset.filename}: HTTP ${download.status}`);
+      const actual = await fingerprint(download.body, asset.bytes);
+      if (actual.bytes !== asset.bytes || actual.sha256 !== asset.sha256) {
+        throw new Error(`${provider}: different content for ${asset.filename}`);
+      }
+    }
+  }
+}
+
+export function signManifest(manifest, privateKey) {
+  if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("Expected an Ed25519 signing key");
+  const payload = Buffer.from(JSON.stringify(manifest), "utf8");
+  const signature = sign(null, payload, privateKey);
+  return { payload: payload.toString("base64"), signature: signature.toString("base64") };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const [directory, version, privateKeyFile] = process.argv.slice(2);
+  if (!directory || !version || !privateKeyFile) {
+    throw new Error("Usage: node scripts/sign-desktop-release.mjs ARTIFACT_DIR VERSION ED25519_PRIVATE_PEM");
+  }
+  const manifest = await makeManifest(directory, version);
+  await verifyPublished(manifest);
+  const key = createPrivateKey(await readFile(privateKeyFile));
+  const envelope = signManifest(manifest, key);
+  await writeFile(join(directory, "signed-release.json"), JSON.stringify(envelope) + "\n", { flag: "wx" });
+}

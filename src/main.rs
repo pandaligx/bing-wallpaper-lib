@@ -29,6 +29,7 @@ mod local_thumbnails;
 mod model;
 mod paths;
 mod scheduled_wallpaper;
+mod wallpaper_selection;
 mod settings;
 mod single_instance;
 mod startup;

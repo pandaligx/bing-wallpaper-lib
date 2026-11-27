@@ -2,9 +2,10 @@ import { effect, Image, List, mount, signal, Text, View, windowSize } from "nsh"
 import { Button, Dialog, Progress } from "nsh/base";
 import { Window } from "nsh/desktop";
 import { Action } from "./src/ui/Action";
+import { WallpaperOptions } from "./src/ui/WallpaperOptions";
 import { active, download, favorite, load, photos, refresh, saved, selected, setSource, source, status } from "./src/library";
 import type { Photo } from "./src/library";
-import { pauseTransfer, pollTransfers, transfers } from "./src/library";
+import { checkUpdate, pauseTransfer, pollTransfers, transfers } from "./src/library";
 
 function Preview(props: { photo: Photo }) {
   const item = () => props.photo;
@@ -67,7 +68,7 @@ function App() {
         <View class="flex-row gap-2">
           <Action label="全部壁纸" press={() => favoritesOnly.set(false)} />
           <Action label="我的收藏" press={() => favoritesOnly.set(true)} />
-          <Action label={source() || "更新来源"} press={() => regionOpen.set(!regionOpen())} />
+          <Action label={source() ? `设置 · ${source()}` : "设置"} press={() => regionOpen.set(!regionOpen())} />
         </View>
       </View>
       <If when={ready() && (regionOpen() || !source())}>
@@ -76,8 +77,11 @@ function App() {
           <Action label="跟随系统地区" press={() => { setSource("auto"); regionOpen.set(false); }} />
           <Action label="中国大陆 · GitCode" press={() => { setSource("cn"); regionOpen.set(false); }} />
           <Action label="国际 · GitHub" press={() => { setSource("international"); regionOpen.set(false); }} />
+          <Action label="检查更新" disabled={!source()} press={() => void checkUpdate()} />
+          <Action label="下载已验证更新包" disabled={!source()} press={() => void checkUpdate(true)} />
         </View>
       </If>
+      <If when={regionOpen()}><WallpaperOptions /></If>
       <Text class="text-muted-foreground">{ready() ? `${entries().length} 张壁纸` : "正在读取本地壁纸库"}</Text>
       <List each={entries()} keyExtractor={p => p.date} class="flex-1"
         numColumns={Math.max(1, Math.floor((windowSize().width - 40) / 280))}

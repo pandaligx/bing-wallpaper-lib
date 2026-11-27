@@ -15,6 +15,10 @@ export const selected = signal<Photo | null>(null);
 export const status = signal("");
 export const source = signal("");
 export const active = signal<string[]>([]);
+export async function checkUpdate(download = false) {
+  try { status.set(await Library.checkUpdate(download)); }
+  catch (error) { status.set(String(error)); }
+}
 interface Transfer { id: string; date: string; received: number; total: number | null; speed: number; state: string }
 export const transfers = signal<Transfer[]>([]);
 

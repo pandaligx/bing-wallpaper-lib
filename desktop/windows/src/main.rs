@@ -7,6 +7,16 @@ use nsh_platform_windows::{AppOptions, AppSource, Bundle, run_app, set_ui_sets};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    if let Some(arg) = std::env::args()
+        .nth(1)
+        .filter(|s| matches!(s.as_str(), "--daily-wallpaper" | "--scheduled-wallpaper"))
+    {
+        return if wallpaper_native::run_scheduled(&arg).is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     if !elevate::ensure_elevated() {
         return ExitCode::SUCCESS;
     }

@@ -20,12 +20,26 @@ async fn engine() -> Result<&'static Arc<DownloadEngine>> {
     ENGINE
         .get_or_try_init(|| async {
             let root = paths::app_data_dir()?;
-            let config = EngineConfig::default()
+            let mut config = EngineConfig::default()
                 .max_concurrent_downloads(4)
                 .database_path(root.join("nsh-downloads.sqlite"));
+            config.http.max_redirects = 0;
             Ok(DownloadEngine::new(config).await?)
         })
         .await
+}
+
+fn verify_download_ending(path: &Path) -> Result<()> {
+    let reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    if reader.format() == Some(image::ImageFormat::Jpeg) {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path)?;
+        let mut marker = [0u8; 2];
+        file.seek(SeekFrom::End(-2))?;
+        file.read_exact(&mut marker)?;
+        ensure!(marker == [0xff, 0xd9], "JPEG 文件未完整结束");
+    }
+    Ok(())
 }
 
 pub fn validate_image(path: &Path) -> Result<(u32, u32)> {
@@ -115,12 +129,48 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
         remote.scheme() == "https" && (host == "bing.com" || host.ends_with(".bing.com")),
         "无效的 Bing 图片地址"
     );
-    let engine = engine().await?;
     let temporary = format!("{key}.part");
+    static BING: std::sync::LazyLock<Result<reqwest::Client, reqwest::Error>> =
+        std::sync::LazyLock::new(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(25))
+                .redirect(reqwest::redirect::Policy::custom(|step| {
+                    let url = step.url();
+                    if step.previous().len() < 8
+                        && url.scheme() == "https"
+                        && url
+                            .host_str()
+                            .is_some_and(|h| h == "bing.com" || h.ends_with(".bing.com"))
+                    {
+                        step.follow()
+                    } else {
+                        step.error("Bing 图片重定向无效")
+                    }
+                }))
+                .build()
+        });
+    let client = BING.as_ref().map_err(|e| anyhow!(e.to_string()))?;
+    let url = direct_url(client, &url).await?;
+    let partial = fetch(url.as_str(), &staging, &temporary).await?;
+    tokio::task::spawn_blocking(move || {
+        let temporary = tempfile::TempPath::try_from_path(partial)?;
+        verify_download_ending(&temporary)?;
+        validate_image(&temporary)?;
+        temporary
+            .persist_noclobber(&final_path)
+            .context("无法保存下载的壁纸")?;
+        drop(lock);
+        Ok(final_path)
+    })
+    .await?
+}
+
+pub(crate) async fn fetch(url: &str, staging: &Path, temporary: &str) -> Result<PathBuf> {
+    let engine = engine().await?;
     let previous = engine.list().into_iter().find(|s| {
-        s.metadata.url.as_deref() == Some(&url)
+        s.metadata.url.as_deref() == Some(url)
             && s.metadata.save_dir == staging
-            && s.metadata.filename.as_deref() == Some(temporary.as_str())
+            && s.metadata.filename.as_deref() == Some(temporary)
             && !matches!(s.state, DownloadState::Completed)
     });
     let id = match previous {
@@ -136,10 +186,10 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
         None => {
             engine
                 .add_http(
-                    &url,
+                    url,
                     DownloadOptions::new()
-                        .save_dir(&staging)
-                        .filename(&temporary)
+                        .save_dir(staging)
+                        .filename(temporary)
                         .max_connections(16),
                 )
                 .await?
@@ -154,16 +204,20 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
             _ => tokio::time::sleep(Duration::from_millis(250)).await,
         }
     }
-    let partial = staging.join(&temporary);
-    tokio::task::spawn_blocking(move || {
-        validate_image(&partial)?;
-        tempfile::TempPath::try_from_path(partial)?
-            .persist_noclobber(&final_path)
-            .context("无法保存下载的壁纸")?;
-        drop(lock);
-        Ok(final_path)
-    })
-    .await?
+    Ok(staging.join(temporary))
+}
+
+/// Follow only the caller's redirect policy before handing the final URL to the engine.
+pub(crate) async fn direct_url(client: &reqwest::Client, url: &str) -> Result<url::Url> {
+    let mut response = client.head(url).send().await?;
+    if matches!(response.status().as_u16(), 403 | 405 | 501) {
+        response = client
+            .get(url)
+            .header(reqwest::header::RANGE, "bytes=0-0")
+            .send()
+            .await?;
+    }
+    Ok(response.error_for_status()?.url().clone())
 }
 
 pub fn progress() -> Result<String> {
@@ -194,6 +248,33 @@ pub async fn pause(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "downloads one real Bing wallpaper into an isolated temporary user directory"]
+    fn fetches_validates_and_reuses_a_real_bing_wallpaper() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = crate::archive::bundled_entries()
+            .into_iter()
+            .find(|e| e.date.to_string() == "2026-11-26")
+            .unwrap();
+        let settings = AppSettings {
+            download_dir: Some(root.path().join("images")),
+            download_resolution: DownloadResolution::OneK,
+            ..Default::default()
+        };
+        crate::runtime().unwrap().block_on(async {
+            let mut config = EngineConfig::default().database_path(root.path().join("test.sqlite"));
+            config.http.max_redirects = 0;
+            let engine = DownloadEngine::new(config).await.unwrap();
+            assert!(ENGINE.set(engine).is_ok());
+            let output = download(entry.clone(), settings.clone()).await.unwrap();
+            assert_eq!(validate_image(&output).unwrap(), (1920, 1080));
+            let stamp = output.metadata().unwrap().modified().unwrap();
+            assert_eq!(download(entry, settings).await.unwrap(), output);
+            assert_eq!(output.metadata().unwrap().modified().unwrap(), stamp);
+            ENGINE.get().unwrap().shutdown().await.unwrap();
+        });
+    }
 
     #[test]
     fn aria2_partial_and_existing_original_survive_repeated_selection() {

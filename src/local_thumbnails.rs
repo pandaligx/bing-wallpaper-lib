@@ -159,10 +159,8 @@ fn ensure_in_dir(source: &Path, expected: &SourceFingerprint, dir: &Path) -> Res
 
 /// 删除指定源文件当前版本对应的磁盘缩略图。应在删除源文件之前调用。
 pub fn remove(source: &Path) {
-    if let Ok(fingerprint) = fingerprint(source) {
-        if let Ok(path) = cache_path(&fingerprint) {
-            let _ = std::fs::remove_file(path);
-        }
+    if let Ok(path) = fingerprint(source).and_then(|fingerprint| cache_path(&fingerprint)) {
+        let _ = std::fs::remove_file(path);
     }
 }
 

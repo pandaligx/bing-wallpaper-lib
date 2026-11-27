@@ -4,14 +4,24 @@ pub mod archive;
 mod catalog;
 #[path = "../../../../src/i18n.rs"]
 pub mod i18n;
+mod local;
+#[path = "../../../../src/local_thumbnails.rs"]
+pub mod local_thumbnails;
 #[path = "../../../../src/model.rs"]
 pub mod model;
 pub mod paths;
 mod platform;
+mod preferences;
 mod region;
+mod registration;
+mod release;
+mod schedule;
+pub use schedule::run as run_scheduled;
 #[path = "../../../../src/settings.rs"]
 pub mod settings;
 mod transfer;
+#[path = "../../../../src/wallpaper_selection.rs"]
+mod wallpaper_selection;
 
 use anyhow::{Context, Result as AppResult};
 use nsh_core::prelude::*;
@@ -30,6 +40,17 @@ fn runtime() -> AppResult<&'static Runtime> {
 }
 fn message(error: anyhow::Error) -> String {
     format!("{error:#}")
+}
+
+async fn disk<T: Send + 'static>(
+    f: impl FnOnce() -> AppResult<T> + Send + 'static,
+) -> Result<T, String> {
+    runtime()
+        .map_err(message)?
+        .spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(message)
 }
 
 fn favorites() -> AppResult<BTreeSet<chrono::NaiveDate>> {
@@ -80,6 +101,19 @@ impl Library {
             .map_err(message)?
             .map_or("", |s| s.name())
             .to_owned())
+    }
+
+    /// Check this region's release and authenticate its manifest before showing a newer version.
+    pub async fn check_update(download: bool) -> Result<String, String> {
+        let source = region::selected()
+            .and_then(|s| s.context("请选择更新地区"))
+            .map_err(message)?;
+        runtime()
+            .map_err(message)?
+            .spawn(release::check(source, download))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(message)
     }
 
     /// Persist the user's automatic, mainland or international region selection.
@@ -145,5 +179,45 @@ impl Library {
     /// Enumerate monitor IDs supported by the desktop wallpaper provider.
     pub fn monitors() -> Result<String, String> {
         platform::monitors().map_err(message)
+    }
+
+    /// Return the effective preferences, including values used by the legacy Windows app.
+    pub async fn preferences() -> Result<String, String> {
+        disk(preferences::get).await
+    }
+
+    /// Atomically merge changes, backing up the original settings on the first write.
+    pub async fn configure(patch: String) -> Result<String, String> {
+        disk(move || preferences::update(&patch)).await
+    }
+
+    /// Install or remove one user-level daily or repeating task and save its preferences.
+    pub async fn configure_schedule(patch: String) -> Result<String, String> {
+        disk(move || registration::configure(&patch)).await
+    }
+
+    /// List completed images in the user's existing download folder.
+    pub async fn local_files() -> Result<String, String> {
+        disk(local::files).await
+    }
+
+    /// Read a cached thumbnail or a preview bounded to 1080p.
+    pub async fn local_image(name: String, preview: bool) -> Result<String, String> {
+        disk(move || local::image(&name, preview)).await
+    }
+
+    /// Apply a completed local image without contacting a remote server.
+    pub async fn apply_local(name: String) -> Result<(), String> {
+        disk(move || local::apply(&name)).await
+    }
+
+    /// Delete a confirmed selection and report the result for each name.
+    pub async fn delete_local(names: String) -> Result<String, String> {
+        disk(move || local::delete(&names)).await
+    }
+
+    /// Remove only generated thumbnails.
+    pub async fn clear_thumbnail_cache() -> Result<(), String> {
+        disk(local_thumbnails::clear).await
     }
 }
