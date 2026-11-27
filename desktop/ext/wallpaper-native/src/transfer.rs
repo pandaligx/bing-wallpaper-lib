@@ -1,4 +1,8 @@
-use crate::{model::WallpaperEntry, paths, settings::AppSettings};
+use crate::{
+    model::WallpaperEntry,
+    paths,
+    settings::{AppSettings, DownloadResolution},
+};
 use anyhow::{Context, Result, anyhow, ensure};
 use fs2::FileExt;
 use gosh_dl::{DownloadEngine, DownloadOptions, DownloadState, EngineConfig};
@@ -24,7 +28,7 @@ async fn engine() -> Result<&'static Arc<DownloadEngine>> {
         .await
 }
 
-pub fn validate_image(path: &Path) -> Result<()> {
+pub fn validate_image(path: &Path) -> Result<(u32, u32)> {
     let reader = image::ImageReader::open(path)?.with_guessed_format()?;
     let (width, height) = reader.into_dimensions()?;
     ensure!(
@@ -39,16 +43,52 @@ pub fn validate_image(path: &Path) -> Result<()> {
         .with_guessed_format()?
         .decode()
         .context("图片未完整下载")?;
-    Ok(())
+    Ok((width, height))
+}
+
+/// Pick a destination without replacing an existing original or an aria2 partial.
+fn destination(
+    root: &Path,
+    entry: &WallpaperEntry,
+    resolution: DownloadResolution,
+) -> Result<(PathBuf, bool)> {
+    let original = root.join(entry.file_name());
+    let suffix = match resolution {
+        DownloadResolution::Original => "uhd",
+        DownloadResolution::FourK => "4k",
+        DownloadResolution::TwoK => "2k",
+        DownloadResolution::OneK => "1k",
+    };
+    let alternate = original.with_extension(format!("{suffix}.jpg"));
+    for (path, known_resolution) in [(&original, false), (&alternate, true)] {
+        let mut marker = path.as_os_str().to_owned();
+        marker.push(".aria2");
+        if Path::new(&marker).try_exists()? {
+            continue;
+        }
+        if !path.try_exists()? {
+            if resolution == DownloadResolution::Original && !known_resolution {
+                continue;
+            }
+            return Ok((path.clone(), false));
+        }
+        if let Ok(dimensions) = validate_image(path) {
+            let matches = match resolution {
+                DownloadResolution::FourK => dimensions == (3840, 2160),
+                DownloadResolution::TwoK => dimensions == (2560, 1440),
+                DownloadResolution::OneK => dimensions == (1920, 1080),
+                DownloadResolution::Original => false,
+            };
+            if known_resolution || matches {
+                return Ok((path.clone(), true));
+            }
+        }
+    }
+    anyhow::bail!("现有文件与下载目标冲突，已保留原文件")
 }
 
 pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<PathBuf> {
     let root = settings.effective_download_dir()?;
-    let name = entry.file_name();
-    let mut final_path = root.join(&name);
-    if final_path.with_extension("jpg.aria2").is_file() {
-        final_path = final_path.with_extension("nsh.jpg");
-    }
     let staging = root.join(".bing-downloads");
     std::fs::create_dir_all(&staging)?;
     let key = format!("{}-{:?}", entry.date, settings.download_resolution);
@@ -59,6 +99,15 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
         .truncate(false)
         .open(staging.join(format!("{}.lock", entry.date)))?;
     lock.try_lock_exclusive().context("该日期已有下载任务")?;
+    let resolution = settings.download_resolution;
+    let (entry, final_path, existing) = tokio::task::spawn_blocking(move || {
+        let (path, existing) = destination(&root, &entry, resolution)?;
+        Ok::<_, anyhow::Error>((entry, path, existing))
+    })
+    .await??;
+    if existing {
+        return Ok(final_path);
+    }
     let url = entry.download_url(settings.download_resolution);
     let remote = url::Url::parse(&url)?;
     let host = remote.host_str().unwrap_or_default();
@@ -108,7 +157,9 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
     let partial = staging.join(&temporary);
     tokio::task::spawn_blocking(move || {
         validate_image(&partial)?;
-        std::fs::rename(&partial, &final_path).context("无法保存下载的壁纸")?;
+        tempfile::TempPath::try_from_path(partial)?
+            .persist_noclobber(&final_path)
+            .context("无法保存下载的壁纸")?;
         drop(lock);
         Ok(final_path)
     })
@@ -120,11 +171,46 @@ pub fn progress() -> Result<String> {
     if let Some(engine) = ENGINE.get() {
         for job in engine.list() {
             rows.push(
-                serde_json::json!({"id":job.id.to_string(), "name":job.metadata.name,
+                serde_json::json!({"id":job.id.to_string(), "date":job.metadata.filename.as_deref().and_then(|s| s.get(..10)), "name":job.metadata.name,
                 "received":job.progress.completed_size, "total":job.progress.total_size,
-                "speed":job.progress.download_speed,"state":job.state}),
+                "speed":job.progress.download_speed,"state":job.state.to_aria2_status()}),
             );
         }
     }
     Ok(serde_json::to_string(&rows)?)
+}
+
+pub async fn pause(id: &str) -> Result<()> {
+    let engine = engine().await?;
+    let job = engine
+        .list()
+        .into_iter()
+        .find(|job| job.id.to_string() == id)
+        .context("找不到下载任务")?;
+    engine.pause(job.id).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aria2_partial_and_existing_original_survive_repeated_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = crate::archive::bundled_entries().pop().unwrap();
+        let original = temp.path().join(entry.file_name());
+        std::fs::write(&original, b"previous download").unwrap();
+        std::fs::write(original.with_extension("jpg.aria2"), b"resume").unwrap();
+        let (path, ready) = destination(temp.path(), &entry, DownloadResolution::OneK).unwrap();
+        assert!(!ready);
+        assert_eq!(path, original.with_extension("1k.jpg"));
+        image::RgbImage::new(8, 8).save(&path).unwrap();
+        assert_eq!(
+            destination(temp.path(), &entry, DownloadResolution::OneK).unwrap(),
+            (path, true)
+        );
+        assert_eq!(std::fs::read(&original).unwrap(), b"previous download");
+        assert!(original.with_extension("jpg.aria2").is_file());
+    }
 }

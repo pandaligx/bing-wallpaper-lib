@@ -62,7 +62,7 @@ impl Library {
     }
 
     /// Merge the regional archive and recent official records into the local catalogue.
-    pub async fn refresh() -> Result<(), String> {
+    pub async fn refresh() -> Result<String, String> {
         let source = region::selected()
             .and_then(|s| s.context("请选择更新地区"))
             .map_err(message)?;
@@ -130,6 +130,16 @@ impl Library {
     /// Snapshot transfer states and byte counters.
     pub fn progress() -> Result<String, String> {
         transfer::progress().map_err(message)
+    }
+
+    /// Stop an active transfer, keeping its resumable bytes.
+    pub async fn pause(id: String) -> Result<(), String> {
+        runtime()
+            .map_err(message)?
+            .spawn(async move { transfer::pause(&id).await })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(message)
     }
 
     /// Enumerate monitor IDs supported by the desktop wallpaper provider.

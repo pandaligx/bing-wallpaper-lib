@@ -1,24 +1,35 @@
 import { effect, Image, List, mount, signal, Text, View, windowSize } from "nsh";
-import { Button, Dialog } from "nsh/base";
+import { Button, Dialog, Progress } from "nsh/base";
 import { Window } from "nsh/desktop";
 import { Action } from "./src/ui/Action";
 import { active, download, favorite, load, photos, refresh, saved, selected, setSource, source, status } from "./src/library";
 import type { Photo } from "./src/library";
+import { pauseTransfer, pollTransfers, transfers } from "./src/library";
 
 function Preview(props: { photo: Photo }) {
   const item = () => props.photo;
+  const transfer = () => transfers().find(t => t.date === item().date && (t.state === "active" || t.state === "waiting"));
   function step(delta: number) {
     const all = photos();
     const next = all[all.findIndex(p => p.date === item().date) + delta];
     if (next) selected.set(next);
   }
   return (
-    <Dialog open animation="fade" accessibilityLabel={item().headline ?? item().date}
+    <Dialog open animation="fade" class="m-auto rounded-xl bg-card" accessibilityLabel={item().headline ?? item().date}
       onOpenChange={({open}) => { if (!open) selected.set(null); }}>
-      <View class="gap-3 rounded-xl bg-card p-5" style={{width: Math.min(880, windowSize().width - 48)}}>
+        <View class="gap-3 rounded-xl bg-card p-5" style={{width: Math.max(248, Math.min(880, windowSize().width - 40, (windowSize().height - 220) * 16 / 9))}}>
         <Image src={item().preview} style={{width:"100%", aspectRatio:16/9, borderRadius:8}} />
         <Text class="text-xl font-semibold text-foreground">{item().headline || item().date}</Text>
         <Text class="text-muted-foreground">{item().date} · {item().description}</Text>
+        <If when={active().includes(item().date) ? transfer() : undefined}>{(value) =>
+          <View class="gap-1">
+            <Progress accessibilityLabel="下载进度" indeterminate={!value().total}
+              value={100 * value().received / (value().total || 1)}
+              trackClass="h-2 rounded bg-muted" indicatorClass="h-2 rounded bg-primary" />
+            <Text class="text-muted-foreground">{(value().received / 1048576).toFixed(1)} MiB · {Math.round(value().speed / 1024)} KiB/s</Text>
+            <Action label="暂停下载" press={() => void pauseTransfer(value().id)} />
+          </View>
+        }</If>
         <View class="flex-row flex-wrap gap-2">
           <Action label="上一张" press={() => step(-1)} />
           <Action label="下一张" press={() => step(1)} />
@@ -34,7 +45,14 @@ function Preview(props: { photo: Photo }) {
 
 function App() {
   const favoritesOnly = signal(false);
+  const regionOpen = signal(false);
   const ready = signal(false);
+  effect(() => {
+    if (!active().length) return;
+    pollTransfers();
+    const timer = setInterval(pollTransfers, 250);
+    return () => clearInterval(timer);
+  });
   void load().then(() => { ready.set(true); if (source()) void refresh(); }).catch(e => status.set(String(e)));
   effect(() => {
     if (!ready() || !source()) return;
@@ -49,13 +67,15 @@ function App() {
         <View class="flex-row gap-2">
           <Action label="全部壁纸" press={() => favoritesOnly.set(false)} />
           <Action label="我的收藏" press={() => favoritesOnly.set(true)} />
+          <Action label={source() || "更新来源"} press={() => regionOpen.set(!regionOpen())} />
         </View>
       </View>
-      <If when={ready() && !source()}>
-        <View class="flex-row items-center gap-2">
+      <If when={ready() && (regionOpen() || !source())}>
+        <View class="flex-row flex-wrap items-center gap-2">
           <Text class="text-foreground">选择更新地区</Text>
-          <Action label="中国大陆 · GitCode" press={() => setSource("cn")} />
-          <Action label="国际 · GitHub" press={() => setSource("international")} />
+          <Action label="跟随系统地区" press={() => { setSource("auto"); regionOpen.set(false); }} />
+          <Action label="中国大陆 · GitCode" press={() => { setSource("cn"); regionOpen.set(false); }} />
+          <Action label="国际 · GitHub" press={() => { setSource("international"); regionOpen.set(false); }} />
         </View>
       </If>
       <Text class="text-muted-foreground">{ready() ? `${entries().length} 张壁纸` : "正在读取本地壁纸库"}</Text>
@@ -78,4 +98,4 @@ function App() {
   );
 }
 
-mount(() => <Window id="main">{App}</Window>);
+mount(() => <Window id="main" title="必应每日壁纸库">{App}</Window>);

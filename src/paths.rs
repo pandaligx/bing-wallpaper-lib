@@ -28,6 +28,10 @@ pub fn default_wallpapers_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+pub fn config_dir() -> Result<PathBuf> {
+    app_data_dir()
+}
+
 /// 当前生效的壁纸下载目录：若用户在设置中指定了自定义路径则使用该路径，
 /// 否则回退到默认目录（见 [`crate::settings::AppSettings::effective_download_dir`]）。
 pub fn wallpapers_dir() -> Result<PathBuf> {

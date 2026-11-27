@@ -41,7 +41,12 @@ async fn text(client: &reqwest::Client, url: &str) -> Result<String> {
     String::from_utf8(data).context("归档不是 UTF-8")
 }
 
-pub async fn refresh(source: Source) -> Result<()> {
+pub async fn refresh(source: Source) -> Result<String> {
+    static REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _lock = REFRESH.lock().await;
+    if crate::region::selected()? != Some(source) {
+        return Ok(String::new());
+    }
     let client = reqwest::Client::builder()
         .user_agent("BingWallpaperLib/0.3")
         .timeout(std::time::Duration::from_secs(18))
@@ -57,10 +62,10 @@ pub async fn refresh(source: Source) -> Result<()> {
                 entries = archive::merge_entries_prefer_primary(data, entries);
                 updated = true;
             } else {
-                errors.push("归档为空".into());
+                errors.push(format!("{} 归档为空", source.name()));
             }
         }
-        Err(e) => errors.push(e.to_string()),
+        Err(e) => errors.push(format!("{} 归档：{e}", source.name())),
     }
     for host in ["cn.bing.com", "www.bing.com"] {
         let mut recent = Vec::new();
@@ -73,7 +78,7 @@ pub async fn refresh(source: Source) -> Result<()> {
                 .and_then(|s| archive::parse_bing_window(&s))
             {
                 Ok(rows) => recent.extend(rows),
-                Err(e) => errors.push(e.to_string()),
+                Err(e) => errors.push(format!("{host} 最近记录：{e}")),
             }
         }
         if !recent.is_empty() {
@@ -84,7 +89,10 @@ pub async fn refresh(source: Source) -> Result<()> {
     }
     ensure!(updated, "{}", errors.join(" / "));
     let entries = archive::apply_bundled_corrections(entries);
+    if crate::region::selected()? != Some(source) {
+        return Ok(String::new());
+    }
     paths::write_atomic(&paths::cache_file()?, &serde_json::to_vec(&entries)?)?;
     *CATALOG.write().map_err(|_| anyhow!("壁纸库不可用"))? = entries;
-    Ok(())
+    Ok(errors.join(" / "))
 }

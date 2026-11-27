@@ -15,6 +15,17 @@ export const selected = signal<Photo | null>(null);
 export const status = signal("");
 export const source = signal("");
 export const active = signal<string[]>([]);
+interface Transfer { id: string; date: string; received: number; total: number | null; speed: number; state: string }
+export const transfers = signal<Transfer[]>([]);
+
+export function pollTransfers() {
+  try { transfers.set(JSON.parse(Library.progress())); }
+  catch (error) { status.set(String(error)); }
+}
+export async function pauseTransfer(id: string) {
+  try { await Library.pause(id); }
+  catch (error) { status.set(String(error)); }
+}
 
 export async function load() {
   photos.set(JSON.parse(await Library.catalog()));
@@ -24,8 +35,9 @@ export async function load() {
 
 export async function refresh() {
   try {
-    await Library.refresh();
+    const warnings = await Library.refresh();
     photos.set(JSON.parse(await Library.catalog()));
+    if (warnings) status.set(warnings);
   } catch (error) { status.set(String(error)); }
 }
 
@@ -33,7 +45,7 @@ export function setSource(value: string) {
   try {
     Library.setSource(value);
     source.set(Library.source());
-    void refresh();
+    if (source()) void refresh();
   } catch (error) { status.set(String(error)); }
 }
 

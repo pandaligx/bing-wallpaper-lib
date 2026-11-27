@@ -247,7 +247,7 @@ impl AppSettings {
     }
 
     fn file_path() -> Result<PathBuf> {
-        Ok(crate::paths::app_data_dir()?.join("settings.json"))
+        Ok(crate::paths::config_dir()?.join("settings.json"))
     }
 
     /// 从磁盘加载设置；文件不存在或解析失败时返回默认值（不视为错误）。

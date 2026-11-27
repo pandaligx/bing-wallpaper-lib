@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: nsh-desktop-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   package:
@@ -31,6 +31,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       NSH_ARCHIVE: ${{ matrix.archive }}
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/nsh-cargo
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
       APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           nsh check
-          nsh test
+          nsh test App.test.tsx
       - name: Package portable Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -99,3 +103,74 @@ jobs:
           name: desktop-${{ matrix.target }}
           path: target/nsh-release/*
           if-no-files-found: error
+      - name: Exercise the native window and apply a Bing wallpaper
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/nsh-validation
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get install -y gsettings-desktop-schemas
+            xvfb-run -a dbus-run-session -- bash -euc '
+              export XDG_CURRENT_DESKTOP=GNOME
+              nsh test desktop/App.tsx --target linux < scripts/test-nsh-desktop.mjs
+              for key in picture-uri picture-uri-dark; do
+                value=$(gsettings get org.gnome.desktop.background "$key")
+                [[ "$value" == *BingWallpaperLib/Wallpapers/*.jpg* ]]
+              done'
+          else
+            nsh test desktop/App.tsx --target ${{ matrix.target }} < scripts/test-nsh-desktop.mjs
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-window-${{ matrix.target }}
+          path: target/nsh-validation/*.png
+          if-no-files-found: ignore
+      - name: Verify Plasma wallpaper on a running desktop
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends plasma-desktop plasma-workspace kwin-x11 kactivitymanagerd
+          xvfb-run -a dbus-run-session -- bash scripts/test-nsh-plasma.sh
+      - uses: actions/upload-artifact@v4
+        if: success() && runner.os == 'Linux'
+        with:
+          name: native-window-kde
+          path: target/nsh-validation/*.png
+          if-no-files-found: error
+  open-universal-package:
+    needs: package
+    if: always() && !cancelled()
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-macos
+          path: package
+      - name: Open the same packaged application on the native architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/BingDMG" package/*.dmg
+          trap 'hdiutil detach "$RUNNER_TEMP/BingDMG" -quiet || true' EXIT
+          ditto "$RUNNER_TEMP/BingDMG/BingWallpaperLib.app" "$RUNNER_TEMP/BingWallpaperLib.app"
+          binary="$RUNNER_TEMP/BingWallpaperLib.app/Contents/MacOS/BingWallpaperLib"
+          lipo -verify_arch arm64 x86_64 "$binary"
+          "$binary" > "$RUNNER_TEMP/window.log" 2>&1 &
+          app_pid=$!
+          swift - "$app_pid" <<'SWIFT'
+          import CoreGraphics
+          import Foundation
+          let pid = Int(CommandLine.arguments[1])!
+          for _ in 0..<90 {
+            let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+            if windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }) { exit(0) }
+            Thread.sleep(forTimeInterval: 0.5)
+          }
+          exit(1)
+          SWIFT
+          kill "$app_pid"
