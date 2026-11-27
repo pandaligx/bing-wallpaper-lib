@@ -37,6 +37,8 @@ node scripts/sign-desktop-release.mjs target/nsh-release 0.3.0 /path/to/test-ed2
 
 For a production release, omit the final tag argument and use the matching production key. The verifier requires the exact public release channel on both sites and rejects redirects outside the selected provider.
 
+After publishing the test envelope, run `node scripts/test-public-update.mjs v0.3.0-rc.1 /path/to/test-public-key.txt`. This creates a private predecessor build that selects only that prerelease, uses the native updater to download from each chosen site, and authenticates the staged file again on the installation volume.
+
 To reproduce the download performance comparison, build the `download_bench` example in release mode and run `node scripts/bench-download.mjs <benchmark-binary> <aria2c> [https-url]`. Omitting the URL starts the local per-connection-limited Range server. Each mode runs five times and all three modes must produce identical hashes.
 
 On Windows, `pwsh ./scripts/bench-month.ps1 -Engine <benchmark-binary> -Aria <aria2c> -Month 2026-02` measures a full month, including peak working set and each file's digest. The migration test runs with copies of settings, favorites, unfinished transfers and images under a temporary profile. From the repository root, run `node scripts/test-nsh-migration.mjs` with NSH on PATH or its absolute path in `NSH_BIN`.
@@ -44,6 +46,8 @@ On Windows, `pwsh ./scripts/bench-month.ps1 -Engine <benchmark-binary> -Aria <ar
 `pwsh ./scripts/test-windows-task-registration.ps1` registers two uniquely named Task Scheduler entries, checks their triggers, moves the test executable, runs both actions and removes the entries. `node scripts/rehearse-windows-update.mjs` builds private Windows test versions for a signed upgrade and rollback. Use the resulting executable with `scripts/test-windows-resident.ps1 -RehearsalExe <path>` to exercise background launch, close to tray and single-instance activation. The AppImage upgrade rehearsal runs in a disposable XDG desktop session in CI.
 
 For a Developer ID build, set `MACOS_DEVELOPER_ID` to the signing identity and `MACOS_NOTARY_PROFILE` to the local notarytool keychain profile. The packaging script signs the app and helper, notarizes and staples the app, then signs, notarizes and staples the DMG.
+
+Run `node scripts/test-macos-update-rejection.mjs /path/to/development.dmg` on a Mac to check that a genuine signed manifest cannot install an ad-hoc release. The test verifies the original bundle seal, main binary and native window after rejection. It uses a unique directory in Applications on a hosted runner and a temporary directory on a developer machine.
 
 Linux packaging also needs the Ubuntu/Debian `fonts-noto-cjk` package or an extracted package tree in `BING_NOTO_CJK_ROOT`. The AppImage carries the regular font collection and its license so Chinese archive titles, Japanese and Korean work on a minimal desktop.
 

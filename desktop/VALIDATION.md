@@ -4,6 +4,9 @@
 
 | 0.2.37 用户操作 | NSH 验证方式 | 本机结果 |
 | --- | --- | --- |
+| 保留历史日期、每天的标题和勘误 | 旧版和 NSH 共用 `src/archive.rs`。回归覆盖同一天由 Bing 官方补强、同 OHR 跨日保留归档日期、缺失日期补回，以及纠错覆盖已缓存的旧 URL | 通过 |
+| 下载名称、分辨率与现有文件 | 两个宿主共用 `src/model.rs` 的命名和地址转换。用例覆盖中英文多段地点、版权分隔符、Windows 非法字符、长标题、UHD、4K 与 1080p 预览 | 通过 |
+| 本地缩略图与收藏随机规则 | 两个宿主共用 `src/local_thumbnails.rs` 与 `src/wallpaper_selection.rs`。用例覆盖原图变化时重建、坏缩略图清理、每日首次最新、仅从收藏选取和空收藏回退 | 通过 |
 | 打开首页、切图、返回、选旧月份、切换收藏、本地图库、下载中心及设置 | `desktop/App.test.tsx` 使用实际 Rust 扩展和 Windows 原生窗口 | 通过 |
 | 连续滚动和窗口缩放 | `desktop/Archive.headless.test.tsx` 注入 10,000 个独立日期并检查可见视图数 | 通过 |
 | 卡片直接设为桌面、下载和收藏，宽屏侧栏折叠 | `desktop/Archive.headless.test.tsx` 检查每次操作交给 Rust 的日期和动作，检查本地图片尺寸、快捷删除和取消确认。独立旧配置另行验证了点击卡片取消收藏会写回磁盘 | 通过 |
@@ -14,6 +17,7 @@
 | 打开大图后使用键盘切图、关闭并重新打开原卡片 | Windows 前台原生窗口验证方向键 → 切至上一天、← 切回、Esc 返回、Enter 再次打开 | 通过 |
 | 手动调整每日任务时间 | `registration::tests::manual_edit_skips_only_a_time_that_has_already_passed` 覆盖计划时刻之前、正好同一分钟和计划时刻之后 | 通过 |
 | Windows 注册任务、移动便携版、实际触发执行 | `scripts/test-windows-task-registration.ps1` 用唯一测试名称注册每日计划和 1439 分钟的登录周期，读回触发器，迁移 exe 后通过任务计划程序分别触发两个无界面动作，最后删除测试任务 | 通过 |
+| macOS 和 Linux 注册定时任务 | 托管桌面由 Rust 创建每日和周期任务，通过 launchd、用户级 systemd 分别触发，记录打包后的无界面入口实际收到的参数，最后移除注册 | 通过 |
 | Windows 后台启动、单实例、关闭到托盘再唤回 | `scripts/test-windows-resident.ps1` 在私有测试实例上等待主窗口隐藏，两次重复启动分别唤回同一进程，中间对可见窗口发出正常关闭请求 | 通过 |
 | 部分显示器断开时打开选屏菜单 | Windows 11 的 COM 枚举同时返回了可用屏幕和无有效矩形的设备。680 点宽的俄语深色设置页列出当前连接的 2560×1440 屏幕 | 通过 |
 | 断网启动单文件 exe | `scripts/test-nsh-portable.ps1 -Offline` 将 exe 单独复制到空目录，以仅匹配该副本的防火墙规则阻止出站联网，再通过 Windows UI Automation 读取多张照片的日期 | Windows 11 Build 26300 通过 |
@@ -56,8 +60,30 @@ Windows 11 菜单也使用独立旧配置保存了一个当前不存在的设备
 
 ## 平台和发布边界
 
-GitHub Actions 生成开发测试包，Windows、macOS 通用 DMG 与 Linux AppImage 分别上传。窗口测试和已生成安装包的启动测试记录在工作流中。Mac Developer ID 公证、实际多屏、睡眠恢复和系统升级回滚需要对应环境验证。[原型 CI](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml)
+以下文件取自同一提交 `d40afabd4488512d1bbd3d3667e48d99925682d9`。Windows、macOS、Linux 三个原生任务，以及在 Intel 和 Apple Silicon 上分别挂载同一 DMG、打开应用窗口的两项检查均通过。Windows 原生核心通过 57 项默认测试，macOS 和 Linux 各通过 55 项。每端另有原生窗口、迁移、严格 Clippy 和 NSH 交互测试。从构建服务取回产物后逐个核对了归档摘要，再对解包后的最终文件计算 SHA-256。[对应构建](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/45978901111)
+
+| 安装包 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `BingWallpaperLib-v0.3.0-windows-x64.exe` | 45,545,984 | `2dc013158d7a6874359480ef52bf4fa3c2ac3e5d8d0b101a0b4241bbbd867493` |
+| `BingWallpaperLib-v0.3.0-macos-universal.dmg` | 57,494,829 | `322ca14c5436a2adb6cc11ba88d839566375c393b07bb35f3d65877cfa032380` |
+| `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | 42,383,864 | `8060c5319aeff98515fa66e015d21729885253d45d1c733006c423afe0c8c9db` |
+
+上一轮在 Linux 英文桌面的截图中发现中文元数据显示成方框。此 AppImage 带有 Noto Sans CJK 和字体许可。Ubuntu 从已生成的 AppImage 提取字体配置，经 Fontconfig 定位到包内字体，再由 Pango 实际排版中日韩文字，缺失字形计数为零。此版 Windows exe 在 Build 26300 上重新通过断网单文件测试，导入表只有系统 DLL。
+
+| 原生窗口 | 首页（浅色） | 大图（深色） |
+| --- | --- | --- |
+| Windows | [首页](../docs/nsh-v0.3.0-rc.1/windows-light.png) · [简体中文首页](../docs/nsh-v0.3.0-rc.1/windows-zh.png) | [预览](../docs/nsh-v0.3.0-rc.1/windows-dark-preview.png) |
+| macOS | [首页](../docs/nsh-v0.3.0-rc.1/macos-light.png) | [预览](../docs/nsh-v0.3.0-rc.1/macos-dark-preview.png) |
+| GNOME / KDE Plasma | [首页](../docs/nsh-v0.3.0-rc.1/linux-light.png) | [预览](../docs/nsh-v0.3.0-rc.1/linux-dark-preview.png) |
+
+两个 Linux 桌面各自生成了原始截图，同一界面的 PNG 摘要相同。macOS 托管屏幕的截图右边缘受显示区域限制。Windows 中文首页使用同一提交，在本地原生窗口连接 GitCode 刷新后截图。
+
+Windows 11 验证了已签测试清单驱动的便携升级和回滚。Ubuntu 的独立 XDG 用户目录中，真实 AppImage 完成了一次签名升级并打开新版窗口。再用签名正确但无法启动的包触发失败，原路径上的文件恢复到旧版 SHA-256。GNOME 同时读回浅色与深色桌面的图片地址，KDE Plasma 从当前活动的桌面配置读回实际设置的图片。[原生验收与回滚日志](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/45974101767)
+
+macOS 15 在「应用程序」下的独立测试目录中，还演练了系统签名拒绝。用有效的 Ed25519 测试清单提交这次已发布的真实开发 DMG，安装器在替换前因系统签名检查拒绝该包。原应用的资源签名和可执行文件摘要保持一致，原窗口再次成功打开。[macOS 更新拒绝演练](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/45987806774)
+
+实体混合 DPI 双屏、实际睡眠唤醒、干净 Windows 10 1809 及使用 Developer ID 公证的 macOS 安装与升级仍待验证。Windows 11 实测了当前显示器和断开设备的区分。定时逻辑另有跨休眠时长、遗漏多个周期后仅补一次的时钟用例。
 
 国内公开仓库 `gcw_qWIjmve7/bing-wallpaper-lib` 已建立并启用自动拉取。两端 main 的归档都有 3,000 个日期，截止 2026-11-27，字节数均为 1,785,998，SHA-256 均为 `919eb7e779019aca2f11030c994e2fd7e37e3b490eb521685756e33a121b6fec`。从 GitCode 的匿名 Release API 返回的附件中，按完整文件名筛出旧版 exe，再经 file-cdn.gitcode.com 读回，23,737,856 字节与 GitHub 原件一致。[国内旧版下载](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37)
 
-双站发布签名前会匿名下载并核对三个产物；测试签名使用临时密钥。发布端需要配置正式公钥、签名密钥以及 GitCode 仓库写权限。
+GitHub 的三个公开 RC1 附件已经匿名下载，长度及摘要均与上表一致。双站演练按文件名筛选三端附件，两站六次匿名下载均匹配后才生成测试用的 `signed-release.json`。每站附带的 `test-public-key.txt` 用于复核本次 Ed25519 签名。可用 `scripts/test-public-update.mjs` 通过原生更新服务重跑两端下载、验签和暂存文件校验。正式版由发布方配置独立的公钥、签名密钥和 GitCode 仓库写权限。[GitHub 测试发行页](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.3.0-rc.1) · [GitCode 测试发行页](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.3.0-rc.1)

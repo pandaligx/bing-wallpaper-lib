@@ -12,9 +12,13 @@
 | macOS Intel 和 Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 及以上。将应用复制到「应用程序」。开发包使用临时签名。 |
 | Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | 宿主需安装 GTK 4.14+ 和 WebKitGTK 6.0，首次启动前赋予 AppImage 执行权限。 |
 
-开发包可从重写分支已完成的 CI 构建下载。较早的 Windows 系统可以继续使用 0.2.37。[开发构建](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml) · [国内旧版 0.2.37](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [海外旧版 0.2.37](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37) · [验收记录](desktop/VALIDATION.md)
+在 **v0.3.0 RC1** 测试发行页按平台选择附件。测试包内显示的版本为 0.3.0，正式版发布后请手动替换。[国内 GitCode 测试版](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.3.0-rc.1) · [海外 GitHub 测试版](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.3.0-rc.1) · [验收记录与 SHA-256](desktop/VALIDATION.md)
+
+较早的 Windows 系统可以继续使用 0.2.37。[国内旧版下载](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [海外旧版下载](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37)
 
 ## 使用壁纸库
+
+![Windows 上的中文壁纸库，首页卡片可直接设置壁纸、下载或收藏](docs/nsh-v0.3.0-rc.1/windows-zh.png)
 
 - 首页展示最新一张壁纸，向下滚动可连续浏览历史照片。侧栏展开年份后可选月份。程序先读离线归档，每 30 分钟刷新。大图预览使用 1080p，支持左右方向键和 Esc。
 - 可直接在画廊卡片上收藏、下载或设置壁纸。收藏以日期保存。下载和设置壁纸可选原图 UHD、4K、2K 或 1K。下载中心提供全部历史、当前月份、收藏和日期范围四种入口，显示速度、进度、已复用文件和失败原因。

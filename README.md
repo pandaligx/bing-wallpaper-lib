@@ -12,9 +12,13 @@ Browse daily Bing photography by year and month, keep favorites, and set a photo
 | macOS Intel and Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 or newer. Copy the app to Applications. Development builds use ad-hoc signing. |
 | Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | GTK 4.14+ and WebKitGTK 6.0. Make the AppImage executable before starting it. |
 
-Select a completed build of the rewrite branch to download its artifacts. Users of older Windows systems can still obtain version 0.2.37. [Development builds](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml) · [Windows 0.2.37 on GitCode](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [Windows 0.2.37 on GitHub](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37) · [Validation notes](desktop/VALIDATION.md)
+Choose the attachment for your platform in the **v0.3.0 RC1** test release. The build identifies itself as 0.3.0. Replace it manually when the production release is ready. [GitHub test release](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.3.0-rc.1) · [GitCode test release for mainland China](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.3.0-rc.1) · [Validation notes and checksums](desktop/VALIDATION.md)
+
+Windows 0.2.37 is available for older systems. [GitCode](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [GitHub](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37)
 
 ## Using the library
+
+![Desktop library with the latest photo, archive and per-photo actions](docs/nsh-v0.3.0-rc.1/linux-light.png)
 
 - Open the latest photo or expand a year to visit a month. The offline catalog stays available while the application checks for new entries every 30 minutes. Previews use 1080p and support arrow keys and Escape.
 - Favorite a date, or choose original UHD, 4K, 2K or 1K for saving and setting wallpaper. The download center handles all history, one month, favorites or a calendar range. It shows progress, transfer speed, reused files and retryable failures.
