@@ -1,7 +1,7 @@
 use crate::paths;
 use anyhow::{Context, Result, ensure};
 
-const GITCODE_ARCHIVE: &str = "https://raw.gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/raw/main/assets/data/zxyongyo-bing-wallpaper.json";
+const GITCODE_ARCHIVE: &str = "https://api.gitcode.com/api/v5/repos/gcw_qWIjmve7/bing-wallpaper-lib/raw/assets/data/zxyongyo-bing-wallpaper.json?ref=main";
 const GITHUB_ARCHIVE: &str = "https://raw.githubusercontent.com/pandaligx/bing-wallpaper-lib/main/assets/data/zxyongyo-bing-wallpaper.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

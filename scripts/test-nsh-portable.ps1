@@ -1,6 +1,13 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Exe,[switch]$Offline)
 $ErrorActionPreference='Stop'
+$data = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'BingWallpaperLib'
+$settingsPath = Join-Path $data 'settings.json'
+$settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -Raw -LiteralPath $settingsPath | ConvertFrom-Json }
+$startup = [Microsoft.Win32.Registry]::GetValue('HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run','BingWallpaperLib',$null)
+if ($startup -or $settings.auto_wallpaper_enabled -or $settings.periodic_task_enabled) {
+    throw 'An active wallpaper schedule or startup entry would adopt the test executable path. Run the portable test in a disposable Windows profile.'
+}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $root=Join-Path (Split-Path $PSScriptRoot -Parent) 'target/nsh-validation'

@@ -65,6 +65,9 @@ for (const path of [
   await cp(join(root, path), join(source, path), { recursive: true });
 }
 await replace("desktop/windows/src/main.rs", "cn.lgxng.bingwallpaperlib", id);
+await replace("src/startup.rs", 'const VALUE_NAME: &str = "BingWallpaperLib"', 'const VALUE_NAME: &str = "' + id + '"');
+await replace("src/task_scheduler.rs", "BingWallpaperLibPeriodicWallpaper", id + ".periodic");
+await replace("desktop/ext/wallpaper-native/src/registration.rs", "BingWallpaperLibDailyWallpaper", id + ".daily");
 await mkdir(staging, { recursive: true });
 await writeFile(join(profile, "update-region"), "international");
 const target = join(root, "target", "nsh-cargo"),
