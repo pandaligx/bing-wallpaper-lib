@@ -13,6 +13,7 @@ mkdir -p "$profile" "$RUNNER_TEMP/gnome-evidence"
 dbus-update-activation-environment DISPLAY XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR
 printf '%s\n' '{"auto_wallpaper_enabled":true,"auto_wallpaper_hour":0,"auto_wallpaper_minute":0,"download_resolution":"one_k"}' > "$profile/settings.json"
 gsettings set org.gnome.desktop.interface enable-animations false
+gsettings set org.gnome.desktop.notifications show-banners false
 gsettings set org.gnome.desktop.background picture-uri "''"
 gsettings set org.gnome.desktop.background picture-uri-dark "''"
 gsettings set org.gnome.desktop.background primary-color "'#202020'"
@@ -47,6 +48,14 @@ with Image.open(photo) as source:
     source.load()
     print("Applied image:", source.size)
 before, after = [Image.open(folder / (name + ".png")).convert("RGB") for name in ("before", "after")]
+assert before.size == after.size
+# Nested Mutter may use an 800x600 output inside a larger Xvfb framebuffer.
+# The nonblack shell surface in the initial capture excludes the inactive host margins.
+bounds = before.getbbox()
+assert bounds and bounds[2] - bounds[0] >= 640 and bounds[3] - bounds[1] >= 480, bounds
+before, after = before.crop(bounds), after.crop(bounds)
+before.save(folder / "desktop-before.png")
+after.save(folder / "desktop-after.png")
 diff = ImageChops.difference(before, after).resize((160, 100))
 changed = sum(max(pixel) > 20 for pixel in diff.getdata()) / 16000
 assert changed > 0.20, f"Compositor background did not visibly change: {changed:.1%}"
