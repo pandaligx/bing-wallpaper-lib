@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "packages": [
+    {
+      "name": "wallpaper-native",
+      "version": "0.3.0",
+      "path": "ext/wallpaper-native",
+      "module": "wallpaper-native"
+    }
+  ]
+}

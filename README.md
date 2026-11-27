@@ -2,6 +2,8 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+The NSH desktop rewrite for Windows x64, macOS Universal and Linux x64 is under development on this branch. Build instructions and the native test matrix are in [desktop/README.md](desktop/README.md). The release links below refer to the existing Windows application.
+
 <p align="center">
   <img src="docs/screenshot-home.png" alt="Bing Daily Wallpaper Library home screen" width="820" />
 </p>

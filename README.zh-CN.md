@@ -2,6 +2,8 @@
 
 [English](README.md) | **简体中文**
 
+此分支正在开发 Windows x64、macOS 通用版与 Linux x64 的 NSH 桌面应用。构建及测试入口见[桌面开发说明](desktop/README.md)。下方发行信息对应已发布的 Windows 旧版。
+
 <p align="center">
   <img src="docs/screenshot-home.png" alt="必应每日壁纸库首页" width="820" />
 </p>

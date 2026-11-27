@@ -1,0 +1,101 @@
+name: NSH desktop packages
+on:
+  workflow_dispatch:
+  push:
+    branches: [rewrite/nsh-desktop]
+  pull_request:
+    paths: ['desktop/**', 'src/**', 'assets/data/**', '.github/workflows/nsh-desktop.yml', 'scripts/build-nsh-windows.ps1']
+permissions:
+  contents: read
+concurrency:
+  group: nsh-desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: windows
+            archive: nsh-windows-x86_64.zip
+          - runner: macos-15
+            target: macos
+            archive: nsh-macos-arm64.tar.gz
+          - runner: ubuntu-24.04
+            target: linux
+            archive: nsh-linux-x86_64.tar.gz
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NSH_ARCHIVE: ${{ matrix.archive }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          gh release download v0.7.2 --repo longbridge/nsh --pattern "$NSH_ARCHIVE" --pattern "$NSH_ARCHIVE.sha256"
+          if command -v sha256sum >/dev/null; then sha256sum -c "$NSH_ARCHIVE.sha256"; else shasum -a 256 -c "$NSH_ARCHIVE.sha256"; fi
+          if [[ "$NSH_ARCHIVE" == *.zip ]]; then unzip -qo "$NSH_ARCHIVE"; else tar -xf "$NSH_ARCHIVE"; fi
+          echo "$RUNNER_TEMP/nsh/bin" >> "$GITHUB_PATH"
+      - name: Prepare Linux native build
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev libxdo-dev libfuse2t64 xvfb dbus-x11
+          gh release download continuous --repo AppImage/appimagetool --pattern appimagetool-x86_64.AppImage --dir "$RUNNER_TEMP"
+          chmod +x "$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          echo "NSH_APPIMAGETOOL=$RUNNER_TEMP/appimagetool-x86_64.AppImage" >> "$GITHUB_ENV"
+      - name: Include Intel in the macOS universal package
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin
+      - name: Test native extension
+        run: cargo test --locked --manifest-path desktop/ext/wallpaper-native/Cargo.toml
+      - name: Check native extension
+        run: cargo clippy --locked --manifest-path desktop/ext/wallpaper-native/Cargo.toml --all-targets -- -D warnings
+      - name: Check and test TSX
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          nsh check
+          nsh test
+      - name: Package portable Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-nsh-windows.ps1 -SkipCheck
+      - name: Package macOS application and DMG
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          nsh package --target macos --arch universal
+          app=".nsh/out/BingWallpaperLib.app"
+          binary="$app/Contents/MacOS/BingWallpaperLib"
+          lipo -verify_arch arm64 x86_64 "$binary"
+          mkdir -p ../target/nsh-release
+          version="$(node -p "require('./nsh.json').version")"
+          hdiutil create -volname BingWallpaperLib -srcfolder "$app" -format UDZO "../target/nsh-release/BingWallpaperLib-v$version-macos-universal.dmg"
+      - name: Package Linux AppImage
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          nsh package --target linux --format appimage
+          mkdir -p ../target/nsh-release
+          version="$(node -p "require('./nsh.json').version")"
+          cp .nsh/out/BingWallpaperLib-x86_64.AppImage "../target/nsh-release/BingWallpaperLib-v$version-linux-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: target/nsh-release/*
+          if-no-files-found: error

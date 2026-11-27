@@ -1,0 +1,43 @@
+name: Mirror source and tags to GitCode
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: mirror-gitcode
+  cancel-in-progress: false
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Push the verified main branch and tags
+        shell: bash
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          GITCODE_USERNAME: gcw_qWIjmve7
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          : "${GITCODE_TOKEN:?Configure the GitCode repository write token}"
+          askpass="$(mktemp)"
+          trap 'rm -f "$askpass"' EXIT
+          cat > "$askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' "$GITCODE_USERNAME" ;;
+            *Password*) printf '%s\n' "$GITCODE_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          ASKPASS
+          chmod 700 "$askpass"
+          export GIT_ASKPASS="$askpass"
+          git push https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib.git HEAD:main --tags

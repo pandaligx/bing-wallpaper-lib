@@ -1,0 +1,572 @@
+//! Shared archive parsing, merge rules and legacy cache format.
+use crate::model::WallpaperEntry;
+use crate::paths::cache_file;
+use anyhow::{Context, Result};
+use chrono::{Days, NaiveDate};
+use serde::Deserialize;
+use std::collections::HashSet;
+
+pub fn parse_bing_window(text: &str) -> Result<Vec<WallpaperEntry>> {
+    let response: BingArchiveResponse =
+        serde_json::from_str(text).context("解析 Bing 官方壁纸 JSON 失败")?;
+    Ok(response
+        .images
+        .into_iter()
+        .filter_map(bing_image_to_entry)
+        .collect())
+}
+
+const BUNDLED_ZXYONGYO_ARCHIVE: &str = include_str!("../assets/data/zxyongyo-bing-wallpaper.json");
+const BUNDLED_ZXYONGYO_CORRECTIONS: &str =
+    include_str!("../assets/data/zxyongyo-bing-wallpaper-corrections.json");
+
+/// 去重：同一天可能存在两条记录（历史上偶发现象），保留第一条（列表中最靠前的一条）。
+pub fn dedup_by_date(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
+    let mut seen: HashSet<NaiveDate> = HashSet::new();
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if seen.insert(entry.date) {
+            result.push(entry);
+        }
+    }
+    result
+}
+
+/// 合并 Bing 官方近期列表与 zxyongyo 归档。
+///
+/// 同一日期优先使用官方记录；同一图片被两边标成不同日期时，以归档日期为准。
+/// Bing 官方接口的日期边界偶尔会比中国区实际展示日期早一天，不能因此删除归档中
+/// 日期正确的记录。
+pub fn merge_entries_prefer_primary(
+    primary: Vec<WallpaperEntry>,
+    fallback: Vec<WallpaperEntry>,
+) -> Vec<WallpaperEntry> {
+    let mut entries = dedup_by_date(fallback);
+
+    for entry in dedup_by_date(primary) {
+        let same_image_index = image_key(&entry).and_then(|key| {
+            entries
+                .iter()
+                .position(|existing| image_key(existing).as_deref() == Some(key.as_str()))
+        });
+
+        if let Some(index) = same_image_index {
+            if entries[index].date == entry.date {
+                entries[index] = entry;
+            }
+            continue;
+        }
+
+        if let Some(index) = entries
+            .iter()
+            .position(|existing| existing.date == entry.date)
+        {
+            entries[index] = entry;
+        } else {
+            entries.push(entry);
+        }
+    }
+
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.date));
+    entries
+}
+
+fn image_key(entry: &WallpaperEntry) -> Option<String> {
+    let start = entry.url.find("OHR.")? + "OHR.".len();
+    let rest = &entry.url[start..];
+    let end = rest.find(['_', '.', '&', '?']).unwrap_or(rest.len());
+    let key = rest[..end].trim();
+    (!key.is_empty()).then(|| key.to_string())
+}
+
+/// 读取随 exe 内置的壁纸列表快照（已按日期倒序）。
+pub fn bundled_entries() -> Vec<WallpaperEntry> {
+    parse_zxyongyo_archive(BUNDLED_ZXYONGYO_ARCHIVE)
+}
+
+/// 用经过交叉核验的纠错记录覆盖缓存或远程归档中的同日错误数据。
+pub fn apply_bundled_corrections(entries: Vec<WallpaperEntry>) -> Vec<WallpaperEntry> {
+    let corrections = parse_zxyongyo_archive(BUNDLED_ZXYONGYO_CORRECTIONS);
+    merge_entries_prefer_primary(corrections, entries)
+}
+
+#[derive(Debug, Deserialize)]
+struct BingArchiveResponse {
+    images: Vec<BingArchiveImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BingArchiveImage {
+    startdate: String,
+    #[serde(default)]
+    enddate: Option<String>,
+    urlbase: String,
+    copyright: String,
+    #[serde(default)]
+    copyrightlink: Option<String>,
+    #[serde(default)]
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZxyongyoArchiveResponse {
+    images: Vec<ZxyongyoArchiveImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ZxyongyoArchiveImage {
+    date: String,
+    title: String,
+    copyright: String,
+    url_4k: String,
+}
+
+fn bing_image_to_entry(image: BingArchiveImage) -> Option<WallpaperEntry> {
+    let start_date = NaiveDate::parse_from_str(&image.startdate, "%Y%m%d").ok()?;
+    let date = image
+        .enddate
+        .as_deref()
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y%m%d").ok())
+        .unwrap_or_else(|| {
+            start_date
+                .checked_add_days(Days::new(1))
+                .unwrap_or(start_date)
+        });
+    Some(WallpaperEntry {
+        date,
+        headline: non_empty_string(image.title),
+        title: image.copyright.trim().to_string(),
+        url: bing_uhd_url(&image.urlbase),
+        copyright_link: image.copyrightlink.and_then(non_empty_string),
+    })
+}
+
+pub fn parse_zxyongyo_archive(text: &str) -> Vec<WallpaperEntry> {
+    let Ok(response) = serde_json::from_str::<ZxyongyoArchiveResponse>(text) else {
+        return Vec::new();
+    };
+    let mut entries = dedup_by_date(
+        response
+            .images
+            .into_iter()
+            .filter_map(zxyongyo_image_to_entry)
+            .collect(),
+    );
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.date));
+    entries
+}
+
+fn zxyongyo_image_to_entry(image: ZxyongyoArchiveImage) -> Option<WallpaperEntry> {
+    let date = NaiveDate::parse_from_str(&image.date, "%Y-%m-%d").ok()?;
+    Some(WallpaperEntry {
+        date,
+        headline: non_empty_string(image.title),
+        title: image.copyright.trim().to_string(),
+        url: image.url_4k.trim().to_string(),
+        copyright_link: None,
+    })
+}
+
+fn bing_uhd_url(urlbase: &str) -> String {
+    let urlbase = urlbase.trim();
+    let path = if urlbase.starts_with("http://") || urlbase.starts_with("https://") {
+        urlbase.to_string()
+    } else if urlbase.starts_with('/') {
+        format!("https://cn.bing.com{urlbase}")
+    } else {
+        format!("https://cn.bing.com/{urlbase}")
+    };
+    format!("{path}_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4")
+}
+
+fn non_empty_string(value: String) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+pub fn local_entries() -> Vec<WallpaperEntry> {
+    let bundled = bundled_entries();
+    let entries = load_cache()
+        .ok()
+        .flatten()
+        .filter(|entries| !entries.is_empty())
+        .map(|cached| merge_entries_prefer_primary(cached, bundled.clone()))
+        .unwrap_or(bundled);
+    apply_bundled_corrections(entries)
+}
+
+pub fn archive_covers_seed(archive: &[WallpaperEntry], seed: &[WallpaperEntry]) -> bool {
+    if seed.is_empty() {
+        return !archive.is_empty();
+    }
+    let archive_oldest = archive.iter().map(|entry| entry.date).min();
+    let seed_oldest = seed.iter().map(|entry| entry.date).min();
+    let keeps_history =
+        matches!((archive_oldest, seed_oldest), (Some(remote), Some(local)) if remote <= local);
+    let keeps_expected_count = archive.len().saturating_mul(10) >= seed.len().saturating_mul(9);
+    keeps_history && keeps_expected_count
+}
+
+/// 从本地缓存加载壁纸列表（如果存在）。
+pub fn load_cache() -> Result<Option<Vec<WallpaperEntry>>> {
+    let path = cache_file()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let data = std::fs::read_to_string(&path).context("读取本地壁纸缓存失败")?;
+    let entries: Vec<WallpaperEntry> =
+        serde_json::from_str(&data).context("解析本地壁纸缓存 JSON 失败")?;
+    Ok(Some(entries))
+}
+
+/// 将壁纸列表写入本地缓存。
+pub fn save_cache(entries: &[WallpaperEntry]) -> Result<()> {
+    let path = cache_file()?;
+    let data = serde_json::to_string_pretty(entries).context("序列化壁纸列表失败")?;
+    std::fs::write(&path, data).context("写入本地壁纸缓存失败")?;
+    Ok(())
+}
+
+/// 判断远端最新一条记录的日期，是否比本地缓存中已知的最新日期更新。
+pub fn has_new_entry(cached: &[WallpaperEntry], fetched: &[WallpaperEntry]) -> bool {
+    let cached_latest = cached.iter().map(|e| e.date).max();
+    let fetched_latest = fetched.iter().map(|e| e.date).max();
+    match (cached_latest, fetched_latest) {
+        (Some(c), Some(f)) => f > c,
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_zxyongyo_archive_json() {
+        let text = r#"{"images":[{"hsh":"490c","date":"2026-07-04","title":"紫色花海","copyright":"瓦朗索勒高原的薰衣草行，普罗旺斯，法国 (© Robert Harding/Shutterstock)","url_preview":"https://example.com/preview.jpg","url_1080":"https://example.com/1080.jpg","url_4k":"https://example.com/4k.jpg"},{"hsh":"4504","date":"2026-07-03","title":"此行，不虚绕道","copyright":"凯泽斯堡，阿尔萨斯，法国 (© Federica Gentile/Getty Images)","url_preview":"https://example.com/preview2.jpg","url_1080":"https://example.com/1080-2.jpg","url_4k":"https://example.com/4k-2.jpg"}]}"#;
+        let entries = parse_zxyongyo_archive(text);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].date,
+            NaiveDate::from_ymd_opt(2026, 7, 4).unwrap()
+        );
+        assert_eq!(entries[0].headline.as_deref(), Some("紫色花海"));
+        assert!(entries[0].title.contains("瓦朗索勒高原"));
+        assert_eq!(entries[0].url, "https://example.com/4k.jpg");
+    }
+
+    #[test]
+    fn bundled_snapshot_is_parseable() {
+        let entries = bundled_entries();
+        assert!(!entries.is_empty());
+        assert!(entries.windows(2).all(|pair| pair[0].date >= pair[1].date));
+
+        let april_2020: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                entry.date >= NaiveDate::from_ymd_opt(2020, 4, 1).unwrap()
+                    && entry.date <= NaiveDate::from_ymd_opt(2020, 4, 30).unwrap()
+            })
+            .collect();
+        assert_eq!(april_2020.len(), 30);
+        assert!(
+            april_2020
+                .iter()
+                .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap())
+        );
+
+        let january_26_2024 = entries
+            .iter()
+            .find(|entry| entry.date == NaiveDate::from_ymd_opt(2024, 1, 26).unwrap())
+            .expect("the corrected 2024-01-26 wallpaper must be bundled");
+        assert_eq!(january_26_2024.headline.as_deref(), Some("不是夜猫子"));
+        assert!(
+            january_26_2024
+                .url
+                .contains("OHR.HawkOwl_ZH-CN3401920167_UHD.jpg")
+        );
+        assert!(january_26_2024.url.contains("w=3840&h=2160"));
+
+        let corrected_wallpapers = [
+            (
+                NaiveDate::from_ymd_opt(2024, 9, 17).unwrap(),
+                "明月千里寄相思",
+                "OHR.MidAutumnFestival2024_ZH-CN9096556094_UHD.jpg",
+            ),
+            (
+                NaiveDate::from_ymd_opt(2025, 11, 19).unwrap(),
+                "石头与符号，诉说一个民族的故事",
+                "OHR.BudapestParliament_ZH-CN1607028780_UHD.jpg",
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 7, 8).unwrap(),
+                "远古火山的回响",
+                "OHR.LakeAtitlan_ZH-CN1920221893_UHD.jpg",
+            ),
+        ];
+        for (date, headline, ohr_id) in corrected_wallpapers {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.date == date)
+                .unwrap_or_else(|| panic!("the corrected {date} wallpaper must be bundled"));
+            assert_eq!(entry.headline.as_deref(), Some(headline));
+            assert!(entry.url.contains(ohr_id));
+            assert!(entry.url.contains("w=3840&h=2160"));
+        }
+
+        let april_2025 = entries
+            .iter()
+            .filter(|entry| {
+                entry.date >= NaiveDate::from_ymd_opt(2025, 4, 1).unwrap()
+                    && entry.date <= NaiveDate::from_ymd_opt(2025, 4, 30).unwrap()
+            })
+            .count();
+        let may_2025 = entries
+            .iter()
+            .filter(|entry| {
+                entry.date >= NaiveDate::from_ymd_opt(2025, 5, 1).unwrap()
+                    && entry.date <= NaiveDate::from_ymd_opt(2025, 5, 31).unwrap()
+            })
+            .count();
+        assert_eq!(april_2025, 30);
+        assert_eq!(may_2025, 31);
+    }
+
+    #[test]
+    fn merges_primary_entries_with_fallback_by_date() {
+        let primary = vec![WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+            headline: Some("中文标题".to_string()),
+            title: "中文地点 (© A/B)".to_string(),
+            url: "https://cn.bing.com/th?id=OHR.Today_ZH-CN_UHD.jpg".to_string(),
+            copyright_link: None,
+        }];
+        let fallback = vec![
+            WallpaperEntry {
+                date: NaiveDate::from_ymd_opt(2026, 7, 2).unwrap(),
+                headline: Some("English title".to_string()),
+                title: "English place (© A/B)".to_string(),
+                url: "https://cn.bing.com/th?id=OHR.Today_EN-US_UHD.jpg".to_string(),
+                copyright_link: None,
+            },
+            WallpaperEntry {
+                date: NaiveDate::from_ymd_opt(2021, 2, 1).unwrap(),
+                headline: Some("Old title".to_string()),
+                title: "Old place (© A/B)".to_string(),
+                url: "https://cn.bing.com/th?id=OHR.Old_ZH-CN_UHD.jpg".to_string(),
+                copyright_link: None,
+            },
+        ];
+
+        let entries = merge_entries_prefer_primary(primary, fallback);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].date,
+            NaiveDate::from_ymd_opt(2026, 7, 2).unwrap()
+        );
+        assert_eq!(entries[0].headline.as_deref(), Some("中文标题"));
+        assert!(entries[0].url.contains("_ZH-CN"));
+        assert_eq!(
+            entries[1].date,
+            NaiveDate::from_ymd_opt(2021, 2, 1).unwrap()
+        );
+        assert_eq!(entries[1].headline.as_deref(), Some("Old title"));
+    }
+
+    #[test]
+    fn dedups_duplicate_dates_keeping_first() {
+        let entries = dedup_by_date(vec![
+            WallpaperEntry {
+                date: NaiveDate::from_ymd_opt(2025, 4, 10).unwrap(),
+                headline: Some("A".to_string()),
+                title: "A".to_string(),
+                url: "https://example.com/a.jpg".to_string(),
+                copyright_link: None,
+            },
+            WallpaperEntry {
+                date: NaiveDate::from_ymd_opt(2025, 4, 10).unwrap(),
+                headline: Some("B".to_string()),
+                title: "B".to_string(),
+                url: "https://example.com/b.jpg".to_string(),
+                copyright_link: None,
+            },
+        ]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://example.com/a.jpg");
+    }
+
+    #[test]
+    fn converts_zxyongyo_archive_image_to_entry() {
+        let image = ZxyongyoArchiveImage {
+            date: "2026-07-04".to_string(),
+            title: "紫色花海".to_string(),
+            copyright: "瓦朗索勒高原的薰衣草行，普罗旺斯，法国 (© Robert Harding/Shutterstock)"
+                .to_string(),
+            url_4k: "https://example.com/lavender-4k.jpg".to_string(),
+        };
+
+        let entry = zxyongyo_image_to_entry(image).unwrap();
+        assert_eq!(entry.date, NaiveDate::from_ymd_opt(2026, 7, 4).unwrap());
+        assert_eq!(entry.headline.as_deref(), Some("紫色花海"));
+        assert!(entry.title.contains("瓦朗索勒高原"));
+        assert_eq!(entry.url, "https://example.com/lavender-4k.jpg");
+    }
+
+    #[test]
+    fn converts_bing_archive_image_to_entry() {
+        let image = BingArchiveImage {
+            startdate: "20260713".to_string(),
+            enddate: Some("20260714".to_string()),
+            urlbase: "/th?id=OHR.NavajoSandstone_ZH-CN5009673011".to_string(),
+            copyright: "羚羊峡谷，纳瓦霍族保留地，亚利桑那州，美国 (© Mark Skalny/Getty Images)"
+                .to_string(),
+            copyrightlink: Some("https://www.bing.com/search?q=羚羊峡谷".to_string()),
+            title: "为摇滚而生".to_string(),
+        };
+
+        let entry = bing_image_to_entry(image).unwrap();
+        assert_eq!(entry.date, NaiveDate::from_ymd_opt(2026, 7, 14).unwrap());
+        assert_eq!(entry.headline.as_deref(), Some("为摇滚而生"));
+        assert!(
+            entry
+                .url
+                .contains("OHR.NavajoSandstone_ZH-CN5009673011_UHD.jpg")
+        );
+        assert!(entry.url.contains("w=3840&h=2160"));
+    }
+
+    #[test]
+    fn official_recent_entries_override_local_seed_by_date() {
+        let recent = vec![WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 13).unwrap(),
+            headline: Some("新标题".to_string()),
+            title: "新地点 (© Bing)".to_string(),
+            url: "https://example.com/new.jpg".to_string(),
+            copyright_link: None,
+        }];
+        let seed = vec![WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 13).unwrap(),
+            headline: None,
+            title: "旧地点 (© Cache)".to_string(),
+            url: "https://example.com/old.jpg".to_string(),
+            copyright_link: None,
+        }];
+
+        let entries = merge_entries_prefer_primary(recent, seed);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].headline.as_deref(), Some("新标题"));
+        assert_eq!(entries[0].url, "https://example.com/new.jpg");
+    }
+
+    #[test]
+    fn keeps_archive_date_when_official_api_is_one_day_early() {
+        let recent = vec![WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
+            headline: Some("紫色花海".to_string()),
+            title: "瓦朗索勒高原的薰衣草行，普罗旺斯，法国 (© Robert Harding/Shutterstock)"
+                .to_string(),
+            url: "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        }];
+        let fallback = vec![WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
+            headline: Some("紫色花海".to_string()),
+            title: "瓦朗索勒高原的薰衣草行，普罗旺斯，法国 (© Robert Harding/Shutterstock)"
+                .to_string(),
+            url: "https://cn.bing.com/th?id=OHR.LavenderRows_ZH-CN0676810895_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=3840&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        }];
+
+        let entries = merge_entries_prefer_primary(recent, fallback);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].date,
+            NaiveDate::from_ymd_opt(2026, 7, 5).unwrap()
+        );
+        assert_eq!(entries[0].date_heading(), "2026-07-05 紫色花海");
+    }
+
+    #[test]
+    fn bundled_archive_backfills_a_date_missing_from_cache() {
+        let make_entry = |day, image: &str| WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2020, 4, day).unwrap(),
+            headline: None,
+            title: format!("2020-04-{day:02}"),
+            url: format!("https://cn.bing.com/th?id=OHR.{image}_ZH-CN_UHD.jpg"),
+            copyright_link: None,
+        };
+        let cached = vec![make_entry(3, "April03"), make_entry(5, "April05")];
+        let bundled = vec![
+            make_entry(3, "April03"),
+            make_entry(4, "QingmingCandle2020"),
+            make_entry(5, "April05"),
+        ];
+
+        let entries = merge_entries_prefer_primary(cached, bundled);
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.date == NaiveDate::from_ymd_opt(2020, 4, 4).unwrap())
+        );
+    }
+
+    #[test]
+    fn bundled_corrections_override_a_stale_cached_url() {
+        let stale = WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 7, 8).unwrap(),
+            headline: Some("远古火山的回响".to_string()),
+            title: "阿蒂特兰湖的日出，危地马拉".to_string(),
+            url: "https://cn.bing.com/th?id=OHR.LakeAtitlan_ZH-CN3840221893_UHD.jpg&rf=LaDigue_UHD.jpg&pid=hp&w=1920&h=2160&rs=1&c=4".to_string(),
+            copyright_link: None,
+        };
+
+        let entries = apply_bundled_corrections(vec![stale]);
+        let repaired = entries
+            .iter()
+            .find(|entry| entry.date == NaiveDate::from_ymd_opt(2026, 7, 8).unwrap())
+            .expect("2026-07-08 correction should be present");
+
+        assert!(repaired.url.contains("OHR.LakeAtitlan_ZH-CN1920221893"));
+        assert!(!repaired.url.contains("3840221893"));
+    }
+
+    #[test]
+    fn remote_archive_cannot_drop_dates_from_local_seed() {
+        let make_entry = |day, image: &str| WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2025, 5, day).unwrap(),
+            headline: None,
+            title: format!("2025-05-{day:02}"),
+            url: format!("https://cn.bing.com/th?id=OHR.{image}_ZH-CN_UHD.jpg"),
+            copyright_link: None,
+        };
+        let remote = vec![make_entry(6, "May06"), make_entry(7, "May07")];
+        let local_seed = vec![make_entry(5, "May05"), make_entry(6, "May06")];
+
+        let entries = merge_entries_prefer_primary(remote, local_seed);
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.date == NaiveDate::from_ymd_opt(2025, 5, 5).unwrap())
+        );
+    }
+
+    #[test]
+    fn rejects_archive_that_drops_historical_coverage() {
+        let make_entry = |day| WallpaperEntry {
+            date: NaiveDate::from_ymd_opt(2026, 1, day).unwrap(),
+            headline: None,
+            title: format!("Wallpaper {day}"),
+            url: format!("https://example.com/{day}.jpg"),
+            copyright_link: None,
+        };
+        let seed: Vec<_> = (1..=10).map(make_entry).collect();
+        let complete: Vec<_> = (1..=10).map(make_entry).collect();
+        let truncated: Vec<_> = (5..=10).map(make_entry).collect();
+
+        assert!(archive_covers_seed(&complete, &seed));
+        assert!(!archive_covers_seed(&truncated, &seed));
+    }
+}

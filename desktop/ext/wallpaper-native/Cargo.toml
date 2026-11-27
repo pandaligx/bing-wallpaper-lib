@@ -1,0 +1,29 @@
+[package]
+name = "wallpaper-native"
+version = "0.3.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+nsh-core = { version = "=0.7.2", default-features = false }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+gosh-dl = { git = "https://github.com/goshitsarch-eng/gosh-dl", rev = "9f6ff470a854be7ff49dadc609207eb53da4bdbc", default-features = false, features = ["http", "storage"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+url = "2"
+fs2 = "0.4"
+log = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13.13", default-features = false, features = ["tokio", "wallpaper"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

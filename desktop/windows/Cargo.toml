@@ -1,0 +1,23 @@
+[package]
+name = "bing-wallpaper-desktop"
+version = "0.3.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+nsh-platform-windows = { version = "=0.7.2", default-features = false, features = ["js", "net"] }
+nsh-base = { version = "=0.7.2", default-features = false }
+nsh-engine = { version = "=0.7.2", default-features = false }
+wallpaper-native = { path = "../ext/wallpaper-native" }
+log = "0.4"
+windows = { version = "0.58", features = ["Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+strip = true
+codegen-units = 1
+lto = "thin"

@@ -2,6 +2,3 @@
 # 全新 Windows 系统上运行时报 "缺少 VCRUNTIME140.dll / MSVCP140.dll" 的错误。
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
-
-[build]
-target = "x86_64-pc-windows-msvc"
