@@ -9,7 +9,7 @@ const repositories = [
   ["GitCode", "https://api.gitcode.com/api/v5/repos/gcw_qWIjmve7/bing-wallpaper-lib/releases/tags/"],
 ];
 
-async function fingerprint(stream, limit = Infinity) {
+export async function fingerprint(stream, limit = Infinity) {
   const hash = createHash("sha256");
   let bytes = 0;
   for await (const chunk of stream) {

@@ -184,6 +184,9 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends plasma-desktop plasma-workspace kwin-x11 kactivitymanagerd
           xvfb-run -a dbus-run-session -- bash scripts/test-nsh-plasma.sh
+      - name: Rehearse a signed AppImage update and automatic rollback
+        if: runner.os == 'Linux'
+        run: xvfb-run -a dbus-run-session -- node scripts/rehearse-linux-update.mjs
       - uses: actions/upload-artifact@v4
         if: success() && runner.os == 'Linux'
         with:

@@ -60,7 +60,9 @@ try {
     await app.waitFor("select-original.png");
     await app.press("nav-settings");
     await app.waitFor("folder-path");
+    await app.waitUntil(() => app.value("folder-path")?.endsWith("Original photos"));
     await app.press("default-folder");
+    await app.waitUntil(() => app.value("folder-path")?.endsWith("Wallpapers"));
   `);
   assert.equal(await readFile(join(data, "settings.pre-nsh.json"), "utf8"), settings);
   assert.equal(
@@ -75,6 +77,7 @@ try {
     await app.waitFor("latest-photo",{timeout:30000});
     await app.press("nav-settings");
     await app.waitFor("default-folder");
+    await app.waitUntil(() => app.value("folder-path")?.endsWith("Wallpapers"));
     await app.press("default-folder");
   `);
   assert.equal(await readFile(join(data, "settings.pre-nsh.json"), "utf8"), settings);
