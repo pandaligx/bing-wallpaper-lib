@@ -14,9 +14,12 @@ test("opens a dated preview, archive month, favorites, downloads, local gallery 
   await app.waitFor("scan-local");
   await app.press("nav-settings");
   await app.waitFor("folder-path");
+  await app.scroll("sidebar",1500);
   await app.press("year-2018");
+  await app.scroll("sidebar",500);
   await app.press("month-2018-09");
   expect(app.texts()).toContain("2018-09");
+  await app.scroll("sidebar",-2000);
   await app.press("nav-home");
   await app.waitFor("latest-photo");
 });

@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   package:
@@ -88,6 +88,8 @@ jobs:
           nsh check
           nsh test App.test.tsx
           nsh test Archive.headless.test.tsx
+          cd ..
+          node scripts/test-nsh-migration.mjs
       - name: Exercise the native window and apply a Bing wallpaper
         shell: bash
         run: |
@@ -103,7 +105,7 @@ jobs:
                 [[ "$value" == *BingWallpaperLib/Wallpapers/*.jpg* ]]
               done'
           else
-            nsh test desktop/App.tsx --target ${{ matrix.target }} < scripts/test-nsh-desktop.mjs
+            nsh test desktop/App.tsx --target ${{ matrix.target }} --foreground < scripts/test-nsh-desktop.mjs
           fi
       - uses: actions/upload-artifact@v4
         if: always()

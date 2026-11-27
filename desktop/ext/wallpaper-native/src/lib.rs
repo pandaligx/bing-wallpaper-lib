@@ -4,7 +4,9 @@ pub mod archive;
 mod catalog;
 #[path = "../../../../src/i18n.rs"]
 pub mod i18n;
+mod installer;
 mod integration;
+pub use installer::supervise as install_update;
 mod local;
 #[path = "../../../../src/local_thumbnails.rs"]
 pub mod local_thumbnails;
@@ -31,6 +33,13 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use tokio::runtime::Runtime;
+
+#[cfg(windows)]
+static PORTABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(windows)]
+pub fn mark_portable() {
+    PORTABLE.store(true, std::sync::atomic::Ordering::Release);
+}
 
 fn runtime() -> AppResult<&'static Runtime> {
     static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
@@ -73,27 +82,91 @@ pub struct Library;
 
 #[module]
 impl Library {
+    /// Repair enabled legacy tasks after the portable GUI is successfully opened or moved.
+    pub async fn repair_tasks() -> Result<(), String> {
+        #[cfg(windows)]
+        if PORTABLE.load(std::sync::atomic::Ordering::Acquire) {
+            return disk(registration::repair_portable_tasks).await;
+        }
+        Ok(())
+    }
+    /// Read persisted task history from the application data directory.
+    pub async fn download_history() -> Result<String, String> {
+        disk(|| {
+            match std::fs::read_to_string(paths::app_data_dir()?.join("download-history.json")) {
+                Ok(text) => Ok(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("[]".into()),
+                Err(e) => Err(e.into()),
+            }
+        })
+        .await
+    }
+    /// Save the queue states after a transition, independently of engine segment data.
+    pub async fn save_download_history(rows: String) -> Result<(), String> {
+        disk(move || {
+            anyhow::ensure!(rows.len() <= 32 * 1024 * 1024, "下载历史过大");
+            paths::write_atomic(
+                &paths::app_data_dir()?.join("download-history.json"),
+                rows.as_bytes(),
+            )
+        })
+        .await
+    }
+    /// Check the fixed-time task while the window is open, including after wake.
+    pub async fn tick_daily() -> Result<String, String> {
+        disk(|| {
+            schedule::run("--daily-wallpaper")?;
+            Ok(settings::AppSettings::load()
+                .last_auto_wallpaper_date
+                .map_or_else(String::new, |date| date.to_string()))
+        })
+        .await
+    }
+    /// Confirm that the upgraded UI can read and display its offline library.
+    pub fn window_ready() {
+        installer::acknowledge();
+    }
+    /// Report an installation failure to the restored application's window.
+    pub async fn last_update_error() -> Result<String, String> {
+        disk(installer::last_error).await
+    }
+    /// Prepare a verified installation and await the user's application exit.
+    pub async fn install_update(version: String) -> Result<(), String> {
+        #[cfg(windows)]
+        if !PORTABLE.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("请从便携 exe 安装更新".into());
+        }
+        disk(move || installer::begin(&version)).await
+    }
+    /// Return the embedded desktop application version.
     pub fn app_version() -> String {
         env!("CARGO_PKG_VERSION").to_owned()
     }
+    /// Check whether the desktop has a system tray host.
     pub fn tray_available() -> bool {
         integration::tray_available()
     }
+    /// Tell the window whether this launch requested background mode.
     pub fn background_launch() -> bool {
         std::env::args().any(|a| a == "--background")
     }
+    /// Return the operating system used for native integration.
     pub fn host_os() -> String {
         std::env::consts::OS.to_owned()
     }
+    /// Configure login startup for the installed portable application.
     pub async fn configure_startup(enabled: bool) -> Result<(), String> {
         disk(move || integration::startup_enabled(enabled)).await
     }
+    /// Open a project location or the configured download directory.
     pub async fn open_location(kind: String) -> Result<(), String> {
         disk(move || integration::open_location(&kind)).await
     }
+    /// Show the desktop folder chooser and return an absolute path.
     pub async fn choose_folder() -> Result<String, String> {
         disk(integration::choose_folder).await
     }
+    /// Return the effective wallpaper download directory.
     pub async fn download_folder() -> Result<String, String> {
         disk(|| {
             Ok(settings::AppSettings::load()
@@ -103,6 +176,7 @@ impl Library {
         })
         .await
     }
+    /// Apply the selected daily wallpaper source immediately.
     pub async fn change_now() -> Result<(), String> {
         disk(|| schedule::run("--change-now")).await
     }

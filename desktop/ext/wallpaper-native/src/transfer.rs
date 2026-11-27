@@ -157,10 +157,16 @@ pub async fn download_with_status(
                 .build()
         });
     let client = BING.as_ref().map_err(|e| anyhow!(e.to_string()))?;
-    let url = direct_url(client, &url).await?;
-    let partial = fetch(url.as_str(), &staging, &temporary).await?;
+    let origin = probe(client, &url, None).await?;
+    let partial = fetch(&origin, &staging, &temporary).await?;
     tokio::task::spawn_blocking(move || {
         let temporary = tempfile::TempPath::try_from_path(partial)?;
+        if let Some(bytes) = origin.length {
+            ensure!(
+                std::fs::metadata(&temporary)?.len() == bytes,
+                "图片下载长度错误"
+            );
+        }
         verify_download_ending(&temporary)?;
         validate_image(&temporary)?;
         temporary
@@ -172,7 +178,23 @@ pub async fn download_with_status(
     .await?
 }
 
-pub(crate) async fn fetch(url: &str, staging: &Path, temporary: &str) -> Result<PathBuf> {
+pub(crate) async fn fetch(origin: &Origin, staging: &Path, temporary: &str) -> Result<PathBuf> {
+    use std::{
+        collections::BTreeMap,
+        sync::{LazyLock, Mutex},
+    };
+    use tokio::sync::Semaphore;
+    static HOSTS: LazyLock<Mutex<BTreeMap<String, Arc<Semaphore>>>> =
+        LazyLock::new(|| Mutex::new(BTreeMap::new()));
+    let host = origin.url.host_str().context("无效的下载主机")?;
+    let slots = HOSTS
+        .lock()
+        .map_err(|_| anyhow!("连接池不可用"))?
+        .entry(host.to_owned())
+        .or_insert_with(|| Arc::new(Semaphore::new(16)))
+        .clone();
+    let _permit = slots.acquire_many(origin.connections as u32).await?;
+    let url = origin.url.as_str();
     let engine = engine().await?;
     let previous = engine.list().into_iter().find(|s| {
         s.metadata.url.as_deref() == Some(url)
@@ -197,7 +219,7 @@ pub(crate) async fn fetch(url: &str, staging: &Path, temporary: &str) -> Result<
                     DownloadOptions::new()
                         .save_dir(staging)
                         .filename(temporary)
-                        .max_connections(16),
+                        .max_connections(origin.connections),
                 )
                 .await?
         }
@@ -214,17 +236,72 @@ pub(crate) async fn fetch(url: &str, staging: &Path, temporary: &str) -> Result<
     Ok(staging.join(temporary))
 }
 
-/// Follow only the caller's redirect policy before handing the final URL to the engine.
-pub(crate) async fn direct_url(client: &reqwest::Client, url: &str) -> Result<url::Url> {
-    let mut response = client.head(url).send().await?;
-    if matches!(response.status().as_u16(), 403 | 405 | 501) {
-        response = client
-            .get(url)
-            .header(reqwest::header::RANGE, "bytes=0-0")
+pub(crate) struct Origin {
+    url: url::Url,
+    length: Option<u64>,
+    connections: usize,
+}
+/// Resolve redirects with the selected provider's policy, then test a real byte range.
+pub(crate) async fn probe(
+    client: &reqwest::Client,
+    url: &str,
+    expected: Option<u64>,
+) -> Result<Origin> {
+    use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
+    let head = client.head(url).send().await?;
+    let mut length = expected.or_else(|| {
+        head.status()
+            .is_success()
+            .then(|| {
+                head.headers()
+                    .get(CONTENT_LENGTH)?
+                    .to_str()
+                    .ok()?
+                    .parse()
+                    .ok()
+            })
+            .flatten()
+    });
+    let mut final_url = head.url().clone();
+    let mut connections = 1;
+    if matches!(head.status().as_u16(), 403 | 405 | 501)
+        || length.is_none_or(|size| size >= 2 * 1024 * 1024)
+    {
+        let reply = client
+            .get(final_url)
+            .header(RANGE, "bytes=0-0")
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
+        final_url = reply.url().clone();
+        if reply.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            let size: u64 = reply
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|raw| raw.to_str().ok())
+                .and_then(|s| s.strip_prefix("bytes 0-0/"))
+                .context("服务器返回了错误的 Range")?
+                .parse()?;
+            ensure!(
+                size > 0 && length.is_none_or(|n| n == size),
+                "下载对象已改变"
+            );
+            length = Some(size);
+            connections = (size / (1024 * 1024)).clamp(1, 16) as usize;
+        } else if length.is_none() {
+            length = reply
+                .headers()
+                .get(CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()?.parse().ok());
+        }
+    } else {
+        head.error_for_status()?;
     }
-    Ok(response.error_for_status()?.url().clone())
+    Ok(Origin {
+        url: final_url,
+        length,
+        connections,
+    })
 }
 
 pub fn progress() -> Result<String> {

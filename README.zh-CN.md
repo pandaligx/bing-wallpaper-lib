@@ -1,80 +1,37 @@
 # 必应每日壁纸库
 
-[English](README.md) | **简体中文**
+[English](README.md) · **简体中文**
 
-此分支正在开发 Windows x64、macOS 通用版与 Linux x64 的 NSH 桌面应用。构建及测试入口见[桌面开发说明](desktop/README.md)。下方发行信息对应已发布的 Windows 旧版。
+按年月浏览必应每日摄影，收藏喜欢的日期，下载高清原图或设为桌面壁纸。本开发分支使用 NSH 0.7.2 编写界面，由 Rust 管理归档、下载和系统集成。
 
-<p align="center">
-  <img src="docs/screenshot-home.png" alt="必应每日壁纸库首页" width="820" />
-</p>
+## 试用桌面版
 
-<p align="center">
-  <a href="https://github.com/pandaligx/bing-wallpaper-lib/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/pandaligx/bing-wallpaper-lib"></a>
-  <a href="https://github.com/pandaligx/bing-wallpaper-lib/releases/latest"><img alt="downloads" src="https://img.shields.io/github/downloads/pandaligx/bing-wallpaper-lib/total"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white">
-  <img alt="language" src="https://img.shields.io/badge/language-Rust-DEA584?logo=rust&logoColor=white">
-  <img alt="license" src="https://img.shields.io/badge/license-GPL--3.0-blue">
-</p>
+| 平台 | 开发包 | 运行环境 |
+| --- | --- | --- |
+| Windows x64 | `BingWallpaperLib-v0.3.0-windows-x64.exe` | 单文件便携版。目标系统为 Windows 10 1809 及以上，已在 Windows 11 运行。 |
+| macOS Intel 和 Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 及以上。将应用复制到「应用程序」。开发包使用临时签名。 |
+| Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | 宿主需安装 GTK 4.14+ 和 WebKitGTK 6.0，首次启动前赋予 AppImage 执行权限。 |
 
-一款使用 Rust、GPUI 与 gpui-component 编写的 Windows 桌面应用。软件合并 [zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) 的完整历史归档和 Bing 近期官方数据，可浏览、收藏、下载并一键设置每日壁纸。
+开发包可从重写分支已完成的 CI 构建下载。较早的 Windows 系统可以继续使用 0.2.37。[开发构建](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml) · [Windows 0.2.37](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37) · [验收记录](desktop/VALIDATION.md)
 
-## 功能特性
+## 使用壁纸库
 
-- 按年 / 月展示全部历史壁纸，内置离线快照，并通过独立纠错表修复上游缺失或损坏的数据。
-- 支持跟随系统语言，以及简体中文、English、日本語、한국어、Русский、Français。
-- 全局分辨率支持原图 UHD、4K、2K、1K。
-- 首页虚拟网格、大图预览、我的收藏和已下载壁纸画廊。
-- 内置 aria2 JSON-RPC 多连接高速下载引擎。
-- 支持全部历史、当前月份、收藏和指定日期范围批量下载。
-- 支持同步全部显示器或单独设置指定显示器。
-- 支持每日自动壁纸、开机自启、后台常驻和系统托盘菜单。
-- 支持 Windows 计划任务：用户登录时执行，并可设置每隔 1 分钟至 23 小时 59 分钟自动更换；每天首次成功执行可使用 Bing 最新壁纸，后续可随机历史或随机收藏，每次执行完成后自动退出。
-- 支持浅色、深色、跟随系统主题，以及 Gitee / GitHub 自动更新。
-- 根据 Windows 的 DPI 缩放自动调整窗口大小并居中，支持 125%、150%、175%、200% 等缩放比例。
-- 单文件静态链接 exe，无需额外安装 Visual C++ 运行库或 aria2。
+- 首页展示最新一张壁纸，向下滚动可连续浏览历史照片。侧栏展开年份后可选月份。程序先读离线归档，每 30 分钟刷新。大图预览使用 1080p，支持左右方向键和 Esc。
+- 收藏以日期保存。下载和设置壁纸可选原图 UHD、4K、2K 或 1K。下载中心提供全部历史、当前月份、收藏和日期范围四种入口，显示速度、进度、已复用文件和失败原因。
+- 本地图库扫描当前下载目录，可以预览、设置壁纸、单选或批量删除。确认弹窗会显示选中的数量。
+- 设置支持中、英、日、韩、俄、法六种语言，提供跟随系统、浅色、深色外观，以及下载目录、登录启动、托盘和显示器选项。Windows 和 Plasma 可选单屏，GNOME 支持全桌面，其他 Linux 桌面调用可用的 Wallpaper Portal。
+- 自动壁纸可设每日固定时间，或使用登录后每 1～1439 分钟执行的周期任务。周期任务支持当天首次成功时用最新图，此后可从历史或收藏中随机选择。
 
-点击左侧栏左下角“设置”按钮右侧的国旗按钮即可切换界面语言，选择会自动保存并立即生效。
+## 旧版迁移与更新
 
-## 自动壁纸计划
+首次从 0.2.37 升级到 NSH Windows 版时，请手动下载新文件。新版沿用 `%LOCALAPPDATA%\BingWallpaperLib` 中的收藏、归档、下载目录和图片，首次修改设置会保存原始配置到 `settings.pre-nsh.json`。有 `.aria2` 控制文件的预分配图片会从本地图库中过滤。
 
-原有“每天固定时间执行一次”的自动壁纸功能继续保留。v0.2.34 在“设置 → 自动壁纸”中新增独立的 Windows 计划任务模式：
+中国大陆使用 GitCode，其他已知地区使用 GitHub。系统地区未知时由用户选择，也可随时在设置中修改。切换界面语言会保留原地区。GitCode 公开仓库及正式签名更新通道仍待发布验证。[GitCode 项目](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib) · [GitHub 发行页](https://github.com/pandaligx/bing-wallpaper-lib/releases)
 
-- 当前用户登录 Windows 时立即执行，之后按选定的小时 / 分钟间隔重复执行。
-- 不会唤醒电脑；关机或睡眠期间错过任务时，会在 Windows 恢复可用后补执行一次。
-- 每天首次成功执行可优先使用 Bing 最新壁纸，后续可随机全部历史或随机我的收藏；收藏为空时自动回退到随机历史。
-- 每次任务更换壁纸后都会退出。启用计划任务会关闭旧的注册表开机自启，避免两种启动机制发生冲突。
+仓库每四小时同步上游归档，合并已核实的修复。客户端使用 Bing 官方近期记录补强，壁纸版权归摄影师及相应权利人所有。[上游归档](https://github.com/zxyongyo/bing-daily-wallpaper) · [勘误记录](assets/data/zxyongyo-bing-wallpaper-corrections.json)
 
-## 下载使用
+## 开发与维护
 
-中国大陆用户可优先从 [Gitee Releases](https://gitee.com/pandaligx/bing-wallpaper-lib/releases) 下载最新版 `bing-wallpaper-lib-vX.Y.Z-x64.exe`；也可从 [GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest) 下载同名文件。
+三端构建命令、原生测试、下载测速和发布校验见开发说明。仓库根目录保留旧版实现，便于逐项对照。[桌面开发说明](desktop/README.md) · [维护入口](AGENTS.md) · [旧版文档](https://github.com/pandaligx/bing-wallpaper-lib/blob/v0.2.37/README.zh-CN.md)
 
-下载后直接双击运行，无需安装。程序启动时会请求管理员权限。
-
-自动更新后，程序保留在原目录并使用新版发行文件名；已启用的开机自启和计划任务路径会自动更新。
-
-## 从源码构建
-
-需要稳定版 Rust、`x86_64-pc-windows-msvc` target，以及包含“使用 C++ 的桌面开发”和 Windows 10/11 SDK 的 Visual Studio Build Tools。
-
-```powershell
-cargo check
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo build --release
-```
-
-发布产物位于 `target/x86_64-pc-windows-msvc/release/bing-wallpaper-lib.exe`。
-
-## 壁纸数据
-
-历史数据来自上游 `map.json`，每四小时同步到 [`assets/data/zxyongyo-bing-wallpaper.json`](assets/data/zxyongyo-bing-wallpaper.json)。软件运行时优先读取 Gitee 镜像，失败后回退 jsDelivr / GitHub，并通过 Bing `HPImageArchive.aspx` API 补强近期数据。
-
-经过核验的修复记录独立保存在 [`assets/data/zxyongyo-bing-wallpaper-corrections.json`](assets/data/zxyongyo-bing-wallpaper-corrections.json)，避免后续同步再次覆盖修复内容，其中包括已经修正图片地址的 2024-01-26 北鹰鸮壁纸。
-
-壁纸版权归 Bing、摄影师及相应版权方所有。
-
-## 许可证
-
-本项目遵循仓库根目录下的 [GPL-3.0](LICENSE) 开源协议。内置的未修改 aria2 可执行文件遵循 [GPL-2.0](https://github.com/aria2/aria2/blob/master/COPYING)，软件仅通过其公开 JSON-RPC 接口调用。
-
-© 2023-2026 小南瓜
+© 2023-2026 小南瓜 · [GPL-3.0](LICENSE)

@@ -52,7 +52,7 @@ export function Settings() {
     <View class="flex-row flex-wrap gap-2">
       <Action label={t("Choose and save")} press={() => run(async () => {const result=await Library.chooseFolder(); if(result) {await configure({download_dir:result});path.set(result);}})}/>
       <Action label={t("Save")} press={() => run(async () => {await configure({download_dir:path().trim()||null});path.set(await Library.downloadFolder());})}/>
-      <Action label={t("Default")} press={() => run(async () => {await configure({download_dir:null}); path.set(await Library.downloadFolder());})}/>
+      <Action id="default-folder" label={t("Default")} press={() => run(async () => {await configure({download_dir:null}); path.set(await Library.downloadFolder());})}/>
       <Action label={t("Open folder")} press={() => run(() => Library.openLocation("folder"))}/>
     </View>
     <ChoiceField id="resolution" label={t("Global resolution")} value={s().download_resolution}

@@ -9,7 +9,7 @@ cat > "$appdir/AppRun" <<'RUN'
 #!/bin/sh
 dir=$(dirname "$(readlink -f "$0")")
 case "${1:-}" in
-  --daily-wallpaper|--scheduled-wallpaper) exec "$dir/usr/libexec/bing-wallpaper-task" "$@" ;;
+  --daily-wallpaper|--scheduled-wallpaper|--install-wallpaper-update) exec "$dir/usr/libexec/bing-wallpaper-task" "$@" ;;
   *) exec "$dir/AppRun.nsh" "$@" ;;
 esac
 RUN

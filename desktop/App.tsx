@@ -2,7 +2,7 @@ import { computed, effect, mount, Scroll, signal, Text, View, windowSize } from 
 import { Dialog } from "nsh/base";
 import { Application, currentWindow, Tray, Window } from "nsh/desktop";
 import { Library } from "wallpaper-native";
-import { active, load, month, page, photos, pollTransfers, refresh, selected, source } from "./src/library";
+import { active, checking, checkUpdate, flushHistory, installUpdate, load, month, page, photos, pollTransfers, refresh, restoreHistory, selected, source, update } from "./src/library";
 import { applied, loadPreferences, preferences, run, status, t } from "./src/preferences";
 import { Action } from "./src/ui/Action";
 import { Gallery, Preview } from "./src/ui/Gallery";
@@ -29,6 +29,7 @@ function App() {
   });
   function go(key:ReturnType<typeof page>) {page.set(key);drawer.set(false);}
   Application.on("reopen",show);
+  Application.on("quit",flushHistory);
   effect(() => {
     if(!preferences()?.background_resident_enabled || !Library.trayAvailable()) {Tray.set(null);return;}
     Tray.set({tooltip:t("Wallpaper library"),onClick:show,menu:[
@@ -44,10 +45,34 @@ function App() {
   });
   run(async () => {
     await load(); ready.set(true);
+    run(restoreHistory);
     if(photos()[0]) expanded.set([photos()[0].date.slice(0,4)]);
-    if(source()) void refresh();
+    if(photos().length) setTimeout(() => {Library.windowReady();run(()=>Library.repairTasks());
+      run(async()=>{const error=await Library.lastUpdateError();if(error)status.set(error);});
+    },0);
+    if(source()) {void refresh(); void checkUpdate(false,true);}
   });
   run(async () => {await loadPreferences(); if(Library.backgroundLaunch() && canHide()) win.hide();});
+  let dailyBusy=false;
+  let lastDaily:string|null|undefined;
+  effect(()=>{
+    const settings=preferences();
+    if(!settings?.auto_wallpaper_enabled) return;
+    if(lastDaily===undefined) lastDaily=settings.last_auto_wallpaper_date || "";
+    const tick=async()=>{
+      if(dailyBusy) return;
+      dailyBusy=true;
+      try {
+        const marker=await Library.tickDaily();
+        if(marker && marker!==lastDaily) {
+          lastDaily=marker;status.set(t("Applied"));
+          if(preferences()?.auto_wallpaper_exit_after_done) Application.quit();
+        }
+      } finally {dailyBusy=false;}
+    };
+    run(tick);
+    const timer=setInterval(()=>run(tick),60_000);return ()=>clearInterval(timer);
+  });
   effect(() => {
     if (!ready() || !source()) return;
     const timer=setInterval(() => void refresh(),30*60*1000); return () => clearInterval(timer);
@@ -85,6 +110,15 @@ function App() {
       <If when={!!status()}><Text testID={applied() ? "applied" : "status"} class="text-sm text-muted-foreground">{status()}</Text></If>
     </View>
     <If when={selected()}>{photo => <Preview photo={photo()}/>}</If>
+    <If when={update()}>{item => <Dialog open class="m-auto rounded-xl bg-card" onOpenChange={({open})=>{if(!open)update.set(null);}}>
+      <View class="gap-3 p-4"><Text class="text-lg font-semibold text-foreground">{t("Update available")} · {item().version}</Text>
+        <Text class="text-muted-foreground">{item().path || [source(),item().minimum,((item().bytes || 0)/1048576).toFixed(1)+" MiB"].join(" · ")}</Text>
+        <View class="flex-row flex-wrap gap-2"><Action label={t("Later")} press={()=>update.set(null)}/>
+          <Action label={t("View release notes")} press={()=>run(()=>Library.openLocation("releases"))}/>
+          <Action primary disabled={checking()} label={t(item().state==="staged"?"Update now":"Download")} press={()=>{if(item().state==="staged") void installUpdate(); else void checkUpdate(true);}}/>
+        </View>
+      </View>
+    </Dialog>}</If>
     <If when={confirmingExit()}><Dialog open class="m-auto rounded-xl bg-card" onOpenChange={({open})=>{if(!open)confirmingExit.set(false);}}>
       <View class="gap-3 p-4"><Text class="font-semibold text-foreground">{t("Exit app prompt")}</Text>
         <View class="flex-row gap-2"><Action label={t("Cancel")} press={()=>confirmingExit.set(false)}/>

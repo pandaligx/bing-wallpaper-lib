@@ -1,4 +1,4 @@
-import { effect, Image, List, Text, View, windowSize } from "nsh";
+import { computed, effect, Image, List, Text, View, windowSize } from "nsh";
 import type { ListRef } from "nsh";
 import { Button, Dialog, Progress } from "nsh/base";
 import { active, download, entries, favorite, month, page, photos, saved, selected, transfers } from "../library";
@@ -9,29 +9,52 @@ import { Action } from "./Action";
 const positions = new Map<string, number>();
 export function columns() { return Math.max(1, Math.floor((windowSize().width - (windowSize().width >= 800 ? 240 : 40)) / 230)); }
 const section = () => page() === "month" ? month() : page();
+function Featured(props:{photo:Photo}) {
+  const photo=()=>props.photo;
+  const wide=()=>windowSize().width>=700;
+  return <View class={wide()?"flex-row overflow-hidden rounded-lg border border-border bg-card":"overflow-hidden rounded-lg border border-border bg-card"}>
+    <Button testID="latest-photo" accessibilityLabel={t("Preview")+" · "+photo().date}
+      onPress={()=>selected.set(photo())} style={{width:wide()?"54%":"100%"}}>
+      <Image src={photo().preview} style={{width:"100%",aspectRatio:16/9}}/>
+    </Button>
+    <View class="flex-1 justify-center gap-2 p-4">
+      <Text class="text-sm text-muted-foreground">{photo().date}</Text>
+      <Text class="text-xl font-semibold text-foreground">{photo().headline || photo().date}</Text>
+      <Text class="text-sm text-muted-foreground">{photo().description}</Text>
+      <View class="flex-row flex-wrap gap-2">
+        <Action primary label={t("Preview")} press={()=>selected.set(photo())}/>
+        <Action label={t(saved().includes(photo().date)?"Cancel favorite":"Favorite")} press={()=>favorite(photo())}/>
+      </View>
+    </View>
+  </View>;
+}
 export function Gallery() {
   let grid: ListRef | undefined;
   let previous = "";
   let version = 0;
+  const list=computed(()=>page()==="home"?photos().slice(1):entries());
   effect(() => {
     const key = section(), count = columns();
     if (!count || !grid || previous === key + count) return;
     previous = key + count;
     const index = positions.get(key) ?? 0;
     const turn = ++version;
-    setTimeout(() => { if (turn === version && section() === key && grid) grid.scrollToIndex({index,animated:false}); },0);
+    setTimeout(() => { if (turn !== version || section() !== key || !grid) return;
+      if(index) grid.scrollToIndex({index,animated:false});else grid.scrollToOffset({offset:0,animated:false});
+    },0);
   });
   return <View class="flex-1 gap-2">
     <View class="flex-row items-center justify-between gap-2">
       <Text class="text-muted-foreground">{entries().length} {t("Wallpapers")}</Text>
-      <Action label={t("Back to top")} press={() => grid?.scrollToIndex({index:0,animated:true})}/>
+      <Action label={t("Back to top")} press={() => grid?.scrollToOffset({offset:0,animated:true})}/>
     </View>
     <If when={page() === "favorites" && !entries().length}><Text class="text-muted-foreground">{t("No favorite wallpapers yet")}</Text></If>
-    <List testID="wallpaper-grid" ref={node => {grid = node;}} each={entries()} keyExtractor={p => p.date} class="flex-1"
-      numColumns={columns()} estimatedItemSize={206} initialScrollIndex={positions.get(section()) ?? 0}
+    <List testID="wallpaper-grid" ref={node => {grid = node;}} each={list()} keyExtractor={p => p.date} class="flex-1"
+      header={<If when={page()==="home"?photos()[0]:undefined}>{p=><Featured photo={p()}/>}</If>}
+      numColumns={columns()} estimatedItemSize={206} initialScrollIndex={positions.get(section()) || undefined}
       onViewableItemsChange={({viewableItems}) => { if (viewableItems.length) positions.set(section(),viewableItems[0].index); }}
       contentStyle={{gap:10}}>
-      {photo => <Button testID={photo().date === photos()[0]?.date ? "latest-photo" : "photo-" + photo().date}
+      {photo => <Button testID={"photo-" + photo().date}
         onPress={() => selected.set(photo())} class="overflow-hidden rounded-lg border border-border bg-card hover:bg-accent active:opacity-80">
         <Image src={photo().thumbnail} style={{width:"100%",aspectRatio:16/9}}/>
         <View class="gap-1 px-3 py-2">

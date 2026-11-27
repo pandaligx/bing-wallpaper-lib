@@ -58,7 +58,7 @@ fn version(tag: &str) -> Option<Version> {
     Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
 }
 
-fn allowed(source: Source, url: &Url) -> bool {
+pub(crate) fn allowed(source: Source, url: &Url) -> bool {
     let host = url.host_str().unwrap_or("");
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return false;
@@ -112,6 +112,15 @@ fn attachment<'a>(release: &'a Release, name: &str) -> Result<&'a str> {
     Ok(&first.browser_download_url)
 }
 
+fn platform_package() -> Result<(&'static str, &'static str, &'static str)> {
+    Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => ("windows", "x64", "windows-x64.exe"),
+        ("linux", "x86_64") => ("linux", "x86_64", "linux-x86_64.AppImage"),
+        ("macos", "x86_64" | "aarch64") => ("macos", "universal", "macos-universal.dmg"),
+        _ => bail!("当前平台没有更新包"),
+    })
+}
+
 pub async fn check(source: Source, download: bool) -> Result<String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(25))
@@ -141,7 +150,7 @@ pub async fn check(source: Source, download: bool) -> Result<String> {
         .filter(|(v, _)| v.pre.is_empty() && *v > current)
         .max_by(|a, b| a.0.cmp(&b.0));
     let Some((expected, release)) = candidate else {
-        return Ok(format!("{} · 已是最新版本", source.name()));
+        return Ok(serde_json::json!({"state":"current","provider":source.name()}).to_string());
     };
     let url = attachment(&release, "signed-release.json")?;
     let bytes = read(&client, source, url).await?;
@@ -149,12 +158,7 @@ pub async fn check(source: Source, download: bool) -> Result<String> {
         .filter(|s| !s.is_empty())
         .context("此测试构建未配置正式更新公钥")?;
     let manifest = verified(&bytes, &URL_SAFE_NO_PAD.decode(key)?, &expected)?;
-    let (os, arch, suffix) = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => ("windows", "x64", "windows-x64.exe"),
-        ("linux", "x86_64") => ("linux", "x86_64", "linux-x86_64.AppImage"),
-        ("macos", "x86_64" | "aarch64") => ("macos", "universal", "macos-universal.dmg"),
-        _ => bail!("当前平台没有更新包"),
-    };
+    let (os, arch, suffix) = platform_package()?;
     let filename = format!("BingWallpaperLib-v{expected}-{suffix}");
     let mut candidates = manifest
         .artifacts
@@ -188,6 +192,7 @@ pub async fn check(source: Source, download: bool) -> Result<String> {
             .open(root.join("update.lock"))?;
         lock.try_lock_exclusive().context("更新包正在下载")?;
         let target = root.join(&filename);
+        crate::paths::write_atomic(&root.join("signed-release.json"), &bytes)?;
         let expected_bytes = asset.bytes;
         let expected_hash = asset.sha256.clone();
         if target.try_exists()? {
@@ -195,10 +200,18 @@ pub async fn check(source: Source, download: bool) -> Result<String> {
             let digest = expected_hash.clone();
             tokio::task::spawn_blocking(move || verify_file(&existing, expected_bytes, &digest))
                 .await??;
-            return Ok(format!("已校验更新包：{}", target.display()));
+            return Ok(
+                serde_json::json!({"state":"staged","version":expected.to_string(),"path":target})
+                    .to_string(),
+            );
         }
-        let url = crate::transfer::direct_url(&client, attachment(&release, &filename)?).await?;
-        let staging = crate::transfer::fetch(url.as_str(), &root, "update.partial").await?;
+        let origin = crate::transfer::probe(
+            &client,
+            attachment(&release, &filename)?,
+            Some(expected_bytes),
+        )
+        .await?;
+        let staging = crate::transfer::fetch(&origin, &root, "update.partial").await?;
         let path = tokio::task::spawn_blocking(move || {
             let temporary = tempfile::TempPath::try_from_path(staging)?;
             verify_file(&temporary, expected_bytes, &expected_hash)?;
@@ -206,15 +219,42 @@ pub async fn check(source: Source, download: bool) -> Result<String> {
             Ok::<_, anyhow::Error>(target)
         })
         .await??;
-        return Ok(format!("已校验更新包：{}", path.display()));
+        return Ok(
+            serde_json::json!({"state":"staged","version":expected.to_string(),"path":path})
+                .to_string(),
+        );
     }
-    Ok(format!(
-        "{} · 发现新版本 {} · {} · {:.1} MiB",
-        source.name(),
-        expected,
-        asset.minimum_system,
-        asset.bytes as f64 / 1048576.0
-    ))
+    Ok(serde_json::json!({"state":"available","version":expected.to_string(),"minimum":asset.minimum_system,"bytes":asset.bytes,"provider":source.name()}).to_string())
+}
+
+/// Copy the staged distribution artifact and authenticate the actual copy on the installation volume.
+pub(crate) fn copy_verified(version_text: &str, destination: &std::path::Path) -> Result<()> {
+    let expected = Version::parse(version_text)?;
+    ensure!(
+        expected > Version::parse(env!("CARGO_PKG_VERSION"))? && expected.pre.is_empty(),
+        "无效的更新版本"
+    );
+    let source = crate::region::selected()?.context("请选择更新地区")?;
+    let root = crate::paths::app_data_dir()?
+        .join("updates")
+        .join(source.name())
+        .join(expected.to_string());
+    let key = option_env!("BING_WALLPAPER_UPDATE_PUBLIC_KEY")
+        .filter(|k| !k.is_empty())
+        .context("缺少更新公钥")?;
+    let envelope = std::fs::read(root.join("signed-release.json"))?;
+    ensure!(envelope.len() <= LIMIT, "清单过大");
+    let manifest = verified(&envelope, &URL_SAFE_NO_PAD.decode(key)?, &expected)?;
+    let (os, arch, suffix) = platform_package()?;
+    let name = format!("BingWallpaperLib-v{expected}-{suffix}");
+    let mut rows = manifest
+        .artifacts
+        .iter()
+        .filter(|a| a.os == os && a.arch == arch && a.filename == name);
+    let asset = rows.next().context("未找到本平台附件")?;
+    ensure!(rows.next().is_none() && asset.bytes > 0, "发行清单无效");
+    std::fs::copy(root.join(name), destination)?;
+    verify_file(destination, asset.bytes, &asset.sha256)
 }
 
 fn verify_file(path: &std::path::Path, length: u64, digest: &str) -> Result<()> {

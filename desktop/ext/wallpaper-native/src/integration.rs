@@ -11,6 +11,11 @@ mod folder_picker;
 #[path = "../../../../src/startup.rs"]
 mod startup;
 
+#[cfg(windows)]
+pub(crate) fn has_startup_entry() -> bool {
+    startup::is_enabled()
+}
+
 pub fn choose_folder() -> Result<String> {
     #[cfg(windows)]
     let path = folder_picker::pick_folder()?;

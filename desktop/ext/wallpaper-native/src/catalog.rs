@@ -50,6 +50,23 @@ pub async fn refresh(source: Source) -> Result<String> {
     let client = reqwest::Client::builder()
         .user_agent("BingWallpaperLib/0.3")
         .timeout(std::time::Duration::from_secs(18))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            let bing = |url: &reqwest::Url| {
+                url.scheme() == "https"
+                    && url
+                        .host_str()
+                        .is_some_and(|h| h == "bing.com" || h.ends_with(".bing.com"))
+            };
+            let permitted = match attempt.previous().first() {
+                Some(first) if bing(first) => bing(attempt.url()),
+                _ => crate::release::allowed(source, attempt.url()),
+            };
+            if permitted && attempt.previous().len() < 8 {
+                attempt.follow()
+            } else {
+                attempt.error("归档重定向不属于所选来源")
+            }
+        }))
         .build()?;
     let remote = text(&client, source.archive()).await;
     let mut entries = archive::local_entries();

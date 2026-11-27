@@ -16,35 +16,58 @@ async fn main() -> Result<()> {
         (1..=16).contains(&connections),
         "Use 1 through 16 connections"
     );
+    let batch = url.strip_prefix('@');
+    let urls: Vec<String> = match batch {
+        Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+        None => vec![url.clone()],
+    };
     let engine = DownloadEngine::new(
         EngineConfig::default()
             .database_path(path.join("bench.sqlite"))
-            .max_concurrent_downloads(1),
+            .max_concurrent_downloads(if batch.is_some() { 4 } else { 1 }),
     )
     .await?;
     let started = Instant::now();
-    let id = engine
-        .add_http(
-            &url,
-            DownloadOptions::new()
-                .save_dir(&path)
-                .filename("payload")
-                .max_connections(connections),
-        )
-        .await?;
+    let mut tasks = Vec::new();
+    for (i, url) in urls.iter().enumerate() {
+        let name = if batch.is_some() {
+            format!("day-{i:02}")
+        } else {
+            "payload".to_owned()
+        };
+        let id = engine
+            .add_http(
+                url,
+                DownloadOptions::new()
+                    .save_dir(&path)
+                    .filename(&name)
+                    .max_connections(connections),
+            )
+            .await?;
+        tasks.push((id, name));
+    }
     let mut peak = 0;
     loop {
-        let status = engine.status(id).context("Transfer disappeared")?;
-        peak = peak.max(status.progress.connections);
-        match status.state {
-            DownloadState::Completed => break,
-            DownloadState::Error { message, .. } => bail!(message),
-            _ => tokio::time::sleep(Duration::from_millis(25)).await,
+        let mut complete = 0;
+        let mut connections = 0;
+        for (id, _) in &tasks {
+            let status = engine.status(*id).context("Transfer disappeared")?;
+            connections += status.progress.connections;
+            match status.state {
+                DownloadState::Completed => complete += 1,
+                DownloadState::Error { message, .. } => bail!(message),
+                _ => (),
+            }
         }
+        peak = peak.max(connections);
+        if complete == tasks.len() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     println!(
         "{}",
-        serde_json::json!({"elapsedMs":started.elapsed().as_millis(),"peakConnections":peak,"bytes":std::fs::metadata(path.join("payload"))?.len()})
+        serde_json::json!({"elapsedMs":started.elapsed().as_millis(),"peakConnections":peak,"files":tasks.len()})
     );
     engine.shutdown().await?;
     Ok(())

@@ -8,6 +8,35 @@ use std::{fs, process::Command};
 #[path = "../../../../src/task_scheduler.rs"]
 pub mod windows;
 
+#[cfg(windows)]
+pub(crate) fn repair_portable_tasks() -> Result<()> {
+    let root = paths::config_dir()?;
+    let marker = root.join("nsh-installed-path");
+    let exe = std::env::current_exe()?;
+    let key = format!("{}\n{}", env!("CARGO_PKG_VERSION"), exe.display());
+    if fs::read_to_string(&marker).is_ok_and(|existing| existing == key) {
+        return Ok(());
+    }
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("scheduler-config.lock"))?;
+    lock.lock_exclusive()?;
+    let settings: AppSettings = serde_json::from_str(&preferences::get()?)?;
+    if settings.auto_wallpaper_enabled {
+        install(true, &settings)?;
+    }
+    if settings.periodic_task_enabled && windows::is_enabled() {
+        install(false, &settings)?;
+    }
+    if !settings.periodic_task_enabled && crate::integration::has_startup_entry() {
+        crate::integration::startup_enabled(true)?;
+    }
+    paths::write_atomic(&marker, key.as_bytes())
+}
+
 pub fn configure(raw: &str) -> Result<String> {
     let value: Value = serde_json::from_str(raw)?;
     let changes = value.as_object().context("无效的定时设置")?;
@@ -59,8 +88,9 @@ pub fn configure(raw: &str) -> Result<String> {
         changes.insert("last_periodic_latest_date".into(), Value::Null);
     }
     if (daily && !previous.auto_wallpaper_enabled && !next.auto_wallpaper_enabled)
-        || (periodic && !previous.periodic_task_enabled && !next.periodic_task_enabled) {
-        return preferences::edit(&dir,&changes);
+        || (periodic && !previous.periodic_task_enabled && !next.periodic_task_enabled)
+    {
+        return preferences::edit(&dir, &changes);
     }
     let result = install(daily, &next).and_then(|_| preferences::edit(&dir, &changes));
     if let Err(error) = result {

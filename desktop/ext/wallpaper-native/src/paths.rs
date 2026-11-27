@@ -2,6 +2,9 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 fn directory(base: Option<PathBuf>) -> Result<PathBuf> {
+    // Development runners can exercise migration on a disposable copy of a profile.
+    #[cfg(debug_assertions)]
+    let base = std::env::var_os("BING_WALLPAPER_TEST_PROFILE").map(PathBuf::from).or(base);
     let path = base
         .context("无法定位用户数据目录")?
         .join("BingWallpaperLib");

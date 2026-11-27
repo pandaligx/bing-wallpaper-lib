@@ -7,6 +7,16 @@ use nsh_platform_windows::{AppOptions, AppSource, Bundle, run_app, set_ui_sets};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--install-wallpaper-update") {
+        return if std::env::args()
+            .nth(2)
+            .is_some_and(|v| wallpaper_native::install_update(&v).is_ok())
+        {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     if let Some(arg) = std::env::args()
         .nth(1)
         .filter(|s| matches!(s.as_str(), "--daily-wallpaper" | "--scheduled-wallpaper"))
@@ -17,9 +27,10 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    if !elevate::ensure_elevated() {
+    if std::env::var_os("BING_WALLPAPER_CONFIRM_WINDOW").is_none() && !elevate::ensure_elevated() {
         return ExitCode::SUCCESS;
     }
+    wallpaper_native::mark_portable();
     set_ui_sets(vec![nsh_base::registry(), wallpaper_native::registry()]);
     // SAFETY: Cargo embeds our own bundle built by the explicitly version-matched NSH CLI.
     let mut bundle =

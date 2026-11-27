@@ -26,7 +26,7 @@ The Windows executable accepts `--daily-wallpaper` and `--scheduled-wallpaper`. 
 
 ## Release integrity
 
-The client reads the selected provider's public release API. Before staging a newer package, it authenticates `signed-release.json`, checks the exact platform filename, and verifies the downloaded size and SHA-256. Windows portable replacement, macOS bundle replacement and AppImage replacement require separate upgrade and rollback acceptance.
+The client reads the selected provider's public release API. Before staging a newer package, it authenticates `signed-release.json`, checks the platform filename, and verifies the downloaded size and SHA-256. On installation a supervisor from the running version verifies a second copy on the installation volume. It keeps the previous executable or bundle until the new process opens its offline library. A startup failure restores the old installation. macOS also checks the bundle signature and Gatekeeper assessment. Real distribution-channel upgrade and rollback results belong in the validation record.
 
 Configure the release verification key through the build variable `BING_WALLPAPER_UPDATE_PUBLIC_KEY` (the unpadded base64url Ed25519 public key, JWK field `x`). The signer stays on the publishing machine. After uploading the same three final packages to both test releases, run the following from the repository root. The script anonymously reads every attachment from each provider before creating the identical signed manifest to upload last.
 
@@ -36,3 +36,9 @@ node scripts/sign-desktop-release.mjs target/nsh-release 0.3.0 /path/to/ed25519-
 ```
 
 To reproduce the download performance comparison, build the `download_bench` example in release mode and run `node scripts/bench-download.mjs <benchmark-binary> <aria2c> [https-url]`. Omitting the URL starts the local per-connection-limited Range server. Each mode runs five times and all three modes must produce identical hashes.
+
+On Windows, `pwsh ./scripts/bench-month.ps1 -Engine <benchmark-binary> -Aria <aria2c> -Month 2026-02` measures a full month, including peak working set and each file's digest. The migration test runs with copies of settings, favorites, unfinished transfers and images under a temporary profile. From the repository root, run `node scripts/test-nsh-migration.mjs` with NSH on PATH or its absolute path in `NSH_BIN`.
+
+For a Developer ID build, set `MACOS_DEVELOPER_ID` to the signing identity and `MACOS_NOTARY_PROFILE` to the local notarytool keychain profile. The packaging script signs the app and helper, notarizes and staples the app, then signs, notarizes and staples the DMG.
+
+For existing public release tags on both sites, `node scripts/publish-desktop-assets.mjs ARTIFACT_DIR VERSION PRIVATE_KEY_FILE` uploads the same three files, verifies anonymous downloads, then publishes the signed manifest last. It reads `GH_TOKEN` and `GITCODE_TOKEN` on the publishing machine. Re-running it compares existing artifacts before signing. Keep private keys and publishing tokens outside the project.

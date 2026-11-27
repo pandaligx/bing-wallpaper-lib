@@ -1,83 +1,37 @@
 # Bing Daily Wallpaper Library
 
-**English** | [简体中文](README.zh-CN.md)
+**English** · [简体中文](README.zh-CN.md)
 
-The NSH desktop rewrite for Windows x64, macOS Universal and Linux x64 is under development on this branch. Build instructions and the native test matrix are in [desktop/README.md](desktop/README.md). The release links below refer to the existing Windows application.
+Browse daily Bing photography by year and month, keep favorites, and set a photo on your desktop. This development branch uses NSH 0.7.2 for its interface and Rust for its archive, downloads and desktop integration.
 
-<p align="center">
-  <img src="docs/screenshot-home.png" alt="Bing Daily Wallpaper Library home screen" width="820" />
-</p>
+## Try the desktop build
 
-<p align="center">
-  <a href="https://github.com/pandaligx/bing-wallpaper-lib/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/pandaligx/bing-wallpaper-lib"></a>
-  <a href="https://github.com/pandaligx/bing-wallpaper-lib/releases/latest"><img alt="downloads" src="https://img.shields.io/github/downloads/pandaligx/bing-wallpaper-lib/total"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white">
-  <img alt="language" src="https://img.shields.io/badge/language-Rust-DEA584?logo=rust&logoColor=white">
-  <img alt="license" src="https://img.shields.io/badge/license-GPL--3.0-blue">
-</p>
+| Platform | Development artifact | Runtime |
+| --- | --- | --- |
+| Windows x64 | `BingWallpaperLib-v0.3.0-windows-x64.exe` | One portable file. The target is Windows 10 1809 or newer. Windows 11 has been exercised. |
+| macOS Intel and Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 or newer. Copy the app to Applications. Development builds use ad-hoc signing. |
+| Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | GTK 4.14+ and WebKitGTK 6.0. Make the AppImage executable before starting it. |
 
-A native Windows application built with Rust, GPUI, and gpui-component. It combines the complete historical archive from [zxyongyo/bing-daily-wallpaper](https://github.com/zxyongyo/bing-daily-wallpaper) with recent data from Bing, then lets you browse, favorite, download, and set daily wallpapers.
+Select a completed build of the rewrite branch to download its artifacts. Users of older Windows systems can still obtain version 0.2.37. [Development builds](https://github.com/pandaligx/bing-wallpaper-lib/actions/workflows/nsh-desktop.yml) · [Windows 0.2.37](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37) · [Validation notes](desktop/VALIDATION.md)
 
-## Features
+## Using the library
 
-- Complete Bing wallpaper history grouped by year and month, with a bundled offline snapshot and verified corrections for missing or damaged archive records.
-- Multilingual interface with system-language detection plus English, Simplified Chinese, Japanese, Korean, Russian, and French.
-- Global download resolution: original UHD, 4K, 2K, or 1K.
-- Virtualized home grid, large-image preview, favorites, and a downloaded-wallpaper gallery.
-- Fast multi-connection downloads through the bundled aria2 JSON-RPC engine.
-- Batch downloads for all history, the selected month, favorites, or a date range.
-- One-click wallpaper setting with all-monitor and individual-monitor targets.
-- Scheduled daily wallpaper changes, startup launch, background mode, and a system tray menu.
-- Optional Windows Task Scheduler integration: run once at user logon and then every 1 minute to 23 hours 59 minutes, use Bing's latest wallpaper for the first successful run each day, and choose later wallpapers randomly from history or favorites. Each scheduled run exits after changing the wallpaper.
-- Light, dark, or system theme and automatic update checks through Gitee and GitHub Releases.
-- DPI-aware window sizing and centering for Windows display scaling, including 125%, 150%, 175%, and 200%.
-- A single statically linked executable with no separate Visual C++ runtime or aria2 installation required.
+- Open the latest photo or expand a year to visit a month. The offline catalog stays available while the application checks for new entries every 30 minutes. Previews use 1080p and support arrow keys and Escape.
+- Favorite a date, or choose original UHD, 4K, 2K or 1K for saving and setting wallpaper. The download center handles all history, one month, favorites or a calendar range. It shows progress, transfer speed, reused files and retryable failures.
+- The local gallery scans the selected folder and can preview, apply or delete completed photos. A deletion dialog shows the selection count.
+- Settings include six interface languages, system/light/dark appearance, download location, login startup, tray behavior and monitor selection. Windows and Plasma support individual screens. GNOME applies the background to the desktop. Other Linux desktops use the available wallpaper portal.
+- Set a daily change time or a repeating interval of 1–1439 minutes. The repeating task can select the latest image on its first successful run each day and then draw from history or favorites.
 
-Use the flag button next to the Settings button in the lower-left sidebar to change the interface language. The selection is saved and applied immediately.
+## Migration and updates
 
-## Automatic wallpaper schedules
+Install the first NSH Windows build manually. Its new filename keeps it separate from the 0.2.37 updater. On first use it reads the existing `%LOCALAPPDATA%\BingWallpaperLib` profile. Configuration changes save the original bytes in `settings.pre-nsh.json`. Photos with a legacy `.aria2` control file stay outside the local gallery.
 
-The original once-per-day schedule remains available. Version 0.2.34 also adds an independent Windows scheduled-task mode under **Settings → Automatic wallpaper**:
+Mainland China uses GitCode and other known regions use GitHub. The app asks when it cannot determine the region. You can change this choice independently of the display language. The public GitCode repository and signed production channel still require release verification. [GitCode project](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib) · [GitHub releases](https://github.com/pandaligx/bing-wallpaper-lib/releases)
 
-- The task runs when the current user logs on and repeats at the selected hours/minutes interval.
-- It does not wake the computer. A missed run starts once Windows becomes available again.
-- The first successful run of each day can use Bing's latest wallpaper; later runs can use random history or random favorites. Empty favorites automatically fall back to history.
-- Every task invocation changes the wallpaper and exits. Enabling this mode disables the older registry-based startup entry so the two startup mechanisms cannot conflict.
+The bundled archive is synchronized every four hours and merged with verified corrections and recent Bing records. Wallpaper copyrights belong to their photographers and respective rights holders. [Upstream archive](https://github.com/zxyongyo/bing-daily-wallpaper) · [Corrections](assets/data/zxyongyo-bing-wallpaper-corrections.json)
 
-## Download
+## Building and maintaining the project
 
-Users in mainland China can download the latest `bing-wallpaper-lib-vX.Y.Z-x64.exe` from [Gitee Releases](https://gitee.com/pandaligx/bing-wallpaper-lib/releases). The same executable is also available from [GitHub Releases](https://github.com/pandaligx/bing-wallpaper-lib/releases/latest).
+Platform build commands, native tests, download benchmarks and release verification are in the developer guide. The root Rust project preserves the previous implementation for comparison. [Desktop development](desktop/README.md) · [Maintenance guide](AGENTS.md) · [Legacy documentation](https://github.com/pandaligx/bing-wallpaper-lib/blob/v0.2.37/README.md)
 
-Run the downloaded executable directly. The application requests administrator permission at startup and does not require an installer.
-
-Automatic updates keep the application in its current folder and use the new release filename. Registered startup and scheduled-task paths are updated automatically.
-
-## Build from source
-
-Requirements:
-
-- Stable Rust with the `x86_64-pc-windows-msvc` target.
-- Visual Studio Build Tools with Desktop development with C++ and a Windows 10/11 SDK.
-
-```powershell
-cargo check
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo build --release
-```
-
-The release executable is written to `target/x86_64-pc-windows-msvc/release/bing-wallpaper-lib.exe`.
-
-## Wallpaper data
-
-Historical metadata comes from the upstream `map.json` file and is synchronized every four hours into [`assets/data/zxyongyo-bing-wallpaper.json`](assets/data/zxyongyo-bing-wallpaper.json). Runtime loading prefers the Gitee mirror and falls back to jsDelivr and GitHub. Recent entries are strengthened with Bing's `HPImageArchive.aspx` API.
-
-Verified archive corrections are kept separately in [`assets/data/zxyongyo-bing-wallpaper-corrections.json`](assets/data/zxyongyo-bing-wallpaper-corrections.json) so later upstream synchronization cannot reintroduce missing or malformed records. This includes the repaired January 26, 2024 Hawk Owl wallpaper.
-
-Wallpaper copyrights belong to Bing, the photographers, and their respective copyright holders.
-
-## License
-
-The application is released under the repository's [GPL-3.0 license](LICENSE). The bundled, unmodified aria2 executable is distributed under [GPL-2.0](https://github.com/aria2/aria2/blob/master/COPYING) and is controlled only through its public JSON-RPC interface.
-
-© 2023-2026 小南瓜
+© 2023-2026 小南瓜 · [GPL-3.0](LICENSE)

@@ -21,11 +21,30 @@ case "$1" in
     helper="$app/Contents/Helpers/bing-wallpaper-task"
     lipo -create "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bing-wallpaper-task" "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/bing-wallpaper-task" -output "$helper"
     lipo "$helper" -verify_arch arm64 x86_64
-    # Development packages use local ad-hoc signatures. Release signing follows notarization setup.
-    codesign --force --sign - "$helper"
-    codesign --force --sign - "$app"
+    identity=${MACOS_DEVELOPER_ID:--}
+    signing=(--force --sign "$identity")
+    if [[ "$identity" != "-" ]]; then
+      : "${MACOS_NOTARY_PROFILE:?Set the notarytool keychain profile for this Developer ID build}"
+      signing+=(--timestamp --options runtime)
+    fi
+    codesign "${signing[@]}" "$helper"
+    codesign "${signing[@]}" "$app"
     codesign --verify --deep --strict "$app"
-    hdiutil create -ov -volname BingWallpaperLib -srcfolder "$app" -format UDZO "$out/BingWallpaperLib-v$version-macos-universal.dmg"
+    dmg="$out/BingWallpaperLib-v$version-macos-universal.dmg"
+    if [[ "$identity" != "-" ]]; then
+      archive=".nsh/out/BingWallpaperLib-notary.zip"
+      ditto -c -k --keepParent "$app" "$archive"
+      xcrun notarytool submit "$archive" --keychain-profile "$MACOS_NOTARY_PROFILE" --wait
+      xcrun stapler staple "$app"
+      spctl --assess --type execute "$app"
+    fi
+    hdiutil create -ov -volname BingWallpaperLib -srcfolder "$app" -format UDZO "$dmg"
+    if [[ "$identity" != "-" ]]; then
+      codesign --force --timestamp --sign "$identity" "$dmg"
+      xcrun notarytool submit "$dmg" --keychain-profile "$MACOS_NOTARY_PROFILE" --wait
+      xcrun stapler staple "$dmg"
+      xcrun stapler validate "$dmg"
+    fi
     ;;
   linux)
     cargo build --locked --release --manifest-path "$manifest" --bin bing-wallpaper-task
