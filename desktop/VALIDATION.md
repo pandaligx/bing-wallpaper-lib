@@ -78,6 +78,8 @@ Windows 11 菜单也使用独立旧配置保存了一个当前不存在的设备
 
 两个 Linux 桌面各自生成了原始截图，同一界面的 PNG 摘要相同。macOS 托管屏幕的截图右边缘受显示区域限制。Windows 中文首页使用同一提交，在本地原生窗口连接 GitCode 刷新后截图。
 
+另外从 GitHub 公共发行页下载同一个 AppImage，在 Ubuntu 24.04 的 GNOME Shell / Mutter 嵌套 Wayland 会话里执行无界面每日任务。实际下载并解码了 1920×1080 壁纸，浅色、深色背景地址均指向该文件，当日成功标记写入。两次抓取合成器画面，核对活动输出区域有 42.6% 的采样像素发生明显变化。[更换前](../docs/nsh-v0.3.0-rc.1/gnome-wallpaper-before.png) · [更换后](../docs/nsh-v0.3.0-rc.1/gnome-wallpaper-after.png) · [GNOME 实际桌面记录](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/45991630333)
+
 Windows 11 验证了已签测试清单驱动的便携升级和回滚。Ubuntu 的独立 XDG 用户目录中，真实 AppImage 完成了一次签名升级并打开新版窗口。再用签名正确但无法启动的包触发失败，原路径上的文件恢复到旧版 SHA-256。GNOME 同时读回浅色与深色桌面的图片地址，KDE Plasma 从当前活动的桌面配置读回实际设置的图片。[原生验收与回滚日志](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/45974101767)
 
 macOS 15 在「应用程序」下的独立测试目录中，还演练了系统签名拒绝。用有效的 Ed25519 测试清单提交这次已发布的真实开发 DMG，安装器在替换前因系统签名检查拒绝该包。原应用的资源签名和可执行文件摘要保持一致，原窗口再次成功打开。[macOS 更新拒绝演练](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/45987806774)
