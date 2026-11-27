@@ -1,0 +1,42 @@
+name: Verify wallpaper on a running GNOME desktop
+on:
+  push:
+    branches: [validation/gnome-desktop]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published NSH desktop test release
+        required: true
+        default: v0.3.0-rc.1
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RC_TAG: ${{ inputs.tag || 'v0.3.0-rc.1' }}
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare a nested GNOME Shell desktop
+        run: |
+          sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o Acquire::Retries=3 update -qq
+          sudo apt-get install -y --no-install-recommends gnome-shell gsettings-desktop-schemas dbus-x11 xvfb xauth imagemagick python3-pil libgl1-mesa-dri libwebkitgtk-6.0-4 libgtk-4-1
+      - name: Set and observe the desktop background with the public AppImage
+        run: |
+          set -euo pipefail
+          [[ "$RC_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]
+          name="BingWallpaperLib-${RC_TAG%-rc.*}-linux-x86_64.AppImage"
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RC_TAG" | jq -er --arg name "$name" '.assets[] | select(.name == $name) | .digest | ltrimstr("sha256:")')
+          gh release download "$RC_TAG" --pattern "$name" --dir "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP" && printf '%s  %s\n' "$sha" "$name" | sha256sum -c -)
+          chmod +x "$RUNNER_TEMP/$name"
+          xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX' dbus-run-session -- bash scripts/test-gnome-session.sh "$RUNNER_TEMP/$name"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gnome-shell-wallpaper
+          path: ${{ runner.temp }}/gnome-evidence/
+          if-no-files-found: ignore
