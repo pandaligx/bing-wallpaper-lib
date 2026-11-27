@@ -226,10 +226,8 @@ fn install(daily: bool, s: &AppSettings) -> Result<()> {
             s.auto_wallpaper_hour, s.auto_wallpaper_minute
         )
     } else {
-        format!(
-            "<key>StartInterval</key><integer>{}</integer><key>RunAtLoad</key><true/>",
-            u32::from(s.periodic_interval_minutes) * 60
-        )
+        // launchd coalesces missed calendar events on wake. Rust checks elapsed wall-clock minutes.
+        "<key>StartCalendarInterval</key><dict/><key>RunAtLoad</key><true/>".to_owned()
     };
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{id}</string><key>ProgramArguments</key><array><string>{helper}</string><string>{argument}</string></array>{timing}</dict></plist>"#
@@ -285,10 +283,8 @@ fn install(daily: bool, s: &AppSettings) -> Result<()> {
             s.auto_wallpaper_hour, s.auto_wallpaper_minute
         )
     } else {
-        format!(
-            "OnStartupSec=10s\nOnUnitActiveSec={}min",
-            s.periodic_interval_minutes
-        )
+        // Persistent calendar events catch up after sleep without waking the machine.
+        "OnStartupSec=10s\nOnCalendar=minutely\nPersistent=true".to_owned()
     };
     let timer_text = format!(
         "[Unit]\nDescription=Bing wallpaper {mode} timer\n[Timer]\n{timing}\nAccuracySec=1s\n[Install]\nWantedBy=timers.target\n"
@@ -304,6 +300,29 @@ fn install(daily: bool, s: &AppSettings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "exercises the logged-in user's actual scheduler on a disposable CI runner"]
+    fn register_native_desktop_tasks() {
+        assert_eq!(
+            std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+            Ok("github-hosted")
+        );
+        let operation = std::env::var("BING_SCHEDULER_TEST").unwrap();
+        assert!(matches!(operation.as_str(), "enable" | "disable"));
+        let enabled = operation == "enable";
+        let settings = AppSettings {
+            auto_wallpaper_enabled: enabled,
+            auto_wallpaper_hour: 5,
+            auto_wallpaper_minute: 43,
+            periodic_task_enabled: enabled,
+            periodic_interval_minutes: 1439,
+            ..Default::default()
+        };
+        install(true, &settings).unwrap();
+        install(false, &settings).unwrap();
+    }
 
     #[test]
     fn manual_edit_skips_only_a_time_that_has_already_passed() {

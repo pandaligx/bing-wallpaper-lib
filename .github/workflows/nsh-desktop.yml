@@ -118,6 +118,9 @@ jobs:
           if-no-files-found: error
       - name: Test native extension
         run: cargo test --locked --manifest-path desktop/ext/wallpaper-native/Cargo.toml
+      - name: Register and trigger both native scheduled jobs
+        if: runner.os != 'Windows'
+        run: bash scripts/test-unix-task-registration.sh
       - name: Open the packaged Linux AppImage
         if: runner.os == 'Linux'
         shell: bash

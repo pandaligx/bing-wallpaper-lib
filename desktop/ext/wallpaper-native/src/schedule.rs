@@ -18,6 +18,12 @@ pub(crate) fn task_lock(root: &std::path::Path) -> Result<fs::File> {
         .open(root.join("automatic-wallpaper.lock"))?)
 }
 
+fn periodic_due(now: i64, last: i64, interval_minutes: u16) -> bool {
+    // Calendar events can arrive either side of the previous event's second within its minute.
+    let minutes = now.div_euclid(60) - last.div_euclid(60);
+    minutes < 0 || minutes >= i64::from(interval_minutes)
+}
+
 pub fn run(argument: &str) -> Result<()> {
     let daily = match argument {
         "--daily-wallpaper" | "--change-now" => true,
@@ -58,11 +64,9 @@ pub fn run(argument: &str) -> Result<()> {
         let last = root.join("periodic-run-time");
         if let Ok(timestamp) = fs::read_to_string(last)
             && let Ok(epoch) = timestamp.parse::<i64>()
+            && !periodic_due(now.timestamp(), epoch, settings.periodic_interval_minutes)
         {
-            let elapsed = now.timestamp() - epoch;
-            if elapsed >= 0 && elapsed < i64::from(settings.periodic_interval_minutes) * 60 {
-                return Ok(());
-            }
+            return Ok(());
         }
     }
 
@@ -112,8 +116,25 @@ pub fn run(argument: &str) -> Result<()> {
     if !daily {
         paths::write_atomic(
             &root.join("periodic-run-time"),
-            Local::now().timestamp().to_string().as_bytes(),
+            now.timestamp().to_string().as_bytes(),
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::periodic_due;
+
+    #[test]
+    fn periodic_wall_clock_includes_suspended_time_and_coalesces_missed_intervals() {
+        let start = 6003;
+        assert!(!periodic_due(6059, start, 1));
+        assert!(periodic_due(6060, start, 1));
+        assert!(!periodic_due(6060, start, 1439));
+        let resumed = start + 3 * 1439 * 60;
+        assert!(periodic_due(resumed, start, 1439));
+        assert!(!periodic_due(resumed + 60, resumed, 1439));
+        assert!(periodic_due(start - 3600, start, 60));
+    }
 }
