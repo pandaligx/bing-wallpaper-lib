@@ -37,9 +37,30 @@ export async function makeManifest(directory, version) {
   return { format: 1, version, artifacts };
 }
 
+async function anonymousRequest(provider, address, timeout, request) {
+  let url = new URL(address);
+  const signal = AbortSignal.timeout(timeout);
+  for (let redirect = 0; redirect <= 8; redirect++) {
+    const host = url.hostname;
+    const permitted = provider === "GitHub"
+      ? host === "github.com" || host === "api.github.com" || host.endsWith(".githubusercontent.com")
+      : host === "gitcode.com" || host.endsWith(".gitcode.com") || host === "gitcodeusercontent.com" || host.endsWith(".gitcodeusercontent.com");
+    if (!permitted || url.protocol !== "https:" || url.username || url.password) {
+      throw new Error(`${provider}: unexpected download origin ${host}`);
+    }
+    const response = await request(url, { signal, redirect: "manual" });
+    if (![301,302,303,307,308].includes(response.status)) return response;
+    const next = response.headers.get("location");
+    await response.body?.cancel();
+    if (!next) throw new Error(`${provider}: redirect without a location`);
+    url = new URL(next, url);
+  }
+  throw new Error(`${provider}: too many redirects`);
+}
+
 export async function verifyPublished(manifest, request = fetch) {
   for (const [provider, api] of repositories) {
-    const response = await request(api + "v" + manifest.version, { signal: AbortSignal.timeout(30_000) });
+    const response = await anonymousRequest(provider, api + "v" + manifest.version, 30_000, request);
     if (!response.ok) throw new Error(`${provider} release API: HTTP ${response.status}`);
     const release = await response.json();
     if (release.tag_name !== "v" + manifest.version) throw new Error(`${provider}: wrong release tag`);
@@ -47,8 +68,7 @@ export async function verifyPublished(manifest, request = fetch) {
       const matches = release.assets.filter(row => row.name === asset.filename);
       if (matches.length !== 1) throw new Error(`${provider}: expected exactly one ${asset.filename}`);
       const url = new URL(matches[0].browser_download_url);
-      if (url.protocol !== "https:" || url.username || url.password) throw new Error("Invalid attachment URL");
-      const download = await request(url, { signal: AbortSignal.timeout(600_000) });
+      const download = await anonymousRequest(provider, url, 600_000, request);
       if (!download.ok || !download.body) throw new Error(`${provider} ${asset.filename}: HTTP ${download.status}`);
       const actual = await fingerprint(download.body, asset.bytes);
       if (actual.bytes !== asset.bytes || actual.sha256 !== asset.sha256) {

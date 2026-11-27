@@ -102,6 +102,13 @@ fn destination(
 }
 
 pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<PathBuf> {
+    Ok(download_with_status(entry, settings).await?.0)
+}
+
+pub async fn download_with_status(
+    entry: WallpaperEntry,
+    settings: AppSettings,
+) -> Result<(PathBuf, bool)> {
     let root = settings.effective_download_dir()?;
     let staging = root.join(".bing-downloads");
     std::fs::create_dir_all(&staging)?;
@@ -120,7 +127,7 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
     })
     .await??;
     if existing {
-        return Ok(final_path);
+        return Ok((final_path, true));
     }
     let url = entry.download_url(settings.download_resolution);
     let remote = url::Url::parse(&url)?;
@@ -160,7 +167,7 @@ pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<Pa
             .persist_noclobber(&final_path)
             .context("无法保存下载的壁纸")?;
         drop(lock);
-        Ok(final_path)
+        Ok((final_path, false))
     })
     .await?
 }

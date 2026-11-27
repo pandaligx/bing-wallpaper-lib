@@ -4,6 +4,7 @@ pub mod archive;
 mod catalog;
 #[path = "../../../../src/i18n.rs"]
 pub mod i18n;
+mod integration;
 mod local;
 #[path = "../../../../src/local_thumbnails.rs"]
 pub mod local_thumbnails;
@@ -72,6 +73,56 @@ pub struct Library;
 
 #[module]
 impl Library {
+    pub fn app_version() -> String {
+        env!("CARGO_PKG_VERSION").to_owned()
+    }
+    pub fn tray_available() -> bool {
+        integration::tray_available()
+    }
+    pub fn background_launch() -> bool {
+        std::env::args().any(|a| a == "--background")
+    }
+    pub fn host_os() -> String {
+        std::env::consts::OS.to_owned()
+    }
+    pub async fn configure_startup(enabled: bool) -> Result<(), String> {
+        disk(move || integration::startup_enabled(enabled)).await
+    }
+    pub async fn open_location(kind: String) -> Result<(), String> {
+        disk(move || integration::open_location(&kind)).await
+    }
+    pub async fn choose_folder() -> Result<String, String> {
+        disk(integration::choose_folder).await
+    }
+    pub async fn download_folder() -> Result<String, String> {
+        disk(|| {
+            Ok(settings::AppSettings::load()
+                .effective_download_dir()?
+                .to_string_lossy()
+                .into_owned())
+        })
+        .await
+    }
+    pub async fn change_now() -> Result<(), String> {
+        disk(|| schedule::run("--change-now")).await
+    }
+    /// Translate the requested labels with the legacy six-language catalogue.
+    pub fn labels(language: String, locale: String, keys: String) -> Result<String, String> {
+        let selected: i18n::LanguagePreference =
+            serde_json::from_value(serde_json::Value::String(language))
+                .map_err(|e| e.to_string())?;
+        let selected = if selected == i18n::LanguagePreference::System {
+            i18n::LanguagePreference::from_locale(&locale)
+        } else {
+            selected
+        };
+        let keys: Vec<String> = serde_json::from_str(&keys).map_err(|e| e.to_string())?;
+        let labels: std::collections::BTreeMap<_, _> = keys
+            .iter()
+            .map(|k| (k, i18n::translate(selected, k)))
+            .collect();
+        Ok(serde_json::json!({"locale":selected.gpui_locale(),"labels":labels}).to_string())
+    }
     /// Read the corrected offline catalogue, newest date first.
     pub async fn catalog() -> Result<String, String> {
         runtime()
@@ -149,12 +200,12 @@ impl Library {
             .spawn(async move {
                 let settings = settings::AppSettings::load();
                 let target = settings.wallpaper_target.clone();
-                let path = transfer::download(entry, settings).await?;
+                let (path, reused) = transfer::download_with_status(entry, settings).await?;
                 if apply {
                     let file = path.clone();
                     tokio::task::spawn_blocking(move || platform::apply(&file, &target)).await??;
                 }
-                Ok::<_, anyhow::Error>(path.to_string_lossy().into_owned())
+                Ok::<_, anyhow::Error>(serde_json::json!({"path":path,"reused":reused}).to_string())
             })
             .await
             .map_err(|e| e.to_string())?
@@ -218,6 +269,6 @@ impl Library {
 
     /// Remove only generated thumbnails.
     pub async fn clear_thumbnail_cache() -> Result<(), String> {
-        disk(local_thumbnails::clear).await
+        disk(integration::clear_cache).await
     }
 }

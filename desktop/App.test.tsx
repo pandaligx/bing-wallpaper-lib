@@ -1,14 +1,22 @@
 import { expect, open, test } from "nsh/test";
 
-test("opens the offline library and switches collections", async () => {
-  const app = await open("./App.tsx");
-  expect(app.texts()).toContain("必应每日壁纸库");
+test("opens a dated preview, archive month, favorites, downloads, local gallery and settings", async () => {
+  const app = await open("./App.tsx",{width:1100,height:740});
   await app.waitFor("latest-photo");
   await app.press("latest-photo");
-  await app.waitFor("设为桌面壁纸");
-  await app.press("关闭");
-  await app.press("我的收藏");
-  expect(app.texts()).toContain("全部壁纸");
-  await app.press("全部壁纸");
-  expect(app.texts()).toContain("必应每日壁纸库");
+  await app.waitFor("apply-photo");
+  await app.press("next-photo");
+  await app.press("close-preview");
+  await app.press("nav-favorites");
+  await app.press("nav-downloads");
+  await app.waitFor("batch-all");
+  await app.press("nav-local");
+  await app.waitFor("scan-local");
+  await app.press("nav-settings");
+  await app.waitFor("folder-path");
+  await app.press("year-2018");
+  await app.press("month-2018-09");
+  expect(app.texts()).toContain("2018-09");
+  await app.press("nav-home");
+  await app.waitFor("latest-photo");
 });

@@ -11,7 +11,7 @@ use std::{fs, time::Duration};
 
 pub fn run(argument: &str) -> Result<()> {
     let daily = match argument {
-        "--daily-wallpaper" => true,
+        "--daily-wallpaper" | "--change-now" => true,
         "--scheduled-wallpaper" => false,
         _ => anyhow::bail!("未知的定时任务参数"),
     };
@@ -30,7 +30,8 @@ pub fn run(argument: &str) -> Result<()> {
     let now = Local::now();
     let today = now.date_naive();
     let settings: AppSettings = serde_json::from_str(&preferences::get()?)?;
-    if daily {
+    let manual = argument == "--change-now";
+    if daily && !manual {
         if !settings.auto_wallpaper_enabled || settings.last_auto_wallpaper_date == Some(today) {
             return Ok(());
         }
@@ -42,7 +43,7 @@ pub fn run(argument: &str) -> Result<()> {
         {
             return Ok(());
         }
-    } else {
+    } else if !daily {
         if !settings.periodic_task_enabled {
             return Ok(());
         }
@@ -91,6 +92,9 @@ pub fn run(argument: &str) -> Result<()> {
         .await?
     })?;
     platform::apply(&path, &target)?;
+    if manual {
+        return Ok(());
+    }
     let change = if daily {
         json!({"last_auto_wallpaper_date":today})
     } else if choice.used_daily_latest {

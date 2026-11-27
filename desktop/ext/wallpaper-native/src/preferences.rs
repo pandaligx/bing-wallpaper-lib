@@ -33,6 +33,9 @@ pub fn update(patch: &str) -> Result<String> {
                     | "wallpaper_target"
                     | "download_dir"
                     | "theme_preference"
+                    | "startup_enabled"
+                    | "background_resident_enabled"
+                    | "auto_wallpaper_exit_after_done"
                     | "language"
             ),
             "不支持修改此设置"

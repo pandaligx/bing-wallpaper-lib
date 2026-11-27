@@ -31,7 +31,11 @@ impl LanguagePreference {
             return self;
         }
 
-        let locale = system_locale().to_ascii_lowercase();
+        Self::from_locale(&system_locale())
+    }
+
+    pub fn from_locale(locale: &str) -> Self {
+        let locale = locale.to_ascii_lowercase();
         if locale.starts_with("zh") {
             Self::SimplifiedChinese
         } else if locale.starts_with("ja") {
@@ -373,7 +377,7 @@ fn system_locale() -> String {
     std::env::var("LANG").unwrap_or_default()
 }
 
-fn translate(language: LanguagePreference, key: &'static str) -> &'static str {
+pub fn translate(language: LanguagePreference, key: &str) -> &str {
     match language {
         LanguagePreference::English => key,
         LanguagePreference::SimplifiedChinese => match key {

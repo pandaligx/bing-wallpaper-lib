@@ -54,7 +54,15 @@ pub fn configure(raw: &str) -> Result<String> {
             && (1..=1439).contains(&next.periodic_interval_minutes),
         "时间超出范围"
     );
-    let result = install(daily, &next).and_then(|_| preferences::edit(&dir, changes));
+    let mut changes = changes.clone();
+    if !previous.periodic_task_enabled && next.periodic_task_enabled {
+        changes.insert("last_periodic_latest_date".into(), Value::Null);
+    }
+    if (daily && !previous.auto_wallpaper_enabled && !next.auto_wallpaper_enabled)
+        || (periodic && !previous.periodic_task_enabled && !next.periodic_task_enabled) {
+        return preferences::edit(&dir,&changes);
+    }
+    let result = install(daily, &next).and_then(|_| preferences::edit(&dir, &changes));
     if let Err(error) = result {
         return match install(daily, &previous) {
             Ok(()) => Err(error),

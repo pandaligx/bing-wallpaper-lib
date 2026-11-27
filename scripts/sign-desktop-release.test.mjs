@@ -21,6 +21,12 @@ test("both public copies must match the local bytes before signing", async () =>
   await verifyPublished(manifest, provider(false, false));
   await assert.rejects(verifyPublished(manifest, provider(true, false)), /different content/);
   await assert.rejects(verifyPublished(manifest, provider(false, true)), /exactly one/);
+  await assert.rejects(verifyPublished(manifest, (url, options) => {
+    if (url.pathname === "/attachment" && url.hostname === "api.gitcode.com") {
+      return Response.redirect("https://github.com/attachment");
+    }
+    return provider(false, false)(url, options);
+  }), /unexpected download origin/);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const signed = signManifest(manifest, privateKey);
   const payload = Buffer.from(signed.payload, "base64"), signature = Buffer.from(signed.signature, "base64");

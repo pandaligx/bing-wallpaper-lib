@@ -3,6 +3,7 @@
   "id": "cn.lgxng.bingwallpaperlib",
   "version": "0.3.0",
   "build": 1,
+  "singleInstance": true,
   "window": { "title": "必应每日壁纸库" },
   "icon": "icon.png",
   "capabilities": { "application": true, "network": { "hosts": ["bing.com", "*.bing.com"] }, "windows": { "kinds": ["normal", "dialog"] } },

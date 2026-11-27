@@ -20,6 +20,7 @@ try {
     & cargo build --locked --manifest-path desktop/windows/Cargo.toml --release --target-dir $targetDir --target x86_64-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) { throw 'Rust host build failed' }
     $binary = Join-Path $targetDir 'x86_64-pc-windows-msvc/release/bing-wallpaper-desktop.exe'
+    & (Join-Path $PSScriptRoot 'check_windows_imports.ps1') -ExePath $binary -MinimumWindows1809
     $out = New-Item -ItemType Directory -Force (Join-Path $root 'target/nsh-release')
     $artifact = Join-Path $out "BingWallpaperLib-v$($manifest.version)-windows-x64.exe"
     Copy-Item -LiteralPath $binary -Destination $artifact

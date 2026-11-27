@@ -9,7 +9,7 @@ permissions:
   contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   package:
     strategy:
@@ -87,6 +87,7 @@ jobs:
           set -euo pipefail
           nsh check
           nsh test App.test.tsx
+          nsh test Archive.headless.test.tsx
       - name: Exercise the native window and apply a Bing wallpaper
         shell: bash
         run: |

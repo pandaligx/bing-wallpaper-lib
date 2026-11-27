@@ -1,5 +1,6 @@
 param(
-    [string]$ExePath = (Join-Path $PSScriptRoot '..\target\x86_64-pc-windows-msvc\release\bing-wallpaper-lib.exe')
+    [string]$ExePath = (Join-Path $PSScriptRoot '..\target\x86_64-pc-windows-msvc\release\bing-wallpaper-lib.exe'),
+    [switch]$MinimumWindows1809
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,10 +15,10 @@ $imports = & $dumpbin /nologo /imports $exe
 if ($LASTEXITCODE -ne 0) { throw 'dumpbin could not read the executable imports.' }
 $dlls = @($imports | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() } | Sort-Object -Unique)
 if (-not $dlls.Count) { throw 'No DLL imports found; cannot verify executable.' }
-$forbidden = @($dlls | Where-Object { $_ -match '^(icu.*|vcruntime.*|msvcp.*)\.dll$' })
+$forbidden = @($dlls | Where-Object { $_ -match '^(icu.*|vcruntime.*|msvcp.*|ucrtbase|api-ms-win-crt-.*)\.dll$' })
 if ($forbidden.Count) { throw "Unexpected runtime DLL dependencies: $($forbidden -join ', ')" }
 # These functions are resolved with GetProcAddress and must never be static imports.
 $newDpiImports = @($imports | Where-Object { $_ -match '\s(GetDpiForWindow|GetSystemMetricsForDpi)\s*$' })
-if ($newDpiImports.Count) { throw "Windows 10 1607 DPI functions are still imported directly: $newDpiImports" }
-Write-Output "PASS: no ICU/VC runtime DLLs or static Windows 10 1607 DPI helpers in $exe"
+if (!$MinimumWindows1809 -and $newDpiImports.Count) { throw "Windows 10 1607 DPI functions are still imported directly: $newDpiImports" }
+Write-Output "PASS: import table inspected in $exe"
 Write-Output ($dlls -join ', ')
