@@ -74,6 +74,7 @@ fn destination(
         DownloadResolution::OneK => "1k",
     };
     let alternate = original.with_extension(format!("{suffix}.jpg"));
+    let mut available = None;
     for (path, known_resolution) in [(&original, false), (&alternate, true)] {
         let mut marker = path.as_os_str().to_owned();
         marker.push(".aria2");
@@ -84,7 +85,8 @@ fn destination(
             if resolution == DownloadResolution::Original && !known_resolution {
                 continue;
             }
-            return Ok((path.clone(), false));
+            available.get_or_insert_with(|| path.clone());
+            continue;
         }
         if let Ok(dimensions) = validate_image(path) {
             let matches = match resolution {
@@ -98,7 +100,9 @@ fn destination(
             }
         }
     }
-    anyhow::bail!("现有文件与下载目标冲突，已保留原文件")
+    available
+        .map(|path| (path, false))
+        .context("现有文件与下载目标冲突，已保留原文件")
 }
 
 pub async fn download(entry: WallpaperEntry, settings: AppSettings) -> Result<PathBuf> {
@@ -332,6 +336,49 @@ pub async fn pause(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detects_real_range_support_and_changed_content() {
+        use std::io::{BufRead, BufReader, Write};
+        fn probe_fixture(range: &str) -> Result<Origin> {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let url = format!("http://{}/wallpaper", listener.local_addr()?);
+            let range = range.to_owned();
+            let server = std::thread::spawn(move || {
+                for response in ["200 OK\r\nContent-Length: 4194304".to_owned(), range] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(&stream);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                        line.clear();
+                    }
+                    write!(stream, "HTTP/1.1 {response}\r\nConnection: close\r\n\r\n").unwrap();
+                }
+            });
+            let result = crate::runtime()?.block_on(probe(&reqwest::Client::new(), &url, None));
+            server.join().unwrap();
+            result
+        }
+        assert_eq!(
+            probe_fixture(
+                "206 Partial Content\r\nContent-Range: bytes 0-0/4194304\r\nContent-Length: 1"
+            )
+            .unwrap()
+            .connections,
+            4
+        );
+        assert_eq!(
+            probe_fixture("200 OK\r\nContent-Length: 4194304")
+                .unwrap()
+                .connections,
+            1
+        );
+        assert!(
+            probe_fixture(
+                "206 Partial Content\r\nContent-Range: bytes 0-0/4194303\r\nContent-Length: 1"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     #[ignore = "downloads one real Bing wallpaper into an isolated temporary user directory"]
@@ -377,5 +424,12 @@ mod tests {
         );
         assert_eq!(std::fs::read(&original).unwrap(), b"previous download");
         assert!(original.with_extension("jpg.aria2").is_file());
+        // A completed alternate remains usable if the old transfer was cleared elsewhere.
+        std::fs::remove_file(original.with_extension("jpg.aria2")).unwrap();
+        std::fs::remove_file(&original).unwrap();
+        assert_eq!(
+            destination(temp.path(), &entry, DownloadResolution::OneK).unwrap(),
+            (original.with_extension("1k.jpg"), true)
+        );
     }
 }

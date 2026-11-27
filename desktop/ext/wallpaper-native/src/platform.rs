@@ -2,6 +2,53 @@ use crate::settings::WallpaperTarget;
 use anyhow::{Context, Result};
 use std::path::Path;
 
+pub fn available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if desktop.split(':').any(|s| s == "gnome") {
+            return run("gsettings", &["list-schemas"])
+                .is_ok_and(|s| s.lines().any(|line| line == "org.gnome.desktop.background"));
+        }
+        if desktop.split(':').any(|s| s == "kde") {
+            return run(
+                "gdbus",
+                &[
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.freedesktop.DBus",
+                    "--object-path",
+                    "/org/freedesktop/DBus",
+                    "--method",
+                    "org.freedesktop.DBus.NameHasOwner",
+                    "org.kde.plasmashell",
+                ],
+            )
+            .is_ok_and(|s| s.contains("true"));
+        }
+        run(
+            "gdbus",
+            &[
+                "introspect",
+                "--session",
+                "--dest",
+                "org.freedesktop.portal.Desktop",
+                "--object-path",
+                "/org/freedesktop/portal/desktop",
+                "--xml",
+            ],
+        )
+        .is_ok_and(|s| s.contains("name=\"org.freedesktop.portal.Wallpaper\""))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 #[cfg(windows)]
 #[path = "../../../../src/wallpaper_setter.rs"]
 pub mod windows;

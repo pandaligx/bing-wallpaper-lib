@@ -82,6 +82,14 @@ pub struct Library;
 
 #[module]
 impl Library {
+    /// Detect a desktop provider that can set the wallpaper for this session.
+    pub async fn can_apply_wallpaper() -> Result<bool, String> {
+        disk(|| Ok(platform::available())).await
+    }
+    /// Drop unused decoded images while keeping leases for visible views.
+    pub fn trim_images() {
+        nsh_core::image::budget().clear();
+    }
     /// Repair enabled legacy tasks after the portable GUI is successfully opened or moved.
     pub async fn repair_tasks() -> Result<(), String> {
         #[cfg(windows)]
@@ -324,6 +332,10 @@ impl Library {
     /// List completed images in the user's existing download folder.
     pub async fn local_files() -> Result<String, String> {
         disk(local::files).await
+    }
+    /// Read the selected local file's dimensions and size on demand.
+    pub async fn local_details(name: String) -> Result<String, String> {
+        disk(move || local::details(&name)).await
     }
 
     /// Read a cached thumbnail or a preview bounded to 1080p.

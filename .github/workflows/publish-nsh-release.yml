@@ -1,0 +1,71 @@
+name: Publish verified NSH release assets
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing public release version on both sites, without v
+        type: string
+        required: true
+      build_run:
+        description: Successful desktop acceptance run for this release commit
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  publish:
+    runs-on: macos-15
+    environment: desktop-release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      VERSION: ${{ inputs.version }}
+      BUILD_RUN: ${{ inputs.build_run }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify tag, workflow and tested commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          [[ "$GITHUB_REF" == "refs/tags/v$VERSION" ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN" > "$RUNNER_TEMP/desktop-run.json"
+          jq -e --arg sha "$GITHUB_SHA" '.head_sha==$sha and .conclusion=="success" and .path==".github/workflows/nsh-desktop.yml"' "$RUNNER_TEMP/desktop-run.json"
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run }}
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-files
+      - name: Verify the notarized macOS distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="release-files/BingWallpaperLib-v$VERSION-macos-universal.dmg"
+          xcrun stapler validate "$dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/macos-release" "$dmg"
+          trap 'hdiutil detach "$RUNNER_TEMP/macos-release" -quiet' EXIT
+          app="$RUNNER_TEMP/macos-release/BingWallpaperLib.app"
+          codesign --verify --deep --strict "$app"
+          spctl --assess --type execute "$app"
+      - name: Upload distribution files and publish the signed manifest last
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          SIGNING_KEY: ${{ secrets.BING_WALLPAPER_UPDATE_SIGNING_KEY }}
+          PUBLIC_KEY: ${{ vars.BING_WALLPAPER_UPDATE_PUBLIC_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SIGNING_KEY:?Missing release signing key}"
+          umask 077
+          key=$(mktemp "$RUNNER_TEMP/release-signing-XXXXXX")
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          node -e 'const c=require("node:crypto"); if(c.createPublicKey(process.env.SIGNING_KEY).export({format:"jwk"}).x !== process.env.PUBLIC_KEY) process.exit(1)'
+          node scripts/publish-desktop-assets.mjs release-files "$VERSION" "$key"

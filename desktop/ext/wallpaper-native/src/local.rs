@@ -67,6 +67,17 @@ pub fn image(name: &str, preview: bool) -> Result<String> {
     Ok(format!("data:image/jpeg;base64,{}", STANDARD.encode(data)))
 }
 
+pub fn details(name: &str) -> Result<String> {
+    let path = file(&AppSettings::load().effective_download_dir()?, name)?;
+    let (width, height) = image::ImageReader::open(&path)?
+        .with_guessed_format()?
+        .into_dimensions()?;
+    Ok(
+        serde_json::json!({"width":width,"height":height,"bytes":path.metadata()?.len()})
+            .to_string(),
+    )
+}
+
 pub fn apply(name: &str) -> Result<()> {
     let settings = AppSettings::load();
     let path = file(&settings.effective_download_dir()?, name)?;

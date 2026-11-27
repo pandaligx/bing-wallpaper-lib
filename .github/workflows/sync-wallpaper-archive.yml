@@ -43,7 +43,14 @@ jobs:
             throw new Error("Wallpaper archive corrections do not look valid.");
           }
 
-          const imagesByDate = new Map(data.images.map((image) => [image.date, image]));
+          const previous = JSON.parse(fs.readFileSync(target, "utf8"));
+          const imagesByDate = new Map(previous.images.map(image => [image.date, image]));
+          for (const image of data.images) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(image.date) || !image.url_4k) {
+              throw new Error("Upstream contains a malformed wallpaper record.");
+            }
+            imagesByDate.set(image.date, image);
+          }
           for (const image of corrections.images) {
             if (!image.date || !image.url_4k) {
               throw new Error("Wallpaper archive correction is missing required fields.");

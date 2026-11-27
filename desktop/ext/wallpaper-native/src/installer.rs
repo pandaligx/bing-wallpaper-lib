@@ -42,7 +42,8 @@ fn target() -> Result<PathBuf> {
             .context("请从已安装的 .app 更新")
     }
 }
-fn marker(child: &mut Child, expected: &'static str, timeout: Duration) -> Result<()> {
+fn marker(child: &mut Child, expected: &str, timeout: Duration) -> Result<()> {
+    let expected = expected.to_owned();
     let stdout = child.stdout.take().context("无法读取启动结果")?;
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -90,7 +91,7 @@ pub fn begin(version: &str) -> Result<()> {
 pub fn acknowledge() {
     if std::env::var_os("BING_WALLPAPER_CONFIRM_WINDOW").is_some() {
         let mut out = std::io::stdout().lock();
-        let _ = writeln!(out, "{READY}");
+        let _ = writeln!(out, "{READY} {}", env!("CARGO_PKG_VERSION"));
         let _ = out.flush();
     }
 }
@@ -219,7 +220,11 @@ fn run(version: &str) -> Result<()> {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()?;
-        let result = marker(&mut child, READY, Duration::from_secs(90));
+        let result = marker(
+            &mut child,
+            &format!("{READY} {version}"),
+            Duration::from_secs(90),
+        );
         if result.is_err() {
             let _ = child.kill();
             let _ = child.wait();
