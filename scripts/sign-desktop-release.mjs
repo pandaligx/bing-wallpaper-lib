@@ -58,12 +58,18 @@ async function anonymousRequest(provider, address, timeout, request) {
   throw new Error(`${provider}: too many redirects`);
 }
 
-export async function verifyPublished(manifest, request = fetch) {
+export async function verifyPublished(manifest, request = fetch, tag = "v" + manifest.version) {
+  const stable = "v" + manifest.version;
+  const candidate = tag !== stable;
+  if (candidate && !(tag.startsWith(stable) && /^-rc\.\d+$/.test(tag.slice(stable.length)))) {
+    throw new Error("The rehearsal tag must belong to the tested version");
+  }
   for (const [provider, api] of repositories) {
-    const response = await anonymousRequest(provider, api + "v" + manifest.version, 30_000, request);
+    const response = await anonymousRequest(provider, api + encodeURIComponent(tag), 30_000, request);
     if (!response.ok) throw new Error(`${provider} release API: HTTP ${response.status}`);
     const release = await response.json();
-    if (release.tag_name !== "v" + manifest.version) throw new Error(`${provider}: wrong release tag`);
+    if (release.tag_name !== tag || release.draft || Boolean(release.prerelease) !== candidate)
+      throw new Error(`${provider}: wrong release tag or publication channel`);
     for (const asset of manifest.artifacts) {
       const matches = release.assets.filter(row => row.name === asset.filename);
       if (matches.length !== 1) throw new Error(`${provider}: expected exactly one ${asset.filename}`);
@@ -86,12 +92,12 @@ export function signManifest(manifest, privateKey) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [directory, version, privateKeyFile] = process.argv.slice(2);
+  const [directory, version, privateKeyFile, tag] = process.argv.slice(2);
   if (!directory || !version || !privateKeyFile) {
-    throw new Error("Usage: node scripts/sign-desktop-release.mjs ARTIFACT_DIR VERSION ED25519_PRIVATE_PEM");
+    throw new Error("Usage: node scripts/sign-desktop-release.mjs ARTIFACT_DIR VERSION ED25519_PRIVATE_PEM [RELEASE_TAG]");
   }
   const manifest = await makeManifest(directory, version);
-  await verifyPublished(manifest);
+  await verifyPublished(manifest, fetch, tag);
   const key = createPrivateKey(await readFile(privateKeyFile));
   const envelope = signManifest(manifest, key);
   await writeFile(join(directory, "signed-release.json"), JSON.stringify(envelope) + "\n", { flag: "wx" });

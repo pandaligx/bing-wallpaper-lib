@@ -96,7 +96,11 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o Acquire::Retries=3 update -qq
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev libxdo-dev libfuse2t64 xvfb dbus-x11 x11-utils
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev libxdo-dev libfuse2t64 xvfb dbus-x11 x11-utils python3-gi gir1.2-pango-1.0
+          # Extract the build input privately so the installed-package test exercises its font.
+          mkdir -p "$RUNNER_TEMP/wallpaper-font"
+          (cd "$RUNNER_TEMP/wallpaper-font" && apt-get download fonts-noto-cjk && dpkg-deb -x ./*.deb .)
+          echo "BING_NOTO_CJK_ROOT=$RUNNER_TEMP/wallpaper-font" >> "$GITHUB_ENV"
           gh release download continuous --repo AppImage/appimagetool --pattern appimagetool-x86_64.AppImage --dir "$RUNNER_TEMP"
           chmod +x "$RUNNER_TEMP/appimagetool-x86_64.AppImage"
           echo "NSH_APPIMAGETOOL=$RUNNER_TEMP/appimagetool-x86_64.AppImage" >> "$GITHUB_ENV"
@@ -111,6 +115,29 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: bash scripts/package-nsh-unix.sh ${{ matrix.target }}
+      - name: Render Chinese, Japanese and Korean from the packaged font
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=("$GITHUB_WORKSPACE"/target/nsh-release/*.AppImage)
+          mkdir -p "$RUNNER_TEMP/font-test"
+          cd "$RUNNER_TEMP/font-test"
+          env -u APPIMAGE_EXTRACT_AND_RUN "${image[0]}" --appimage-extract >/dev/null
+          resources="$PWD/squashfs-root/usr/share/bing-wallpaper"
+          export FONTCONFIG_FILE="$resources/fonts.conf"
+          test -s "$resources/licenses/fonts-noto-cjk"
+          fc-list --format '%{file}\n' ':charset=58c1' | grep -Fx "$resources/fonts/NotoSansCJK-Regular.ttc"
+          /usr/bin/python3 - <<'PY'
+          import gi
+          gi.require_version("PangoCairo", "1.0")
+          from gi.repository import Pango, PangoCairo
+          ctx = PangoCairo.FontMap.get_default().create_context()
+          layout = Pango.Layout.new(ctx)
+          layout.set_text("壁纸とカタカナ 한글", -1)
+          assert layout.get_unknown_glyphs_count() == 0, "Missing glyphs in the packaged font configuration"
+          PY
+          echo "FONTCONFIG_FILE=$FONTCONFIG_FILE" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}

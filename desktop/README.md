@@ -32,8 +32,10 @@ Configure the release verification key through the build variable `BING_WALLPAPE
 
 ```sh
 node --test scripts/sign-desktop-release.test.mjs
-node scripts/sign-desktop-release.mjs target/nsh-release 0.3.0 /path/to/ed25519-private.pem
+node scripts/sign-desktop-release.mjs target/nsh-release 0.3.0 /path/to/test-ed25519-private.pem v0.3.0-rc.1
 ```
+
+For a production release, omit the final tag argument and use the matching production key. The verifier requires the exact public release channel on both sites and rejects redirects outside the selected provider.
 
 To reproduce the download performance comparison, build the `download_bench` example in release mode and run `node scripts/bench-download.mjs <benchmark-binary> <aria2c> [https-url]`. Omitting the URL starts the local per-connection-limited Range server. Each mode runs five times and all three modes must produce identical hashes.
 
@@ -42,6 +44,12 @@ On Windows, `pwsh ./scripts/bench-month.ps1 -Engine <benchmark-binary> -Aria <ar
 `pwsh ./scripts/test-windows-task-registration.ps1` registers two uniquely named Task Scheduler entries, checks their triggers, moves the test executable, runs both actions and removes the entries. `node scripts/rehearse-windows-update.mjs` builds private Windows test versions for a signed upgrade and rollback. Use the resulting executable with `scripts/test-windows-resident.ps1 -RehearsalExe <path>` to exercise background launch, close to tray and single-instance activation. The AppImage upgrade rehearsal runs in a disposable XDG desktop session in CI.
 
 For a Developer ID build, set `MACOS_DEVELOPER_ID` to the signing identity and `MACOS_NOTARY_PROFILE` to the local notarytool keychain profile. The packaging script signs the app and helper, notarizes and staples the app, then signs, notarizes and staples the DMG.
+
+Linux packaging also needs the Ubuntu/Debian `fonts-noto-cjk` package or an extracted package tree in `BING_NOTO_CJK_ROOT`. The AppImage carries the regular font collection and its license so Chinese archive titles, Japanese and Korean work on a minimal desktop.
+
+On a graphical host, run `node scripts/test-preview-memory.mjs` to measure decoded image memory while closing three real previews. It instruments a disposable copy of the native module and saves the native counters under `target/nsh-validation`.
+
+On macOS and Linux the periodic job uses wall-clock calendar events. A short headless check compares the configured interval with the start of the last successful run. Missed minutes produce one wallpaper change after wake. The hosted-runner test in `scripts/test-unix-task-registration.sh` registers daily and periodic jobs with the operating system, triggers their packaged entry points, and removes the test registrations.
 
 For CI distribution builds, dispatch **NSH native desktop acceptance** on the matching version tag with **distribution** enabled. Configure the repository variable `BING_WALLPAPER_UPDATE_PUBLIC_KEY` for all three platforms. In the protected `desktop-release` environment provide `MACOS_CERTIFICATE_BASE64` (Developer ID Application PKCS#12), `MACOS_CERTIFICATE_PASSWORD` and `MACOS_NOTARY_KEY` (App Store Connect private key) as secrets. Set the environment variables `MACOS_DEVELOPER_ID`, `MACOS_NOTARY_KEY_ID` and `MACOS_NOTARY_ISSUER`. The publishing workflow takes the resulting acceptance run ID and redistributes those tested artifacts.
 

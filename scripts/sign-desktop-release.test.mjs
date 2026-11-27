@@ -19,6 +19,17 @@ test("both public copies must match the local bytes before signing", async () =>
     };
   }
   await verifyPublished(manifest, provider(false, false));
+  const rc = "v1.0.0-rc.1";
+  const candidate = async (url, options) => {
+    const response = await provider(false, false)(url, options);
+    if (url.pathname.endsWith("/" + rc)) {
+      const release = await response.json();
+      return Response.json({...release, tag_name: rc, prerelease: true});
+    }
+    return response;
+  };
+  await verifyPublished(manifest, candidate, rc);
+  await assert.rejects(verifyPublished(manifest, provider(false, false), rc), /publication channel/);
   await assert.rejects(verifyPublished(manifest, provider(true, false)), /different content/);
   await assert.rejects(verifyPublished(manifest, provider(false, true)), /exactly one/);
   await assert.rejects(verifyPublished(manifest, (url, options) => {
