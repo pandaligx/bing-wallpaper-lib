@@ -1,7 +1,10 @@
 import { expect, open, test } from "nsh/test";
 
-test("batches the selected month and favorites, displays failures and retries only the chosen date", async () => {
-  const dates = ["2025-12-02", "2025-12-01", "2025-11-30"];
+test("batches by month, favorite, history and inclusive calendar range and retries a failed date", async () => {
+  const now = new Date();
+  const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+  const previous = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 0)).toISOString().slice(0, 10);
+  const dates = [currentMonth + "-13", currentMonth + "-12", previous];
   const archive = dates.map((date) => ({
     date,
     headline: date,
@@ -46,4 +49,11 @@ test("batches the selected month and favorites, displays failures and retries on
   await app.press("batch-all");
   await app.waitUntil(() => calls.length === 7);
   expect(calls.slice(-3).sort()).toEqual(dates.slice().sort());
+  await app.press("range-picker");
+  expect(app.accessibility("label:" + currentMonth + "-14")?.disabled).toBe(true);
+  await app.press("label:" + dates[1]);
+  await app.press("label:" + dates[0]);
+  await app.press("batch-range");
+  await app.waitUntil(() => calls.length === 9);
+  expect(calls.slice(-2).sort()).toEqual(dates.slice(0, 2).sort());
 });

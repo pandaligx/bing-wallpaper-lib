@@ -9,6 +9,15 @@ use fs2::FileExt;
 use serde_json::json;
 use std::{fs, time::Duration};
 
+pub(crate) fn task_lock(root: &std::path::Path) -> Result<fs::File> {
+    Ok(fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("automatic-wallpaper.lock"))?)
+}
+
 pub fn run(argument: &str) -> Result<()> {
     let daily = match argument {
         "--daily-wallpaper" | "--change-now" => true,
@@ -16,12 +25,7 @@ pub fn run(argument: &str) -> Result<()> {
         _ => anyhow::bail!("未知的定时任务参数"),
     };
     let root = paths::config_dir()?;
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join("automatic-wallpaper.lock"))?;
+    let lock = task_lock(&root)?;
     match lock.try_lock_exclusive() {
         Ok(()) => (),
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),

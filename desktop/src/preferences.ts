@@ -32,6 +32,7 @@ const keys =
   "Home|Settings|Wallpaper library|Downloaded wallpapers|Favorites|Download center|Archive|Navigation|Appearance|Language|Follow system|Light|Dark|System|Default|Original|Wallpaper download folder|Choose and save|Open folder|Global resolution|Multi-monitor wallpaper|Sync all displays|No display detected|Automatic wallpaper|Startup|Run in background / show tray icon|Change wallpaper daily|Exit after automatic wallpaper|Wallpaper source|Latest daily wallpaper|Random from all history|Random from favorites|Execution time|Change once now|Enable periodic task scheduler|Use latest Bing wallpaper for the first run each day|Later wallpaper source|Repeat interval|Periodic interval range hint|Maintenance|Clear wallpaper cache|Check for updates|View release notes|About|Version|Copyright|Project home|Download|Set as wallpaper|Preview|Favorite|Cancel favorite|Refresh|Loading wallpaper list...|No favorite wallpapers yet|No downloaded wallpapers yet|Delete selected|Delete|Select all|Clear selection|Refresh wallpaper list|Back to top|Download by date range|Download date range|All history|Current month|Select a date range|Download progress|Failed|Skipped|Update now|Already up to date|Update available|Later|Open main window|Exit|Exit application|Minimize to tray|Exit app prompt".split(
     "|",
   );
+keys.push("Speed", "Remaining");
 const extras: Record<string, string[]> = {
   Close: ["关闭", "閉じる", "닫기", "Закрыть", "Fermer"],
   Previous: ["上一张", "前へ", "이전", "Назад", "Précédent"],

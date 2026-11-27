@@ -84,6 +84,15 @@ pub fn configure(raw: &str) -> Result<String> {
         "时间超出范围"
     );
     let mut changes = changes.clone();
+    let task_lock = crate::schedule::task_lock(&dir)?;
+    task_lock.lock_exclusive()?;
+    if daily && (next.auto_wallpaper_enabled || !changes.contains_key("auto_wallpaper_enabled")) {
+        let marker = manual_daily_marker(&next, chrono::Local::now().naive_local());
+        changes.insert(
+            "last_auto_wallpaper_date".into(),
+            serde_json::to_value(marker)?,
+        );
+    }
     if !previous.periodic_task_enabled && next.periodic_task_enabled {
         changes.insert("last_periodic_latest_date".into(), Value::Null);
     }
@@ -100,6 +109,15 @@ pub fn configure(raw: &str) -> Result<String> {
         };
     }
     result
+}
+
+fn manual_daily_marker(s: &AppSettings, now: chrono::NaiveDateTime) -> Option<chrono::NaiveDate> {
+    use chrono::Timelike;
+    let scheduled = (
+        u32::from(s.auto_wallpaper_hour),
+        u32::from(s.auto_wallpaper_minute),
+    );
+    ((now.hour(), now.minute()) > scheduled).then_some(now.date())
 }
 
 fn run(cmd: &mut Command) -> Result<String> {
@@ -281,4 +299,25 @@ fn install(daily: bool, s: &AppSettings) -> Result<()> {
     run(Command::new("systemctl").args(["--user", "enable", &timer]))?;
     run(Command::new("systemctl").args(["--user", "restart", &timer]))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_edit_skips_only_a_time_that_has_already_passed() {
+        let s = AppSettings {
+            auto_wallpaper_hour: 8,
+            auto_wallpaper_minute: 30,
+            ..Default::default()
+        };
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 27).unwrap();
+        for (hour, minute, expected) in [(7, 59, None), (8, 30, None), (8, 31, Some(day))] {
+            assert_eq!(
+                manual_daily_marker(&s, day.and_hms_opt(hour, minute, 59).unwrap()),
+                expected
+            );
+        }
+    }
 }

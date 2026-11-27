@@ -35,10 +35,12 @@ interface Update {
 }
 export const update = signal<Update | null>(null);
 export const checking = signal(false);
+export const downloadingUpdate = signal(false);
 export async function checkUpdate(download = false, automatic = false) {
   if (checking() || !source()) return;
   const provider = source();
   checking.set(true);
+  downloadingUpdate.set(download);
   try {
     const result: Update = JSON.parse(await Library.checkUpdate(download));
     if (source() !== provider) return;
@@ -48,6 +50,7 @@ export async function checkUpdate(download = false, automatic = false) {
   } catch (error) {
     if (!automatic) status.set(String(error));
   } finally {
+    downloadingUpdate.set(false);
     checking.set(false);
   }
 }
@@ -67,6 +70,7 @@ export async function installUpdate() {
 }
 interface Transfer {
   id: string;
+  update?: boolean;
   date: string;
   received: number;
   total: number | null;

@@ -278,7 +278,6 @@ export function Settings() {
             }
           />
           <Action label={t("Check for updates")} disabled={!source()} press={() => void checkUpdate()} />
-          <Action label={t("Update now")} disabled={!source()} press={() => void checkUpdate(true)} />
           <Action
             label={t("View release notes")}
             disabled={!source()}

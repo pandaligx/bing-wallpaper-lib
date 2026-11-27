@@ -1,6 +1,11 @@
 name: NSH native desktop acceptance
 on:
   workflow_dispatch:
+    inputs:
+      distribution:
+        description: Build signed production artifacts from a version tag
+        type: boolean
+        default: false
   push:
     branches: [rewrite/nsh-desktop]
   pull_request:
@@ -26,6 +31,7 @@ jobs:
             target: linux
             archive: nsh-linux-x86_64.tar.gz
     runs-on: ${{ matrix.runner }}
+    environment: ${{ inputs.distribution && github.ref_type == 'tag' && matrix.target == 'macos' && 'desktop-release' || 'desktop-ci' }}
     timeout-minutes: 100
     env:
       GH_TOKEN: ${{ github.token }}
@@ -39,6 +45,42 @@ jobs:
       BING_WALLPAPER_UPDATE_PUBLIC_KEY: ${{ vars.BING_WALLPAPER_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check production build inputs
+        if: inputs.distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./desktop/nsh.json").version')
+          [[ "$GITHUB_REF" == "refs/tags/v$version" && -n "$BING_WALLPAPER_UPDATE_PUBLIC_KEY" ]]
+      - name: Configure Developer ID signing for a distribution build
+        if: inputs.distribution && matrix.target == 'macos' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          KEY_ID: ${{ vars.MACOS_NOTARY_KEY_ID }}
+          ISSUER: ${{ vars.MACOS_NOTARY_ISSUER }}
+          IDENTITY: ${{ vars.MACOS_DEVELOPER_ID }}
+        run: |
+          set -euo pipefail
+          : "${IDENTITY:?Missing Developer ID Application identity}"
+          umask 077
+          keychain="$RUNNER_TEMP/wallpaper-signing.keychain-db"
+          cert="$RUNNER_TEMP/wallpaper-signing.p12"
+          key="$RUNNER_TEMP/wallpaper-notary.p8"
+          trap 'rm -f "$cert" "$key"' EXIT
+          printf %s "$P12" | base64 -D > "$cert"
+          printf '%s\n' "$NOTARY_KEY" > "$key"
+          password=$(openssl rand -hex 32)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$cert" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          xcrun notarytool store-credentials BingWallpaperNotary --key "$key" --issuer "$ISSUER" --key-id "$KEY_ID"
+          printf 'MACOS_DEVELOPER_ID=%s\nMACOS_NOTARY_PROFILE=BingWallpaperNotary\n' "$IDENTITY" >> "$GITHUB_ENV"
       - name: Install pinned CLI
         shell: bash
         run: |
@@ -53,8 +95,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev libxdo-dev libfuse2t64 xvfb dbus-x11
+          sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o Acquire::Retries=3 update -qq
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev libxdo-dev libfuse2t64 xvfb dbus-x11 x11-utils
           gh release download continuous --repo AppImage/appimagetool --pattern appimagetool-x86_64.AppImage --dir "$RUNNER_TEMP"
           chmod +x "$RUNNER_TEMP/appimagetool-x86_64.AppImage"
           echo "NSH_APPIMAGETOOL=$RUNNER_TEMP/appimagetool-x86_64.AppImage" >> "$GITHUB_ENV"
@@ -76,6 +118,25 @@ jobs:
           if-no-files-found: error
       - name: Test native extension
         run: cargo test --locked --manifest-path desktop/ext/wallpaper-native/Cargo.toml
+      - name: Open the packaged Linux AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
+            export XDG_CONFIG_HOME="$RUNNER_TEMP/installed-config" XDG_DATA_HOME="$RUNNER_TEMP/installed-data"
+            export XDG_CACHE_HOME="$RUNNER_TEMP/installed-cache" XDG_CURRENT_DESKTOP=GNOME
+            image=(target/nsh-release/*.AppImage)
+            log="$RUNNER_TEMP/installed-linux-window.log"
+            BING_WALLPAPER_CONFIRM_WINDOW=1 setsid "${image[0]}" >"$log" 2>&1 &
+            pid=$!
+            trap "kill -- -$pid 2>/dev/null || true" EXIT
+            version=$(node -p "require(\"./desktop/nsh.json\").version")
+            for i in {1..90}; do
+              if grep -Fq "BING-WALLPAPER-WINDOW-READY $version" "$log" && xwininfo -root -tree | grep -F "必应每日壁纸库" >/dev/null; then exit 0; fi
+              if ! kill -0 "$pid" 2>/dev/null; then break; fi
+              sleep 1
+            done
+            cat "$log"; exit 1'
       - name: Open the standalone Windows exe with outbound access blocked
         if: runner.os == 'Windows'
         shell: pwsh

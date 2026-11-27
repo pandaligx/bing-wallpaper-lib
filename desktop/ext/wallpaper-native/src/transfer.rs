@@ -313,7 +313,7 @@ pub fn progress() -> Result<String> {
     if let Some(engine) = ENGINE.get() {
         for job in engine.list() {
             rows.push(
-                serde_json::json!({"id":job.id.to_string(), "date":job.metadata.filename.as_deref().and_then(|s| s.get(..10)), "name":job.metadata.name,
+                serde_json::json!({"id":job.id.to_string(), "date":job.metadata.filename.as_deref().and_then(|s| s.get(..10)), "update":job.metadata.filename.as_deref() == Some("update.partial"), "name":job.metadata.name,
                 "received":job.progress.completed_size, "total":job.progress.total_size,
                 "speed":job.progress.download_speed,"state":job.state.to_aria2_status()}),
             );

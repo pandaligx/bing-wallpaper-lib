@@ -195,11 +195,11 @@ pub async fn check(source: Source, download: bool) -> Result<String> {
         crate::paths::write_atomic(&root.join("signed-release.json"), &bytes)?;
         let expected_bytes = asset.bytes;
         let expected_hash = asset.sha256.clone();
-        if target.try_exists()? {
-            let existing = target.clone();
-            let digest = expected_hash.clone();
-            tokio::task::spawn_blocking(move || verify_file(&existing, expected_bytes, &digest))
-                .await??;
+        let existing = target.clone();
+        let digest = expected_hash.clone();
+        if tokio::task::spawn_blocking(move || reuse_staged(&existing, expected_bytes, &digest))
+            .await??
+        {
             return Ok(
                 serde_json::json!({"state":"staged","version":expected.to_string(),"path":target})
                     .to_string(),
@@ -257,15 +257,33 @@ pub(crate) fn copy_verified(version_text: &str, destination: &std::path::Path) -
     verify_file(destination, asset.bytes, &asset.sha256)
 }
 
-fn verify_file(path: &std::path::Path, length: u64, digest: &str) -> Result<()> {
+fn reuse_staged(path: &std::path::Path, length: u64, digest: &str) -> Result<bool> {
+    if !path.try_exists()? {
+        return Ok(false);
+    }
+    if matches_file(path, length, digest)? {
+        return Ok(true);
+    }
+    // Only the owned staging copy is discarded; the installed program remains usable.
+    std::fs::remove_file(path)?;
+    Ok(false)
+}
+
+fn matches_file(path: &std::path::Path, length: u64, digest: &str) -> Result<bool> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path)?;
-    ensure!(file.metadata()?.len() == length, "更新包长度错误");
+    if file.metadata()?.len() != length {
+        return Ok(false);
+    }
     let mut hash = Sha256::new();
     let read = std::io::copy(&mut file, &mut hash)?;
+    Ok(read == length && format!("{:x}", hash.finalize()).eq_ignore_ascii_case(digest))
+}
+
+fn verify_file(path: &std::path::Path, length: u64, digest: &str) -> Result<()> {
     ensure!(
-        read == length && format!("{:x}", hash.finalize()).eq_ignore_ascii_case(digest),
-        "更新包 SHA-256 不匹配"
+        matches_file(path, length, digest)?,
+        "更新包长度或 SHA-256 不匹配"
     );
     Ok(())
 }
@@ -284,6 +302,11 @@ mod tests {
         assert!(verify_file(&path, 9, &digest).is_err());
         std::fs::write(&path, b"modified").unwrap();
         assert!(verify_file(&path, 8, &digest).is_err());
+        assert!(!reuse_staged(&path, 8, &digest).unwrap());
+        assert!(!path.exists());
+        std::fs::write(&path, b"original").unwrap();
+        assert!(reuse_staged(&path, 8, &digest).unwrap());
+        assert!(path.is_file());
     }
     use ring::{
         rand::SystemRandom,
