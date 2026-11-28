@@ -4,8 +4,7 @@ import { Library } from "wallpaper-native";
 
 export interface Preferences {
   language: string;
-  smooth_wheel?: boolean;
-  accent_color?: string | null;
+  ui_font_size?: number;
   theme_preference: "system" | "light" | "dark";
   download_dir: string | null;
   download_resolution: string;
@@ -25,16 +24,27 @@ export interface Preferences {
 }
 
 export const preferences = signal<Preferences | null>(null);
-export const smoothWheel = () => preferences()?.smooth_wheel ?? true;
+export const uiFontSize = signal(12);
 export const status = signal("");
 export const isError = signal(false);
 export const retryNotice = signal<(() => void) | null>(null);
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+function expireNotice(delay: number) {
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    status.set("");
+    retryNotice.set(null);
+    isError.set(false);
+  }, delay);
+}
 export function notify(message: string) {
+  expireNotice(4000);
   retryNotice.set(null);
   isError.set(false);
   status.set(message);
 }
 export function reportError(error: unknown, retry?: () => void) {
+  expireNotice(12000);
   retryNotice.set(retry ?? null);
   isError.set(true);
   const reason = error instanceof Error ? error.message : String(error);
@@ -125,6 +135,15 @@ const extras: Record<string, string[]> = {
   Blue: ["蓝色", "ブルー", "파랑", "Синий", "Bleu"],
   Purple: ["紫色", "パープル", "보라", "Фиолетовый", "Violet"],
   Green: ["绿色", "グリーン", "초록", "Зелёный", "Vert"],
+  "Font size": ["字号", "文字サイズ", "글자 크기", "Размер шрифта", "Taille du texte"],
+  "Start download": [
+    "开始下载",
+    "ダウンロード開始",
+    "다운로드 시작",
+    "Начать загрузку",
+    "Démarrer le téléchargement",
+  ],
+  "Remove task": ["删除任务", "タスクを削除", "작업 삭제", "Удалить задачу", "Supprimer la tâche"],
   Zoom: ["缩放", "ズーム", "확대/축소", "Масштаб", "Zoom"],
   Resume: ["继续", "再開", "계속", "Продолжить", "Reprendre"],
   Cancelled: ["已取消", "キャンセル済み", "취소됨", "Отменено", "Annulé"],
@@ -157,12 +176,7 @@ const extras: Record<string, string[]> = {
 export function t(key: string) {
   return labels()[key] ?? key;
 }
-const accents: Record<string, [string, string]> = {
-  Blue: ["#0065cd", "#1378df"],
-  Purple: ["#7045bc", "#8254c9"],
-  Green: ["#157149", "#117849"],
-};
-let currentAccent = "";
+let themeApplied = false;
 function accept(raw: string) {
   const value: Preferences = JSON.parse(raw);
   if (value.language !== preferences()?.language || !preferences()) {
@@ -175,16 +189,22 @@ function accept(raw: string) {
     labels.set(translated.labels);
     setLocale(value.language === "system" ? null : translated.locale);
   }
-  const accent = value.accent_color || "Blue";
-  if (currentAccent !== accent) {
-    const [light, dark] = accents[accent] ?? accents.Blue;
+  uiFontSize.set(Math.min(20, Math.max(10, value.ui_font_size ?? 12)));
+  if (!themeApplied) {
+    const light = "#0067c5",
+      dark = "#2686e1";
     setTheme({
       cssVars: {
         light: {
           background: "#f6f7f9",
           foreground: "#17191c",
           card: "#ffffff",
-          sidebar: "#eef0f4",
+          sidebar: "#f0f2f5",
+          muted: "#e7ebf0",
+          accent: "#e3e9ef",
+          border: "#d3d9e0",
+          input: "#a3adb9",
+          popover: "#ffffff",
           "sidebar-accent": "#dce2eb",
           primary: light,
           ring: light,
@@ -195,6 +215,11 @@ function accept(raw: string) {
           foreground: "#f2f3f5",
           card: "#222429",
           sidebar: "#1b1d21",
+          muted: "#30353b",
+          accent: "#353b43",
+          border: "#41464d",
+          input: "#737e89",
+          popover: "#222429",
           "sidebar-accent": "#363b44",
           primary: dark,
           ring: dark,
@@ -202,7 +227,7 @@ function accept(raw: string) {
         },
       },
     });
-    currentAccent = accent;
+    themeApplied = true;
   }
   setColorScheme(value.theme_preference);
   preferences.set(value);

@@ -40,6 +40,8 @@ test("batches by month, favorite, history and inclusive calendar range and retri
   await app.waitFor("latest-photo");
   await app.press("nav-downloads");
   await app.press("batch-month");
+  expect(calls).toEqual([]);
+  await app.press("start-batch");
   await app.waitFor("retry-" + dates[0]);
   expect(app.texts().some((line) => line.includes("test connection closed"))).toBe(true);
   await app.press("dismiss-status");
@@ -49,19 +51,27 @@ test("batches by month, favorite, history and inclusive calendar range and retri
   await app.press("retry-" + dates[0]);
   await app.waitFor("fixture/" + dates[0] + ".jpg");
   await app.press("batch-favorites");
+  await app.press("start-batch");
   await app.waitFor("fixture/" + dates[2] + ".jpg");
   expect(calls.filter((d) => d === dates[0]).length).toBe(2);
   expect(calls.filter((d) => d === dates[2]).length).toBe(1);
   await app.press("batch-all");
+  await app.press("start-batch");
   await app.waitUntil(() => calls.length === 7);
   expect(calls.slice(-3).sort()).toEqual(dates.slice().sort());
   await app.press("range-picker");
   expect(app.accessibility("label:" + currentMonth + "-14")?.disabled).toBe(true);
   await app.press("label:" + dates[1]);
   await app.press("label:" + dates[0]);
-  await app.press("batch-range");
+  expect(calls.length).toBe(7);
+  await app.press("start-batch");
   await app.waitUntil(() => calls.length === 9);
   expect(calls.slice(-2).sort()).toEqual(dates.slice(0, 2).sort());
+  await app.waitFor("remove-" + dates[0]);
+  await app.press("remove-batch");
+  await app.press("confirm-remove-tasks");
+  await app.waitFor("remove-" + dates[0], { state: "gone" });
+  await app.waitFor("remove-" + dates[2]);
 });
 
 test("restores interrupted transfers, cancels a paused task and retries it", async () => {
@@ -97,4 +107,6 @@ test("restores interrupted transfers, cancels a paused task and retries it", asy
   expect(app.accessibility("retry-" + date)?.name).toBe("Retry");
   await app.press("retry-" + date);
   await app.waitFor("fixture/completed.jpg");
+  await app.press("remove-" + date);
+  await app.waitFor("fixture/completed.jpg", { state: "gone" });
 });

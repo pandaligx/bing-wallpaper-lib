@@ -12,6 +12,13 @@ export interface Photo {
   preview: string;
 }
 export const photos = signal<Photo[]>([]);
+export const localFiles = signal<string[]>([]);
+let scanVersion = 0;
+export async function scanLocalFiles() {
+  const version = ++scanVersion;
+  const list: string[] = JSON.parse(await Library.localFiles());
+  if (version === scanVersion) localFiles.set(list);
+}
 export const saved = signal<string[]>([]);
 export const selected = signal<Photo | null>(null);
 export const source = signal("");
@@ -231,6 +238,7 @@ async function worker() {
     }
   } finally {
     workers--;
+    if (workers === 0) void scanLocalFiles().catch(reportError);
   }
 }
 export function enqueue(items: Photo[], apply = false) {
@@ -272,6 +280,32 @@ export async function stopJob(job: Job, cancel: boolean) {
   } finally {
     stopping.delete(date);
   }
+}
+export function pauseJobs(items: Job[]) {
+  const dates = new Set(items.map((job) => job.photo.date));
+  const waiting = new Set(pending.filter((job) => dates.has(job.photo.date)).map((job) => job.photo.date));
+  if (waiting.size) {
+    const rest = pending.filter((job) => !waiting.has(job.photo.date));
+    pending.splice(0, pending.length, ...rest);
+    jobs.update((rows) =>
+      rows.map((job) => (waiting.has(job.photo.date) ? { ...job, state: "Pause" } : job)),
+    );
+    saveHistory();
+  }
+  for (const job of items) if (active().includes(job.photo.date)) void stopJob(job, false);
+}
+export function removeJobs(dates: string[]) {
+  const remove = new Set(dates);
+  jobs.update((rows) =>
+    rows.filter(
+      (job) =>
+        !remove.has(job.photo.date) ||
+        job.state === "Active" ||
+        job.state === "Waiting" ||
+        stopping.has(job.photo.date),
+    ),
+  );
+  saveHistory();
 }
 export function download(photo: Photo, apply: boolean) {
   enqueue([photo], apply);

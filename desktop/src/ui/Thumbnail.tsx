@@ -9,7 +9,7 @@ export function releaseUnusedImages() {
   recent.clear();
   for (const url of visible.keys()) recent.add(url);
 }
-export function Thumbnail(props: { src: string }) {
+export function Thumbnail(props: { src: string; failed?: () => void }) {
   effect(() => {
     const url = props.src;
     visible.set(url, (visible.get(url) ?? 0) + 1);
@@ -22,5 +22,5 @@ export function Thumbnail(props: { src: string }) {
       else visible.set(url, count - 1);
     };
   });
-  return <Image src={props.src} style={{ width: "100%", aspectRatio: 16 / 9 }} />;
+  return <Image src={props.src} onError={props.failed} style={{ width: "100%", aspectRatio: 16 / 9 }} />;
 }

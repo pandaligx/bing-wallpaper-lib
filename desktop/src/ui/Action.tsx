@@ -1,10 +1,14 @@
-import { Text } from "nsh";
+import { Text } from "./Text";
+import { View } from "nsh";
 import type { ViewRef } from "nsh";
 import { Button, Tooltip } from "nsh/base";
 import { Icon, type IconName } from "./Icon";
 
 interface ActionProps {
   id?: string;
+  count?: number;
+  small?: boolean;
+  onGlass?: boolean;
   label: string;
   shortLabel?: string;
   press: () => void;
@@ -55,13 +59,16 @@ export function Action(props: ActionProps) {
       {props.icon ? (
         <Icon
           name={props.icon}
+          size={props.small ? 14 : 16}
           filled={props.filled}
           ink={
-            props.primary && !props.row
-              ? "primary-foreground"
-              : props.filled || props.tint
-                ? "primary"
-                : "foreground"
+            props.onGlass
+              ? "white"
+              : props.primary && !props.row
+                ? "primary-foreground"
+                : props.filled || props.tint
+                  ? "primary"
+                  : "foreground"
           }
         />
       ) : null}
@@ -74,6 +81,11 @@ export function Action(props: ActionProps) {
         >
           {props.shortLabel ?? props.label}
         </Text>
+      ) : null}
+      {props.count !== undefined ? (
+        <View class="ml-auto min-w-5 items-center rounded-full bg-muted px-1">
+          <Text class="text-xs text-muted-foreground">{props.count}</Text>
+        </View>
       ) : null}
     </Button>
   );

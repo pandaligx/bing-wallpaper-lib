@@ -1633,6 +1633,9 @@ pub(crate) fn frame(surface: &Rc<Surface>) -> bool {
                 device_lost(surface);
                 return false;
             }
+            if surface.continuous_present.get() && gfx::composed(hwnd) {
+                chain.await_next_present();
+            }
             if let (Some(fps), Some(painted)) = (&fps, painted) {
                 fps.painted(painted, shown.elapsed());
             }
@@ -1951,6 +1954,9 @@ pub(crate) fn window_frame(surface: &Rc<Surface>, frame: WindowFrame<'_>) -> boo
                 *swap = None;
                 device_lost(surface);
                 return false;
+            }
+            if surface.continuous_present.get() && gfx::composed(hwnd) {
+                chain.await_next_present();
             }
             crate::surface::items_placed(placed, drawn.items, None);
             crate::surface::composed_placed(composed, composition, drawn.composed, &drawn.layers);

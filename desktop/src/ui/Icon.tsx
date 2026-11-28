@@ -2,6 +2,8 @@ import { Image, token } from "nsh";
 
 // Lucide 0.468.0 geometry. The accompanying icons-LICENSE.txt contains the license.
 const shapes = {
+  languages:
+    '<path d="m5 8 6 6" /> <path d="m4 14 6-6 2-3" /> <path d="M2 5h12" /> <path d="M7 2h1" /> <path d="m22 22-5-10-5 10" /> <path d="M14 18h6" />',
   house:
     '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" /> <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />',
   images:
@@ -59,7 +61,7 @@ const shapes = {
     '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /> <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /> <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /> <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /> <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />',
 } as const;
 export type IconName = keyof typeof shapes;
-type Ink = "foreground" | "primary-foreground" | "muted-foreground" | "destructive" | "primary";
+type Ink = "white" | "foreground" | "primary-foreground" | "muted-foreground" | "destructive" | "primary";
 const sources = new Map<string, string>();
 
 function source(name: IconName, ink: string, filled: boolean) {
@@ -73,12 +75,16 @@ function source(name: IconName, ink: string, filled: boolean) {
   return uri;
 }
 
-export function Icon(props: { name: IconName; ink?: Ink; filled?: boolean }) {
+export function Icon(props: { name: IconName; ink?: Ink; filled?: boolean; size?: number }) {
   return (
     <Image
       importantForAccessibility="no"
-      src={source(props.name, token(props.ink ?? "foreground"), !!props.filled)}
-      style={{ width: 16, height: 16, flexShrink: 0 }}
+      src={source(
+        props.name,
+        props.ink === "white" ? "#ffffff" : token(props.ink ?? "foreground"),
+        !!props.filled,
+      )}
+      style={{ width: props.size ?? 16, height: props.size ?? 16, flexShrink: 0 }}
     />
   );
 }

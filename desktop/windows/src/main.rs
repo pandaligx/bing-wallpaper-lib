@@ -65,6 +65,7 @@ fn main() -> ExitCode {
             title: format!("必应每日壁纸库 v{}", env!("CARGO_PKG_VERSION")),
             size: (1160, 780),
             single_instance: true,
+            continuous_present: true,
             fps,
             limits: nsh_platform_windows::Limits::standalone(),
             ..Default::default()

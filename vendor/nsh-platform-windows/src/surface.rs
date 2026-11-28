@@ -239,6 +239,7 @@ pub(crate) struct Surface {
     fps: RefCell<Option<Rc<crate::fps::Fps>>>,
     /// Paces animation frames while something animates.
     ticker: RefCell<Option<crate::window::Ticker>>,
+    pub(crate) continuous_present: Cell<bool>,
     /// Extra frame clients (transitions, glides, spinners): called on every
     /// frame until they are done, each with its deadline ([`Next::At`]; a
     /// new one's is when it was added).
@@ -353,6 +354,7 @@ impl Surface {
             host_tokens: RefCell::new(None),
             js_frame: Cell::new(false),
             ticker: RefCell::new(None),
+            continuous_present: Cell::new(false),
             frame_clients: RefCell::default(),
             keeper: Cell::new(None),
             #[cfg(feature = "dev")]
@@ -891,7 +893,26 @@ impl Surface {
         (!rects.is_empty()).then_some(rects)
     }
 
-    /// Draws the window (`WM_PAINT`).
+    /// A DXGI latency signal. Input invalidations use the ordinary damage path.
+    /// Once both flip buffers match, an idle frame needs only a synchronized present.
+    pub(crate) fn present_ready(self: &Rc<Self>) {
+        if !self.continuous_present.get() || self.invalid.get() {
+            self.paint();
+            return;
+        }
+        if crate::gfx::repeat_visible(&self.swap, self.hwnd()) {
+            return;
+        }
+        // After damage, draw the unchanged scene into the other buffer once.
+        self.paint();
+        if !self.invalid.get()
+            && let Some(chain) = self.swap.borrow_mut().as_mut()
+        {
+            chain.identical = chain.shows_a_frame();
+        }
+    }
+
+    /// Draws the window (WM_PAINT).
     pub(crate) fn paint(self: &Rc<Self>) {
         self.invalid.set(false);
         self.painting.set(true);

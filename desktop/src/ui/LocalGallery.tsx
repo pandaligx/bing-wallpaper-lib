@@ -1,10 +1,11 @@
-import { smoothWheel } from "../preferences";
-import { effect, Image, keymap, List, signal, Text, View, windowSize } from "nsh";
+import { effect, Image, keymap, List, signal, View, windowSize } from "nsh";
+import { Text } from "./Text";
 import type { ViewRef } from "nsh";
 import { Button, Dialog } from "nsh/base";
 import { Library } from "wallpaper-native";
 import { canApply, run, notify, reportError, t } from "../preferences";
 import { PhotoViewer } from "./PhotoViewer";
+import { localFiles as files, scanLocalFiles } from "../library";
 import { columns } from "./Gallery";
 import { Action } from "./Action";
 import { releaseUnusedImages } from "./Thumbnail";
@@ -45,7 +46,11 @@ function LocalImage(props: {
     };
   });
   return (
-    <View class={props.preview ? "" : "bg-muted"} style={{ width: "100%", aspectRatio: 16 / 9 }}>
+    <View
+      testID={props.preview ? "local-preview-image" : "local-thumbnail-" + props.name}
+      class={props.preview ? "" : "bg-muted overflow-hidden shrink-0"}
+      style={{ width: "100%", aspectRatio: 16 / 9 }}
+    >
       <If when={src()}>
         {(url) => (
           <Image
@@ -57,7 +62,7 @@ function LocalImage(props: {
     </View>
   );
 }
-function FileDetails(props: { name: string; revision: number }) {
+function FileDetails(props: { name: string; revision: number; overlay?: boolean }) {
   const details = signal("");
   effect(() => {
     void props.revision;
@@ -76,7 +81,17 @@ function FileDetails(props: { name: string; revision: number }) {
       visible = false;
     };
   });
-  return <Text class="text-xs text-muted-foreground">{details()}</Text>;
+  return (
+    <Text
+      class={
+        props.overlay
+          ? "text-xs text-white text-center line-clamp-1"
+          : "text-xs text-muted-foreground text-center line-clamp-1"
+      }
+    >
+      {details()}
+    </Text>
+  );
 }
 export function LocalGallery(props: { sidebarWidth: number }) {
   let previewOpener: ViewRef | undefined;
@@ -86,8 +101,7 @@ export function LocalGallery(props: { sidebarWidth: number }) {
     previewOpener = undefined;
     if (opener) setTimeout(() => opener.focus(), 0);
   };
-  const files = signal<string[]>([]),
-    selection = signal<string[]>([]),
+  const selection = signal<string[]>([]),
     preview = signal(""),
     confirm = signal<string[]>([]);
   const revision = signal(0);
@@ -98,8 +112,8 @@ export function LocalGallery(props: { sidebarWidth: number }) {
   const cache = new Map<string, string>();
   async function scan() {
     cache.clear();
-    const names: string[] = JSON.parse(await Library.localFiles());
-    files.set(names);
+    await scanLocalFiles();
+    const names = files();
     revision.update((v) => v + 1);
     selection.update((s) => s.filter((name) => names.includes(name)));
   }
@@ -166,7 +180,7 @@ export function LocalGallery(props: { sidebarWidth: number }) {
         <Text class="text-xs text-muted-foreground">{t("No downloaded wallpapers yet")}</Text>
       </If>
       <List
-        smoothWheel={smoothWheel()}
+        smoothWheel={false}
         each={files()}
         keyExtractor={(name) => name}
         numColumns={columns(props.sidebarWidth)}
@@ -177,7 +191,7 @@ export function LocalGallery(props: { sidebarWidth: number }) {
         {(name) => {
           let button: ViewRef | undefined;
           return (
-            <View class="gap-1 overflow-hidden rounded-lg border border-border bg-card">
+            <View class="w-full min-w-0 gap-1 overflow-hidden rounded-lg border border-border bg-card">
               <Button
                 ref={(node) => {
                   button = node;
@@ -187,10 +201,10 @@ export function LocalGallery(props: { sidebarWidth: number }) {
                   preview.set(name());
                 }}
                 accessibilityLabel={t("Preview") + " " + name()}
-                class="focus-visible:ring-2 focus-visible:ring-ring"
+                class="w-full min-w-0 focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <LocalImage name={name()} revision={revision()} cache={cache} />
-                <Text class="text-xs px-2 py-1 text-foreground">{name()}</Text>
+                <Text class="text-xs px-2 py-1 text-foreground line-clamp-1 text-center">{name()}</Text>
                 <FileDetails name={name()} revision={revision()} />
               </Button>
               <View class="flex-row flex-wrap gap-1 px-2 pb-2">
@@ -227,10 +241,9 @@ export function LocalGallery(props: { sidebarWidth: number }) {
             closeId="close-local"
             close={closePreview}
             photo={() => <LocalImage name={name()} preview cache={cache} />}
-            details={() => <FileDetails name={name()} revision={revision()} />}
+            details={() => <FileDetails name={name()} revision={revision()} overlay />}
             actions={() => (
               <View class="flex-row items-center">
-
                 <Action icon="chevron-left" label={t("Previous")} press={() => step(-1)} />
                 <Action icon="chevron-right" label={t("Next")} press={() => step(1)} />
                 <Action

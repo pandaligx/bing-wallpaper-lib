@@ -1,5 +1,5 @@
-import { computed, effect, Image, mount, Scroll, signal, Text, View, windowSize } from "nsh";
-import type { ListRef } from "nsh";
+import { computed, effect, Image, mount, Scroll, signal, View, windowSize } from "nsh";
+import { Text } from "./src/ui/Text";
 import { Dialog, MenuButton, Progress } from "nsh/base";
 import { Application, currentWindow, Tray, Window } from "nsh/desktop";
 import { Library } from "wallpaper-native";
@@ -9,7 +9,10 @@ import {
   checkUpdate,
   downloadingUpdate,
   flushHistory,
-  entries,
+  jobs,
+  saved,
+  localFiles,
+  scanLocalFiles,
   installUpdate,
   load,
   month,
@@ -30,7 +33,6 @@ import {
   loadPreferences,
   preferences,
   run,
-  smoothWheel,
   startup,
   status,
   isError,
@@ -92,7 +94,7 @@ const cursor = signal(0),
 
 function App() {
   const win = currentWindow();
-  let galleryList: ListRef | undefined;
+
   const inGallery = () => page() === "home" || page() === "month" || page() === "favorites";
   const temporaryTray = signal(false);
   const show = () => {
@@ -149,6 +151,7 @@ function App() {
     visit(history[next]);
   }
   Application.on("reopen", show);
+  run(scanLocalFiles);
   run(async () => canApply.set(await Library.canApplyWallpaper()));
   Application.on("quit", flushHistory);
   effect(() => {
@@ -259,6 +262,13 @@ function App() {
   const expandedRail = () => (narrow() ? drawer() : !sidebarCollapsed());
   const sidebarWidth = () => (expandedRail() ? 166 : 46);
   const brand = Library.brandIcon();
+  const badgeCount = (id: string) =>
+    ({
+      home: photos().length,
+      favorites: saved().length,
+      local: localFiles().length,
+      downloads: jobs().length,
+    })[id];
   const menuClass =
     "h-7 w-7 items-center justify-center rounded-lg hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";
   const title = () =>
@@ -276,11 +286,12 @@ function App() {
     >
       <View
         class="flex-row items-center gap-1 px-2 bg-sidebar"
-        style={{ height: 38, paddingRight: win.titleBar().right }}
+        style={{ height: 32, paddingRight: win.titleBar().right }}
       >
         <Action
           icon="chevron-left"
           id="nav-back"
+          small
           label={t("Back")}
           disabled={cursor() === 0}
           press={() => travel(-1)}
@@ -288,6 +299,7 @@ function App() {
         <Action
           icon="chevron-right"
           id="nav-forward"
+          small
           label={t("Forward")}
           disabled={cursor() >= latest()}
           press={() => travel(1)}
@@ -295,6 +307,7 @@ function App() {
         <Action
           icon="panel-left"
           id="navigation"
+          small
           label={t("Navigation")}
           press={() => (narrow() ? drawer.set(!drawer()) : sidebarCollapsed.set(!sidebarCollapsed()))}
         />
@@ -302,29 +315,14 @@ function App() {
           testID="toolbar-theme"
           class={menuClass}
           accessibilityLabel={t("Theme")}
-          items={[
-            ...(["system", "light", "dark"] as const).map((id) => ({
-              id,
-              label: t(id === "system" ? "System" : id === "light" ? "Light" : "Dark"),
-              checked: preferences()?.theme_preference === id,
-            })),
-            ...["Blue", "Purple", "Green"].map((id) => ({
-              id,
-              label: t(id),
-              checked: (preferences()?.accent_color || "Blue") === id,
-            })),
-          ]}
-          onSelect={({ id }) =>
-            run(() =>
-              configure(
-                ["Blue", "Purple", "Green"].includes(id)
-                  ? { accent_color: id }
-                  : { theme_preference: id as "light" | "dark" | "system" },
-              ),
-            )
-          }
+          items={(["system", "light", "dark"] as const).map((id) => ({
+            id,
+            label: t(id === "system" ? "Follow system" : id === "light" ? "Light" : "Dark"),
+            checked: preferences()?.theme_preference === id,
+          }))}
+          onSelect={({ id }) => run(() => configure({ theme_preference: id as "system" | "light" | "dark" }))}
         >
-          <Icon name="palette" />
+          <Icon name="palette" size={14} />
         </MenuButton>
         <MenuButton
           testID="toolbar-language"
@@ -337,7 +335,7 @@ function App() {
           }))}
           onSelect={({ id }) => run(() => configure({ language: id }))}
         >
-          <Icon name="globe" />
+          <Icon name="languages" size={14} />
         </MenuButton>
         <View class="flex-1 h-full" desktop={{ windowDrag: true }} />
       </View>
@@ -351,15 +349,14 @@ function App() {
                 style={{ width: 30, height: 30, objectFit: "contain" }}
               />
               <If when={expandedRail()}>
-                <Text class="flex-1 text-xs font-bold text-foreground">
-                  {t("Bing Wallpaper Library")}
-                </Text>
+                <Text class="flex-1 text-xs font-bold text-foreground">{t("Bing Wallpaper Library")}</Text>
               </If>
             </View>
             <View class="gap-1 px-2 py-1">
               <Each of={destinations.slice(0, 4)}>
                 {(entry) => (
                   <Action
+                    count={expandedRail() ? badgeCount(entry().key) : undefined}
                     row={expandedRail()}
                     icon={entry().icon}
                     id={"nav-" + entry().key}
@@ -375,7 +372,7 @@ function App() {
               <Text class="border-t border-sidebar-border px-3 pt-2 pb-1 text-xs font-semibold text-muted-foreground">
                 {t("Archive")}
               </Text>
-              <Scroll smoothWheel={smoothWheel()} testID="sidebar" class="flex-1 px-2">
+              <Scroll smoothWheel={false} testID="sidebar" class="flex-1 px-2">
                 <Each of={index()}>
                   {(group) => (
                     <View>
@@ -430,21 +427,11 @@ function App() {
           </View>
         </If>
         <View class="flex-1 gap-2 p-3">
-          <View class="flex-row items-center gap-2">
+          <If when={page() !== "home"}>
             <Text testID="page-title" class="text-base font-semibold text-foreground">
               {title()}
             </Text>
-            <If when={inGallery()}>
-              <Text class="flex-1 text-xs text-muted-foreground">
-                {entries().length} {t("Wallpapers")}
-              </Text>
-              <Action
-                icon="arrow-up"
-                label={t("Back to top")}
-                press={() => galleryList?.scrollToOffset({ offset: 0, animated: true })}
-              />
-            </If>
-          </View>
+          </If>
           <If when={!ready()}>
             <Text class="text-xs">{t("Loading wallpaper list...")}</Text>
           </If>
@@ -452,12 +439,7 @@ function App() {
             <Region />
           </If>
           <If when={inGallery()}>
-            <Gallery
-              sidebarWidth={sidebarWidth()}
-              listRef={(node) => {
-                galleryList = node;
-              }}
-            />
+            <Gallery sidebarWidth={sidebarWidth()} />
           </If>
           <If when={page() === "local"}>
             <LocalGallery sidebarWidth={sidebarWidth()} />
@@ -581,7 +563,10 @@ mount(() => (
   <Window
     id="main"
     title="必应每日壁纸库"
-    titleBar={{ style: "hidden", height: 38 }}
+    defaultSize={{ width: 1160, height: 780 }}
+    defaultPosition="center"
+    restoreBounds={false}
+    titleBar={{ style: "hidden", height: 32 }}
     closeOnPress={false}
     onClosePress={() => requestWindowClose()}
   >

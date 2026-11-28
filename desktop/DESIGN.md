@@ -21,7 +21,7 @@
 | 打开和关闭预览 | 背景高斯模糊，照片淡入，底部工具保持水平居中，关闭后焦点返回触发位置 |
 | 下载进度 | 每 250 毫秒读取最新字节数，明确显示完成或错误 |
 
-在 Windows、GNOME、Plasma 的明暗模式下分别检查。Windows 的“平滑滚轮”控制画廊、归档侧栏和设置内普通滚轮的逐帧位移；其余动效沿用系统偏好。
+在 Windows、GNOME、Plasma 的明暗模式下分别检查。滚轮直接响应输入。Windows 可见窗口按显示器的 DXGI 同步节奏呈现，隐藏及最小化时停止连续提交。首页中心照片每四秒切换，悬停或开启预览时暂停，切图直接替换照片。侧图可点击切换。图库缩略图悬停时显示标题，预览标题与版权叠在照片底部。成功提示在四秒后消失，错误提示保留十二秒，诊断日志可回看。
 
 图标工具栏参考 NSH Gallery 的 Toolbar 示例，设置分组参考 Tasks 的工具区，窗口和菜单参考 Desktop 的原生示例。交互和密度使用与运行时一致的 0.7.2 版本核对。[Gallery 工具栏](https://github.com/longbridge/nsh/blob/v0.7.2/examples/gallery/demos/ToolbarDemo.tsx) · [Tasks](https://github.com/longbridge/nsh/tree/v0.7.2/examples/tasks) · [Desktop](https://github.com/longbridge/nsh/tree/v0.7.2/examples/desktop) · [NSH 设计指南](https://nsh.dev/docs/design-guides/)
 

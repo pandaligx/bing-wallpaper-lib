@@ -11,6 +11,7 @@ test("acts directly on individual photos in the gallery, favorites and local fol
   const transfers: [string, boolean][] = [];
   const applied: string[] = [];
   const file = "local.jpg";
+  const longName = "A much longer wallpaper title ".repeat(6) + ".jpg";
   const app = await open("./App.tsx", {
     width: 1150,
     height: 840,
@@ -29,7 +30,7 @@ test("acts directly on individual photos in the gallery, favorites and local fol
           transfers.push([date, apply]);
           return JSON.stringify({ path: date + ".jpg", reused: false });
         },
-        "Library.localFiles": JSON.stringify([file]),
+        "Library.localFiles": JSON.stringify([file, longName]),
         "Library.localImage": () => "",
         "Library.localDetails": () => JSON.stringify({ width: 1920, height: 1080, bytes: 1048576 }),
         "Library.applyLocal": (name: string) => {
@@ -54,6 +55,10 @@ test("acts directly on individual photos in the gallery, favorites and local fol
   expect(app.accessibility("card-favorite-" + date)?.name).toBe("Cancel favorite");
   await app.press("nav-local");
   await app.waitFor("1920 × 1080 · 1.00 MiB");
+  const small = app.layout("local-thumbnail-" + file)!;
+  const large = app.layout("local-thumbnail-" + longName)!;
+  expect(Math.abs(small.height - large.height)).toBeLessThan(1);
+  expect(Math.abs(small.width - large.width)).toBeLessThan(1);
   await app.press("apply-local-" + file);
   await app.waitUntil(() => applied.length === 1);
   expect(applied).toEqual([file]);
@@ -84,7 +89,12 @@ test("keeps a ten-thousand-item archive virtualized through scrolling and resizi
   await app.waitFor("latest-photo", { timeout: 30000 });
   expect(app.texts().some((text) => text.startsWith("10000"))).toBe(true);
   expect(app.texts().filter((t) => t.startsWith("Fixture ")).length).toBeLessThan(250);
+  await app.waitFor("page-title", { state: "gone" });
+  await app.waitFor("gallery-top", { state: "gone" });
   await app.scroll("wallpaper-grid", 3600);
+  await app.waitFor("gallery-top");
+  await app.press("gallery-top");
+  await app.waitFor("gallery-top", { state: "gone" });
   await app.press("navigation");
   await app.waitFor("sidebar", { state: "gone" });
   await app.press("navigation");

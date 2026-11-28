@@ -868,7 +868,16 @@ pub(crate) fn handle(
             // SAFETY: a plain call on this window.
             let _ = unsafe { windows::Win32::Graphics::Gdi::ValidateRect(Some(hwnd), None) };
             if let Some(window) = &window {
-                paint(surface, window);
+                let idle = surface.continuous_present.get() && !window.invalid.get();
+                if !idle || !crate::gfx::repeat_visible(&window.swap, hwnd) {
+                    paint(surface, window);
+                    if idle
+                        && !window.invalid.get()
+                        && let Some(chain) = window.swap.borrow_mut().as_mut()
+                    {
+                        chain.identical = chain.shows_a_frame();
+                    }
+                }
             }
             Some(Some(LRESULT(0)))
         }

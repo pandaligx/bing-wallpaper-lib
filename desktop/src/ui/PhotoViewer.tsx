@@ -1,6 +1,7 @@
-import { effect, platform, reduceMotion, signal, Text, View, windowSize } from "nsh";
+import { effect, platform, reduceMotion, signal, View, windowSize } from "nsh";
+import { Text } from "./Text";
 import type { ViewRef } from "nsh";
-import { Dialog, Slider } from "nsh/base";
+import { Dialog } from "nsh/base";
 import { t } from "../preferences";
 import { Action } from "./Action";
 
@@ -28,7 +29,7 @@ export function PhotoViewer(props: ViewerProps) {
     offset = signal({ x: 0, y: 0 });
   let drag: { x: number; y: number } | undefined;
   const width = () =>
-    Math.max(1, Math.min(1400, windowSize().width - 32, ((windowSize().height - 154) * 16) / 9));
+    Math.max(1, Math.min(1400, windowSize().width - 32, ((windowSize().height - 108) * 16) / 9));
   const height = () => (width() * 9) / 16;
   function pan(x: number, y: number, scale: number) {
     const clamp = (v: number, size: number) => Math.max(-size, Math.min(size, v));
@@ -99,10 +100,24 @@ export function PhotoViewer(props: ViewerProps) {
           >
             {props.photo()}
           </View>
-          <View class="absolute top-2 right-2 rounded-full bg-card">
+          <View
+            class="absolute bottom-0 inset-x-0 items-center px-4 pt-5 pb-3"
+            style={{
+              pointerEvents: "none",
+              backgroundImage: "linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,0.65))",
+            }}
+          >
+            <Text class="text-sm text-white font-semibold text-center line-clamp-1">{props.title}</Text>
+            {props.details()}
+          </View>
+          <View
+            class="absolute top-2 right-2 rounded-full border border-white/50 overflow-hidden"
+            style={{ backgroundColor: "rgba(35,41,48,0.38)", backdropFilter: "blur(12px)" }}
+          >
             <Action
               id={props.closeId}
               icon="x"
+              onGlass
               label={t("Close")}
               press={props.close}
               buttonRef={(node) => {
@@ -111,31 +126,8 @@ export function PhotoViewer(props: ViewerProps) {
             />
           </View>
         </View>
-        <View class="items-center rounded-lg bg-card px-3 py-1">
-          <Text class="text-xs text-foreground font-semibold line-clamp-1">{props.title}</Text>
-          {props.details()}
-        </View>
         <View class="flex-row items-center justify-center rounded-full bg-card px-2 py-1">
           {props.actions()}
-          <Slider
-            testID="preview-zoom"
-            trackClass="h-7 justify-center mx-2"
-            indicatorClass="h-1 rounded-full bg-muted-foreground"
-            rangeClass="rounded-full bg-primary"
-            thumbClass="size-3 rounded-full bg-primary focus-visible:ring-2 focus-visible:ring-ring"
-            accessibilityLabel={t("Zoom")}
-            style={{ width: Math.min(90, width() / 5) }}
-            min={1}
-            max={4}
-            step={0.05}
-            value={zoom()}
-            onChange={({ value }) => {
-              if (typeof value === "number") magnify(value);
-            }}
-          />
-          <Text testID="zoom-value" class="text-xs text-muted-foreground">
-            {Math.round(zoom() * 100)}%
-          </Text>
         </View>
       </View>
     </Dialog>

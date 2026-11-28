@@ -166,6 +166,8 @@ pub struct AppSettings {
     pub smooth_wheel: bool,
     #[serde(default)]
     pub accent_color: Option<String>,
+    #[serde(default = "default_ui_font_size")]
+    pub ui_font_size: u8,
     /// 界面语言；默认跟随 Windows，无法识别时回退到英文。
     #[serde(default)]
     pub language: LanguagePreference,
@@ -215,6 +217,10 @@ pub struct AppSettings {
     pub last_periodic_latest_date: Option<NaiveDate>,
 }
 
+const fn default_ui_font_size() -> u8 {
+    12
+}
+
 fn default_smooth_wheel() -> bool {
     true
 }
@@ -226,6 +232,7 @@ impl Default for AppSettings {
             theme_preference: ThemePreference::default(),
             smooth_wheel: default_smooth_wheel(),
             accent_color: None,
+            ui_font_size: default_ui_font_size(),
             language: LanguagePreference::default(),
             wallpaper_target: WallpaperTarget::default(),
             download_resolution: DownloadResolution::default(),

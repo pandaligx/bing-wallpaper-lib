@@ -34,7 +34,7 @@ pub fn update(patch: &str) -> Result<String> {
                     | "download_dir"
                     | "theme_preference"
                     | "smooth_wheel"
-                    | "accent_color"
+                    | "ui_font_size"
                     | "startup_enabled"
                     | "background_resident_enabled"
                     | "auto_wallpaper_exit_after_done"
@@ -60,6 +60,12 @@ pub(crate) fn edit(dir: &Path, changes: &serde_json::Map<String, Value>) -> Resu
         object.insert(key.clone(), v.clone());
     }
     let settings: AppSettings = serde_json::from_value(value.clone())?;
+    if changes.contains_key("ui_font_size") {
+        ensure!(
+            (10..=20).contains(&settings.ui_font_size),
+            "字号应在 10 至 20 之间"
+        );
+    }
     if changes.contains_key("download_dir")
         && let Some(path) = &settings.download_dir
     {

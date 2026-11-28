@@ -1,9 +1,9 @@
-import { smoothWheel } from "../preferences";
-import { Clipboard, Scroll, signal, Text, View, windowSize } from "nsh";
-import { Dialog, Input, Toolbar } from "nsh/base";
+import { appInfo, Clipboard, Scroll, signal, View, windowSize } from "nsh";
+import { Text } from "./Text";
+import { Dialog, Input, Slider, Toolbar } from "nsh/base";
 import { Library } from "wallpaper-native";
 import { checking, checkUpdate, load, refresh, setSource, source, sourcePreference } from "../library";
-import { configure, preferences, run, startup, notify, reportError, t } from "../preferences";
+import { configure, preferences, uiFontSize, run, startup, notify, reportError, t } from "../preferences";
 import type { Preferences } from "../preferences";
 import { Icon, type IconName } from "./Icon";
 import { Action } from "./Action";
@@ -102,7 +102,7 @@ export function Settings() {
     return options;
   };
   return (
-    <Scroll smoothWheel={smoothWheel()} testID="settings-content" class="flex-1">
+    <Scroll smoothWheel={false} testID="settings-content" class="flex-1">
       <View class="gap-2 pb-4 pr-2" style={{ width: "100%", maxWidth: 650 }}>
         <View class="gap-1 rounded-xl bg-card p-3">
           <Heading icon="palette" label={t("Appearance")} />
@@ -126,18 +126,35 @@ export function Settings() {
               choose={(v) => save({ language: v })}
             />
           </View>
-          <Toggle
-            id="smooth-wheel"
-            label={t("Smooth mouse wheel")}
-            value={smoothWheel()}
-            change={(enabled) => save({ smooth_wheel: enabled })}
-          />
+          <View class="flex-row items-center gap-2">
+            <FieldLabel label={t("Font size")} />
+            <Slider
+              testID="font-size"
+              min={10}
+              max={20}
+              step={1}
+              value={uiFontSize()}
+              accessibilityLabel={t("Font size")}
+              style={{ width: 120 }}
+              trackClass="h-6 justify-center"
+              indicatorClass="h-1 rounded-full bg-muted-foreground"
+              rangeClass="rounded-full bg-primary"
+              thumbClass="size-3 rounded-full bg-primary"
+              onChange={({ value }) => {
+                if (typeof value === "number") uiFontSize.set(value);
+              }}
+              onChangeEnd={({ value }) => {
+                if (typeof value === "number") save({ ui_font_size: value });
+              }}
+            />
+            <Text class="text-xs text-muted-foreground">{uiFontSize()}</Text>
+          </View>
         </View>
         <View class="gap-1 rounded-xl bg-card p-3">
           <Heading icon="hard-drive" label={t("Storage")} />
           <View class="flex-row items-center gap-1">
             <Input
-              style={{ flex: 1 }}
+              style={{ flex: 1, fontSize: uiFontSize() }}
               testID="folder-path"
               accessibilityLabel={t("Wallpaper download folder")}
               class={inputClass}
@@ -243,7 +260,7 @@ export function Settings() {
           <View class="flex-row flex-wrap items-center gap-2">
             <FieldLabel label={t("Execution time")} />
             <Input
-              style={{ width: 84 }}
+              style={{ width: 84, fontSize: uiFontSize() }}
               class={inputClass}
               value={time() ?? clock()}
               accessibilityLabel={t("Execution time")}
@@ -308,7 +325,7 @@ export function Settings() {
           <View class="flex-row flex-wrap items-center gap-2">
             <FieldLabel label={t("Repeat interval") + " (min)"} />
             <Input
-              style={{ width: 84 }}
+              style={{ width: 84, fontSize: uiFontSize() }}
               class={inputClass}
               accessibilityLabel={t("Repeat interval")}
               value={interval() ?? String(s().periodic_interval_minutes)}
@@ -432,7 +449,7 @@ export function Settings() {
           </If>
           <View class="flex-row items-center gap-2">
             <Text class="text-xs text-muted-foreground">
-              {t("Version")} {Library.appVersion()} · © 2023-2026 小南瓜
+              {t("Version")} {Library.appVersion()} ({appInfo().build}) · © 2023-2026 小南瓜
             </Text>
             <Action
               icon="external-link"

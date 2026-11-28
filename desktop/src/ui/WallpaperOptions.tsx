@@ -1,4 +1,5 @@
-import { Text, View, windowSize } from "nsh";
+import { View, windowSize } from "nsh";
+import { Text } from "./Text";
 import { Icon } from "./Icon";
 import { Select, Switch } from "nsh/base";
 
@@ -66,8 +67,8 @@ export function Toggle(props: {
         disabled={props.disabled}
         accessibilityLabel={props.label}
         onChange={({ checked }) => props.change(checked)}
-        trackClass="h-4 w-8 rounded-full bg-muted checked:bg-primary"
-        thumbClass="h-4 w-4 rounded-full bg-foreground checked:translate-x-4 checked:bg-primary-foreground"
+        trackClass="h-5 w-9 justify-center rounded-full border border-input bg-muted-foreground checked:border-primary checked:bg-primary"
+        thumbClass="ml-0.5 h-4 w-4 rounded-full bg-white shadow-sm checked:translate-x-4"
       />
     </View>
   );

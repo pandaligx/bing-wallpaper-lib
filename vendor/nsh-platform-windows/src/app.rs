@@ -128,6 +128,8 @@ pub struct AppOptions {
     /// Logs the performance monitor's readings once a second (target
     /// `nsh::fps`): frame rate, frame phases, commits, CPU, memory.
     pub fps: bool,
+    /// Present at the display cadence while the main window is visible.
+    pub continuous_present: bool,
     /// Where bundled assets are (for [`AppSource::Bundle`]); dev servers
     /// serve them themselves.
     pub asset_base: Option<AssetBase>,
@@ -233,6 +235,7 @@ impl Default for AppOptions {
         AppOptions {
             trace: false,
             fps: false,
+            continuous_present: false,
             asset_base: None,
             app_id: "com.longbridge.nsh.host".to_owned(),
             title: "nsh".to_owned(),
@@ -313,6 +316,7 @@ impl AppView {
     ) -> windows::core::Result<Rc<AppView>> {
         let surface = Surface::new(initial_environment());
         surface.appearance.set(options.appearance);
+        surface.continuous_present.set(options.continuous_present);
         if options.notifications {
             crate::notifications::start_app(
                 &options.app_id,

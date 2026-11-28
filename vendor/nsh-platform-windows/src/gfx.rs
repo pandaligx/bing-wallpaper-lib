@@ -232,7 +232,7 @@ const RESIZE_FRAME_WAIT: std::time::Duration = std::time::Duration::from_millis(
 
 /// Whether DWM shows window `hwnd`: visible, its top-level window neither
 /// minimized nor cloaked.
-fn composed(hwnd: HWND) -> bool {
+pub(crate) fn composed(hwnd: HWND) -> bool {
     use windows::Win32::{
         Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
         UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, IsIconic, IsWindowVisible},
@@ -258,6 +258,30 @@ fn composed(hwnd: HWND) -> bool {
     }
 }
 
+/// Handles a latency signal for unchanged content. A fresh or out-of-date
+/// back buffer has to be drawn once before both buffers can repeat.
+pub(crate) fn repeat_visible(swap: &std::cell::RefCell<Option<SwapChain>>, hwnd: HWND) -> bool {
+    if !composed(hwnd) {
+        return true;
+    }
+    let mut slot = swap.borrow_mut();
+    let Some(chain) = slot.as_mut() else {
+        return false;
+    };
+    if !chain.identical || chain.stale() {
+        return false;
+    }
+    if chain.ready() {
+        if chain.present(Some(Vec::new())).is_err() {
+            *slot = None;
+            return false;
+        }
+        chain.identical = true;
+        chain.await_next_present();
+    }
+    true
+}
+
 /// The flags every swap chain is made (and resized) with: frames are paced
 /// on its latency waitable object ([`SwapChain::ready`]).
 pub(crate) const SWAP_CHAIN_FLAGS: DXGI_SWAP_CHAIN_FLAG =
@@ -276,6 +300,8 @@ pub(crate) struct SwapChain {
     last: Option<Vec<RECT>>,
     /// A frame was presented since the buffers were made or resized.
     shown: bool,
+    /// Both preserved flip-sequential buffers contain the same complete scene.
+    pub(crate) identical: bool,
     /// A transparent window's: composed, premultiplied alpha.
     premultiplied: bool,
     /// Frame pacing: one frame in flight per swap chain.
@@ -500,6 +526,7 @@ impl SwapChain {
             generation: generation(),
             last: None,
             shown: false,
+            identical: false,
             premultiplied,
             latency,
         })
@@ -538,6 +565,7 @@ impl SwapChain {
         self.size = size;
         self.last = None;
         self.shown = false;
+        self.identical = false;
         Ok(())
     }
 
@@ -556,6 +584,10 @@ impl SwapChain {
         };
         self.target = Some(bitmap.clone());
         Ok(bitmap)
+    }
+
+    pub(crate) fn await_next_present(&self) {
+        self.latency.defer();
     }
 
     /// Drops the target (a new scale: the bitmap carries its DPI).
@@ -620,6 +652,7 @@ impl SwapChain {
         };
         // The token went with the frame.
         self.latency.wake.holding.store(false, Ordering::Release);
+        self.identical = false;
         self.shown = result.is_ok();
         self.last = if result.is_ok() { changed } else { None };
         result

@@ -1419,7 +1419,7 @@ fn handle(
             // the same frame again.
             // SAFETY: a plain call on this window.
             let _ = unsafe { ValidateRect(Some(hwnd), None) };
-            surface.paint();
+            surface.present_ready();
             return Some(LRESULT(0));
         }
         WM_PAINT => {
