@@ -15,6 +15,7 @@ pub mod model;
 pub mod paths;
 mod platform;
 mod preferences;
+mod queue;
 mod region;
 mod registration;
 mod release;
@@ -215,6 +216,11 @@ impl Library {
             .map_err(message)
     }
 
+    /// Changes when a refresh changes the rows or their metadata.
+    pub fn catalog_revision() -> u32 {
+        catalog::revision()
+    }
+
     /// Merge the regional archive and recent official records into the local catalogue.
     pub async fn refresh() -> Result<String, String> {
         let source = region::selected()
@@ -247,6 +253,11 @@ impl Library {
             .await
             .map_err(|e| e.to_string())?
             .map_err(message)
+    }
+
+    /// Saved region mode, including automatic selection independently of the resolved provider.
+    pub fn region_preference() -> Result<String, String> {
+        region::preference().map_err(message)
     }
 
     /// Persist the user's automatic, mainland or international region selection.
@@ -282,7 +293,8 @@ impl Library {
             .spawn(async move {
                 let settings = settings::AppSettings::load();
                 let target = settings.wallpaper_target.clone();
-                let (path, reused) = transfer::download_with_status(entry, settings).await?;
+                let (path, reused) =
+                    transfer::controlled_download(entry, settings, queue::control(&date)).await?;
                 if apply {
                     let file = path.clone();
                     tokio::task::spawn_blocking(move || platform::apply(&file, &target)).await??;
@@ -292,6 +304,29 @@ impl Library {
             .await
             .map_err(|e| e.to_string())?
             .map_err(message)
+    }
+
+    /// Reserve a date before the asynchronous download starts, including its metadata probe.
+    pub fn begin_download(date: String) -> Result<(), String> {
+        queue::begin(&date).map_err(message)
+    }
+
+    /// Release the UI worker's reservation after its completion has been handled.
+    pub fn finish_download(date: String) {
+        queue::finish(&date);
+    }
+
+    /// Stop a queued or active image. Cancelling a previously paused image discards its partial transfer.
+    pub async fn stop_download(date: String, cancel: bool) -> Result<(), String> {
+        if !queue::stop(&date, cancel).map_err(message)? && cancel {
+            runtime()
+                .map_err(message)?
+                .spawn(async move { transfer::discard_paused(&date).await })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(message)?;
+        }
+        Ok(())
     }
 
     /// Snapshot transfer states and byte counters.

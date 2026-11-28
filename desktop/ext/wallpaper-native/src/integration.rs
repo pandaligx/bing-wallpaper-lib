@@ -19,19 +19,6 @@ pub(crate) fn has_startup_entry() -> bool {
 pub fn choose_folder() -> Result<String> {
     #[cfg(windows)]
     let path = folder_picker::pick_folder()?;
-    #[cfg(target_os = "macos")]
-    let path = picked(Command::new("/usr/bin/osascript").args([
-        "-e",
-        "try",
-        "-e",
-        "POSIX path of (choose folder)",
-        "-e",
-        "on error number -128",
-        "-e",
-        "return \"\"",
-        "-e",
-        "end try",
-    ]))?;
     #[cfg(target_os = "linux")]
     let path = {
         let kde = std::env::var("XDG_CURRENT_DESKTOP")
@@ -111,12 +98,7 @@ pub fn open_location(kind: &str) -> Result<()> {
     }
     #[cfg(not(windows))]
     {
-        let tool = if cfg!(target_os = "macos") {
-            "/usr/bin/open"
-        } else {
-            "xdg-open"
-        };
-        let output = Command::new(tool).arg(location).output()?;
+        let output = Command::new("xdg-open").arg(location).output()?;
         ensure!(
             output.status.success(),
             "{}",
@@ -181,12 +163,6 @@ pub fn startup_enabled(enabled: bool) -> Result<()> {
             std::fs::remove_file(file)?;
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = enabled;
-        anyhow::bail!("请使用系统登录项设置");
-    }
-    #[cfg(not(target_os = "macos"))]
     Ok(())
 }
 

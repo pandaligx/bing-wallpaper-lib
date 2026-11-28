@@ -1,7 +1,7 @@
-import { signal } from "nsh";
+import { computed, signal } from "nsh";
 import { Library } from "wallpaper-native";
 import { Application } from "nsh/desktop";
-import { applied, status, t } from "./preferences";
+import { applied, isError, notify, reportError, t } from "./preferences";
 export { status } from "./preferences";
 
 export interface Photo {
@@ -15,16 +15,17 @@ export const photos = signal<Photo[]>([]);
 export const saved = signal<string[]>([]);
 export const selected = signal<Photo | null>(null);
 export const source = signal("");
+export const sourcePreference = signal("auto");
 export const page = signal<"home" | "month" | "favorites" | "local" | "downloads" | "settings">("home");
 export const month = signal("");
-export function entries() {
+export const entries = computed(() => {
   if (page() === "month") return photos().filter((p) => p.date.startsWith(month()));
   if (page() === "favorites") {
     const dates = new Set(saved());
     return photos().filter((p) => dates.has(p.date));
   }
   return photos();
-}
+});
 interface Update {
   state: "current" | "available" | "staged";
   provider?: string;
@@ -45,10 +46,13 @@ export async function checkUpdate(download = false, automatic = false) {
     const result: Update = JSON.parse(await Library.checkUpdate(download));
     if (source() !== provider) return;
     if (result.state === "current") {
-      if (!automatic) status.set(t("Already up to date") + " · " + provider);
+      if (!automatic) notify(t("Already up to date") + " · " + provider);
     } else update.set(result);
   } catch (error) {
-    if (!automatic) status.set(String(error));
+    if (!automatic) {
+      update.set(null);
+      reportError(error, () => void checkUpdate(download));
+    }
   } finally {
     downloadingUpdate.set(false);
     checking.set(false);
@@ -62,7 +66,7 @@ export async function installUpdate() {
     await Library.installUpdate(item.version);
     Application.quit();
   } catch (error) {
-    status.set(String(error));
+    reportError(error);
     update.set(null);
   } finally {
     checking.set(false);
@@ -78,28 +82,29 @@ interface Transfer {
   state: string;
 }
 export const transfers = signal<Transfer[]>([]);
-const pausedDates = new Set<string>();
+
 export function pollTransfers() {
   try {
     transfers.set(JSON.parse(Library.progress()));
   } catch (error) {
-    status.set(String(error));
+    reportError(error);
   }
 }
-export async function pauseTransfer(id: string) {
-  const date = transfers().find((item) => item.id === id)?.date;
-  if (date) pausedDates.add(date);
-  try {
-    await Library.pause(id);
-  } catch (error) {
-    if (date) pausedDates.delete(date);
-    status.set(String(error));
+let lastCatalogRevision: number | undefined;
+async function loadCatalog() {
+  const revision = Library.catalogRevision();
+  if (lastCatalogRevision !== undefined && revision === lastCatalogRevision) return;
+  const next: Photo[] = JSON.parse(await Library.catalog());
+  if (lastCatalogRevision === undefined || revision > lastCatalogRevision) {
+    lastCatalogRevision = revision;
+    photos.set(next);
   }
 }
 export async function load() {
-  photos.set(JSON.parse(await Library.catalog()));
+  await loadCatalog();
   saved.set(JSON.parse(Library.favorites()));
   source.set(Library.source());
+  sourcePreference.set(Library.regionPreference());
 }
 let refreshing = false;
 export async function refresh() {
@@ -108,10 +113,10 @@ export async function refresh() {
   refreshing = true;
   try {
     const warnings = await Library.refresh();
-    photos.set(JSON.parse(await Library.catalog()));
-    if (warnings) status.set(warnings);
+    await loadCatalog();
+    if (warnings) reportError(warnings, () => void refresh());
   } catch (error) {
-    status.set(String(error));
+    reportError(error, () => void refresh());
   } finally {
     refreshing = false;
     if (source() && source() !== requested) void refresh();
@@ -120,24 +125,26 @@ export async function refresh() {
 export function setSource(value: string) {
   try {
     Library.setSource(value);
+    sourcePreference.set(value);
+    notify("");
     source.set(Library.source());
     update.set(null);
     if (source()) void refresh();
   } catch (error) {
-    status.set(String(error));
+    reportError(error);
   }
 }
 export function favorite(photo: Photo) {
   try {
     saved.set(JSON.parse(Library.favorite(photo.date)));
   } catch (error) {
-    status.set(String(error));
+    reportError(error);
   }
 }
 
 export interface Job {
   photo: Photo;
-  state: "Waiting" | "Active" | "Done" | "Skipped" | "Failed" | "Pause";
+  state: "Waiting" | "Active" | "Done" | "Skipped" | "Failed" | "Pause" | "Cancelled";
   apply: boolean;
   error?: string;
   path?: string;
@@ -159,7 +166,7 @@ export function flushHistory(): Promise<void> {
       await Library.saveDownloadHistory(JSON.stringify(rows));
     }
   })()
-    .catch((error) => status.set(String(error)))
+    .catch((error) => reportError(error))
     .finally(() => {
       writing = null;
     });
@@ -200,20 +207,25 @@ async function worker() {
       const date = job.photo.date;
       change(date, { state: "Active" });
       active.update((dates) => [...dates, date]);
+      let reserved = false;
       try {
+        Library.beginDownload(date);
+        reserved = true;
         const result = JSON.parse(await Library.download(date, job.apply));
         change(date, { state: result.reused ? "Skipped" : "Done", path: result.path });
         if (job.apply) {
           applied.set(true);
-          status.set(t("Applied"));
-        } else if (!pending.length) status.set(result.path);
+          notify(t("Applied"));
+        } else if (!pending.length && !isError()) notify(result.path);
       } catch (err) {
-        if (pausedDates.delete(date)) change(date, { state: "Pause" });
+        if (String(err).includes("queue:paused")) change(date, { state: "Pause" });
+        else if (String(err).includes("queue:cancelled")) change(date, { state: "Cancelled" });
         else {
           change(date, { state: "Failed", error: String(err) });
-          status.set(String(err));
+          reportError(err);
         }
       } finally {
+        if (reserved) Library.finishDownload(date);
         active.update((dates) => dates.filter((d) => d !== date));
       }
     }
@@ -234,18 +246,25 @@ export function enqueue(items: Photo[], apply = false) {
       busy.add(photo.date);
       add.push({ photo, apply, state: "Waiting" });
     }
+  if (!add.length) return;
+  notify("");
   const added = new Set(add.map((j) => j.photo.date));
   jobs.update((list) => [...add, ...list.filter((j) => !added.has(j.photo.date))]);
   saveHistory();
   pending.push(...add);
   while (workers < 4 && pending.length) void worker();
 }
-export function cancelPending(date: string) {
-  const index = pending.findIndex((j) => j.photo.date === date);
+export async function stopJob(job: Job, cancel: boolean) {
+  const date = job.photo.date;
+  const index = pending.findIndex((queued) => queued.photo.date === date);
   if (index >= 0) {
     pending.splice(index, 1);
-    change(date, { state: "Pause" });
+    change(date, { state: cancel ? "Cancelled" : "Pause" });
   }
+  try {
+    await Library.stopDownload(date, cancel);
+    if (index < 0 && job.state === "Pause" && cancel) change(date, { state: "Cancelled" });
+  } catch (error) { reportError(error); }
 }
 export function download(photo: Photo, apply: boolean) {
   enqueue([photo], apply);

@@ -177,68 +177,6 @@ if(Get-ScheduledTask -TaskName $env:BING_TASK_NAME -ErrorAction SilentlyContinue
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn install(daily: bool, s: &AppSettings) -> Result<()> {
-    let (mode, enabled, argument) = if daily {
-        ("daily", s.auto_wallpaper_enabled, "--daily-wallpaper")
-    } else {
-        ("periodic", s.periodic_task_enabled, "--scheduled-wallpaper")
-    };
-    let id = format!("cn.lgxng.bingwallpaperlib.{mode}");
-    let uid = run(Command::new("/usr/bin/id").arg("-u"))?;
-    let domain = format!("gui/{uid}");
-    let label = format!("{domain}/{id}");
-    let dir = dirs::home_dir()
-        .context("找不到用户目录")?
-        .join("Library/LaunchAgents");
-    fs::create_dir_all(&dir)?;
-    let plist = dir.join(format!("{id}.plist"));
-    if Command::new("/bin/launchctl")
-        .args(["print", &label])
-        .output()?
-        .status
-        .success()
-    {
-        run(Command::new("/bin/launchctl").args(["bootout", &label]))?;
-    }
-    if !enabled {
-        if plist.try_exists()? {
-            fs::remove_file(plist)?;
-        }
-        return Ok(());
-    }
-    let exe = std::env::current_exe()?;
-    let helper = exe
-        .parent()
-        .and_then(|p| p.parent())
-        .context("无法定位 .app")?
-        .join("Helpers/bing-wallpaper-task");
-    ensure!(helper.is_file(), "请从已安装的 .app 配置任务");
-    let helper = helper
-        .to_str()
-        .context("任务路径含无效字符")?
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    let timing = if daily {
-        format!(
-            "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>{}</integer><key>Minute</key><integer>{}</integer></dict>",
-            s.auto_wallpaper_hour, s.auto_wallpaper_minute
-        )
-    } else {
-        // launchd coalesces missed calendar events on wake. Rust checks elapsed wall-clock minutes.
-        "<key>StartCalendarInterval</key><dict/><key>RunAtLoad</key><true/>".to_owned()
-    };
-    let xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{id}</string><key>ProgramArguments</key><array><string>{helper}</string><string>{argument}</string></array>{timing}</dict></plist>"#
-    );
-    paths::write_atomic(&plist, xml.as_bytes())?;
-    run(Command::new("/bin/launchctl")
-        .args(["bootstrap", &domain])
-        .arg(plist))?;
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 fn install(daily: bool, s: &AppSettings) -> Result<()> {
     let (mode, enabled, argument) = if daily {

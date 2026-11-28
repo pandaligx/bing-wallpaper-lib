@@ -1,9 +1,15 @@
 use crate::{archive, model::WallpaperEntry, paths, region::Source};
 use anyhow::{Context, Result, anyhow, ensure};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, RwLock};
 
 static CATALOG: LazyLock<RwLock<Vec<WallpaperEntry>>> =
     LazyLock::new(|| RwLock::new(archive::local_entries()));
+static REVISION: AtomicU32 = AtomicU32::new(0);
+
+pub fn revision() -> u32 {
+    REVISION.load(Ordering::Acquire)
+}
 
 pub fn entry(date: &str) -> Result<WallpaperEntry> {
     let date: chrono::NaiveDate = date.parse()?;
@@ -110,6 +116,10 @@ pub async fn refresh(source: Source) -> Result<String> {
         return Ok(String::new());
     }
     paths::write_atomic(&paths::cache_file()?, &serde_json::to_vec(&entries)?)?;
-    *CATALOG.write().map_err(|_| anyhow!("壁纸库不可用"))? = entries;
+    let mut current = CATALOG.write().map_err(|_| anyhow!("壁纸库不可用"))?;
+    if *current != entries {
+        *current = entries;
+        REVISION.fetch_add(1, Ordering::Release);
+    }
     Ok(errors.join(" / "))
 }

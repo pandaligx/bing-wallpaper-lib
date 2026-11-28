@@ -1,5 +1,7 @@
 # AGENTS.md — 必应每日壁纸库
 
+NSH 开发交付默认落在本地。维护者保管 Windows Authenticode 签名，公开测试版与正式版均需维护者明确授权。发布前核验签名后的最终文件。当前验收顺序见 [桌面开发说明](desktop/README.md)。
+
 ## NSH 桌面重写分支
 
 新宿主位于 `desktop/`。从 `.agents/skills/nsh/SKILL.md` 和 `.agents/skills/nsh-design-guides/SKILL.md` 开始，开发 CLI、代码生成和原生宿主统一使用 NSH 0.7.2，来源提交 `0c29b5e3351128f489fe53bfb167160801707191`。项目内两份技能保留该提交的原始内容。使用 `desktop/DESIGN.md` 核对界面，使用 `desktop/README.md` 的命令运行测试和打包。

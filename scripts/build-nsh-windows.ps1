@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$NshPath = 'nsh', [switch]$SkipCheck)
+param([string]$NshPath = 'nsh', [switch]$SkipCheck, [string]$OutputDirectory = 'target/nsh-release')
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -21,7 +21,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Rust host build failed' }
     $binary = Join-Path $targetDir 'x86_64-pc-windows-msvc/release/bing-wallpaper-desktop.exe'
     & (Join-Path $PSScriptRoot 'check_windows_imports.ps1') -ExePath $binary -MinimumWindows1809
-    $out = New-Item -ItemType Directory -Force (Join-Path $root 'target/nsh-release')
+    $out = New-Item -ItemType Directory -Force -Path $OutputDirectory
     $artifact = Join-Path $out "BingWallpaperLib-v$($manifest.version)-windows-x64.exe"
     Copy-Item -LiteralPath $binary -Destination $artifact
     Get-FileHash $artifact -Algorithm SHA256

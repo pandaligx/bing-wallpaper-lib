@@ -1,29 +1,20 @@
 // Observe NSH's decoded-image budget on a private copy of the native extension.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 
 const root = resolve(".");
 const results = join(root, "target/nsh-validation");
 await mkdir(results, { recursive: true });
 const dir = await mkdtemp(join(results, "preview-memory-"));
-const archive = join(dir, "inputs.tar");
-execFileSync("git", [
-  "-c",
-  "safe.directory=" + root.replaceAll("\\", "/"),
-  "archive",
-  "--format=tar",
-  "--output",
-  archive,
-  "HEAD",
-  "--",
-  "desktop",
-  "ico",
-  "src",
-  "assets/data",
-]);
-execFileSync("tar", ["-xf", archive, "-C", dir]);
+// Measure the same TSX and native module the developer is about to package.
+for (const path of ["desktop", "ico", "src", "assets/data"]) {
+  await cp(join(root, path), join(dir, path), {
+    recursive: true,
+    filter: (file) => ![".nsh", "target"].includes(basename(file)),
+  });
+}
 const library = join(dir, "desktop/ext/wallpaper-native/src/lib.rs");
 const original = await readFile(library, "utf8");
 const measured = original.replace(
@@ -44,7 +35,7 @@ await writeFile(library, measured);
 const config = join(dir, "profile/BingWallpaperLib");
 await mkdir(config, { recursive: true });
 await writeFile(join(config, "settings.json"), '{"language":"english","theme_preference":"light"}');
-const target = { win32: "windows", linux: "linux", darwin: "macos" }[process.platform];
+const target = { win32: "windows", linux: "linux" }[process.platform];
 const args = ["test", "desktop/App.tsx", "--target", target, "--foreground"];
 const dates = ["2026-11-25", "2026-11-24", "2026-11-23"];
 const actions = `

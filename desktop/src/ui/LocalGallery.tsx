@@ -1,8 +1,9 @@
+import { smoothWheel } from "../preferences";
 import { effect, Image, keymap, List, signal, Text, View, windowSize } from "nsh";
 import type { ViewRef } from "nsh";
 import { Button, Dialog } from "nsh/base";
 import { Library } from "wallpaper-native";
-import { canApply, run, status, t } from "../preferences";
+import { canApply, run, notify, reportError, t } from "../preferences";
 import { columns } from "./Gallery";
 import { Action } from "./Action";
 import { releaseUnusedImages } from "./Thumbnail";
@@ -35,7 +36,7 @@ function LocalImage(props: {
           src.set(data);
         })
         .catch((error) => {
-          if (visible) status.set(String(error));
+          if (visible) reportError(error);
         });
     return () => {
       visible = false;
@@ -67,7 +68,7 @@ function FileDetails(props: { name: string; revision: number }) {
       visible = false;
     };
   });
-  return <Text class="text-sm text-muted-foreground">{details()}</Text>;
+  return <Text class="text-xs text-muted-foreground">{details()}</Text>;
 }
 export function LocalGallery(props: { sidebarWidth: number }) {
   let previewOpener: ViewRef | undefined;
@@ -102,7 +103,7 @@ export function LocalGallery(props: { sidebarWidth: number }) {
   function applyLocal(name: string) {
     run(async () => {
       await Library.applyLocal(name);
-      status.set(t("Applied"));
+      notify(t("Applied"));
     });
   }
   async function remove() {
@@ -112,7 +113,8 @@ export function LocalGallery(props: { sidebarWidth: number }) {
       await Library.deleteLocal(JSON.stringify(names)),
     );
     if (result.deleted.includes(preview())) preview.set("");
-    status.set(
+    const feedback = result.failed.length ? reportError : notify;
+    feedback(
       t("Delete") +
         " · " +
         result.deleted.length +
@@ -125,17 +127,28 @@ export function LocalGallery(props: { sidebarWidth: number }) {
     if (name) preview.set(name);
   };
   return (
-    <View class="flex-1 gap-3">
+    <View class="flex-1 gap-2">
       <View class="flex-row flex-wrap gap-2">
-        <Action id="scan-local" label={t("Refresh")} press={() => run(scan)} />
-        <Action label={t("Open folder")} press={() => run(() => Library.openLocation("folder"))} />
+        <Action icon="refresh-cw" id="scan-local" label={t("Refresh")} press={() => run(scan)} />
         <Action
+          icon="folder-open"
+          label={t("Open folder")}
+          press={() => run(() => Library.openLocation("folder"))}
+        />
+        <Action
+          icon="list-checks"
           label={t("Select all")}
           disabled={!files().length}
           press={() => selection.set([...files()])}
         />
-        <Action label={t("Clear selection")} disabled={!selection().length} press={() => selection.set([])} />
         <Action
+          icon="list-x"
+          label={t("Clear selection")}
+          disabled={!selection().length}
+          press={() => selection.set([])}
+        />
+        <Action
+          icon="trash-2"
           id="delete-selected"
           label={t("Delete selected") + " · " + selection().length}
           disabled={!selection().length}
@@ -143,15 +156,16 @@ export function LocalGallery(props: { sidebarWidth: number }) {
         />
       </View>
       <If when={!files().length}>
-        <Text class="text-muted-foreground">{t("No downloaded wallpapers yet")}</Text>
+        <Text class="text-xs text-muted-foreground">{t("No downloaded wallpapers yet")}</Text>
       </If>
       <List
+        smoothWheel={smoothWheel()}
         each={files()}
         keyExtractor={(name) => name}
         numColumns={columns(props.sidebarWidth)}
         estimatedItemSize={210}
         class="flex-1"
-        contentStyle={{ gap: 10 }}
+        contentStyle={{ gap: 6 }}
       >
         {(name) => {
           let button: ViewRef | undefined;
@@ -169,26 +183,26 @@ export function LocalGallery(props: { sidebarWidth: number }) {
                 class="focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <LocalImage name={name()} revision={revision()} cache={cache} />
-                <Text class="px-2 py-1 text-foreground">{name()}</Text>
+                <Text class="text-xs px-2 py-1 text-foreground">{name()}</Text>
                 <FileDetails name={name()} revision={revision()} />
               </Button>
               <View class="flex-row flex-wrap gap-1 px-2 pb-2">
                 <Action
-                  compact
+                  icon="monitor"
                   id={"apply-local-" + name()}
                   label={t("Set as wallpaper")}
                   disabled={!canApply()}
                   press={() => applyLocal(name())}
                 />
                 <Action
-                  compact
+                  icon="square-check"
                   id={"select-" + name()}
                   primary={selection().includes(name())}
                   label={t("Select")}
                   press={() => toggle(name())}
                 />
                 <Action
-                  compact
+                  icon="trash-2"
                   id={"delete-local-" + name()}
                   label={t("Delete")}
                   press={() => confirm.set([name()])}
@@ -203,7 +217,7 @@ export function LocalGallery(props: { sidebarWidth: number }) {
           <Dialog
             open
             onOpen={() => closeButton?.focus()}
-            class="m-auto rounded-xl bg-card"
+            class="m-auto rounded-lg bg-card"
             onOpenChange={({ open }) => {
               if (!open) closePreview();
             }}
@@ -218,19 +232,21 @@ export function LocalGallery(props: { sidebarWidth: number }) {
               }}
             >
               <LocalImage name={name()} preview cache={cache} />
-              <Text class="font-semibold text-foreground">{name()}</Text>
+              <Text class="text-xs font-semibold text-foreground">{name()}</Text>
               <FileDetails name={name()} revision={revision()} />
               <View class="flex-row flex-wrap gap-2">
-                <Action label={t("Previous")} press={() => step(-1)} />
-                <Action label={t("Next")} press={() => step(1)} />
+                <Action icon="chevron-left" label={t("Previous")} press={() => step(-1)} />
+                <Action icon="chevron-right" label={t("Next")} press={() => step(1)} />
                 <Action
+                  icon="monitor"
                   primary
                   disabled={!canApply()}
                   label={t("Set as wallpaper")}
                   press={() => applyLocal(name())}
                 />
-                <Action label={t("Delete")} press={() => confirm.set([name()])} />
+                <Action icon="trash-2" label={t("Delete")} press={() => confirm.set([name()])} />
                 <Action
+                  icon="x"
                   id="close-local"
                   label={t("Close")}
                   buttonRef={(node) => {
@@ -246,13 +262,13 @@ export function LocalGallery(props: { sidebarWidth: number }) {
       <If when={confirm().length > 0}>
         <Dialog
           open
-          class="m-auto rounded-xl bg-card"
+          class="m-auto rounded-lg bg-card"
           onOpenChange={({ open }) => {
             if (!open) confirm.set([]);
           }}
         >
           <View class="gap-3 p-5">
-            <Text class="text-lg font-semibold text-foreground">
+            <Text class="text-sm font-semibold text-foreground">
               {t("Delete selected")} ({confirm().length})?
             </Text>
             <View class="flex-row gap-2">

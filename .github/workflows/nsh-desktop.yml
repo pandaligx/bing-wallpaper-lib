@@ -9,7 +9,7 @@ on:
   push:
     branches: [rewrite/nsh-desktop]
   pull_request:
-    paths: ['desktop/**', 'src/**', 'assets/data/**', '.github/workflows/nsh-desktop.yml', 'scripts/build-nsh-windows.ps1']
+    paths: ['desktop/**', 'src/**', 'assets/data/**', 'vendor/nsh-platform-windows/**', '.github/workflows/nsh-desktop.yml', 'scripts/build-nsh-windows.ps1']
 permissions:
   contents: read
 concurrency:
@@ -24,14 +24,11 @@ jobs:
           - runner: windows-2022
             target: windows
             archive: nsh-windows-x86_64.zip
-          - runner: macos-15
-            target: macos
-            archive: nsh-macos-arm64.tar.gz
           - runner: ubuntu-24.04
             target: linux
             archive: nsh-linux-x86_64.tar.gz
     runs-on: ${{ matrix.runner }}
-    environment: ${{ inputs.distribution && github.ref_type == 'tag' && matrix.target == 'macos' && 'desktop-release' || 'desktop-ci' }}
+    environment: desktop-ci
     timeout-minutes: 100
     env:
       GH_TOKEN: ${{ github.token }}
@@ -52,35 +49,6 @@ jobs:
           set -euo pipefail
           version=$(node -p 'require("./desktop/nsh.json").version')
           [[ "$GITHUB_REF" == "refs/tags/v$version" && -n "$BING_WALLPAPER_UPDATE_PUBLIC_KEY" ]]
-      - name: Configure Developer ID signing for a distribution build
-        if: inputs.distribution && matrix.target == 'macos' && github.ref_type == 'tag'
-        shell: bash
-        env:
-          P12: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
-          KEY_ID: ${{ vars.MACOS_NOTARY_KEY_ID }}
-          ISSUER: ${{ vars.MACOS_NOTARY_ISSUER }}
-          IDENTITY: ${{ vars.MACOS_DEVELOPER_ID }}
-        run: |
-          set -euo pipefail
-          : "${IDENTITY:?Missing Developer ID Application identity}"
-          umask 077
-          keychain="$RUNNER_TEMP/wallpaper-signing.keychain-db"
-          cert="$RUNNER_TEMP/wallpaper-signing.p12"
-          key="$RUNNER_TEMP/wallpaper-notary.p8"
-          trap 'rm -f "$cert" "$key"' EXIT
-          printf %s "$P12" | base64 -D > "$cert"
-          printf '%s\n' "$NOTARY_KEY" > "$key"
-          password=$(openssl rand -hex 32)
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$cert" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
-          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
-          xcrun notarytool store-credentials BingWallpaperNotary --key "$key" --issuer "$ISSUER" --key-id "$KEY_ID"
-          printf 'MACOS_DEVELOPER_ID=%s\nMACOS_NOTARY_PROFILE=BingWallpaperNotary\n' "$IDENTITY" >> "$GITHUB_ENV"
       - name: Install pinned CLI
         shell: bash
         run: |
@@ -104,9 +72,6 @@ jobs:
           gh release download continuous --repo AppImage/appimagetool --pattern appimagetool-x86_64.AppImage --dir "$RUNNER_TEMP"
           chmod +x "$RUNNER_TEMP/appimagetool-x86_64.AppImage"
           echo "NSH_APPIMAGETOOL=$RUNNER_TEMP/appimagetool-x86_64.AppImage" >> "$GITHUB_ENV"
-      - name: Include Intel in the macOS universal package
-        if: runner.os == 'macOS'
-        run: rustup target add x86_64-apple-darwin
       - name: Package portable Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -223,42 +188,7 @@ jobs:
           name: native-window-kde
           path: target/nsh-validation/*.png
           if-no-files-found: error
-  open-universal-package:
+
+  gnome-session:
     needs: package
-    if: always() && !cancelled()
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15-intel, macos-15]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 8
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-macos
-          path: package
-      - name: Open the same packaged application on the native architecture
-        shell: bash
-        run: |
-          set -euo pipefail
-          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/BingDMG" package/*.dmg
-          trap 'hdiutil detach "$RUNNER_TEMP/BingDMG" -quiet || true' EXIT
-          ditto "$RUNNER_TEMP/BingDMG/BingWallpaperLib.app" "$RUNNER_TEMP/BingWallpaperLib.app"
-          app="$RUNNER_TEMP/BingWallpaperLib.app"
-          executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
-          binary="$app/Contents/MacOS/$executable"
-          lipo "$binary" -verify_arch arm64 x86_64
-          "$binary" > "$RUNNER_TEMP/window.log" 2>&1 &
-          app_pid=$!
-          swift - "$app_pid" <<'SWIFT'
-          import CoreGraphics
-          import Foundation
-          let pid = Int(CommandLine.arguments[1])!
-          for _ in 0..<90 {
-            let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-            if windows.contains(where: { ($0[kCGWindowOwnerPID as String] as? Int) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }) { exit(0) }
-            Thread.sleep(forTimeInterval: 0.5)
-          }
-          exit(1)
-          SWIFT
-          kill "$app_pid"
+    uses: ./.github/workflows/gnome-session-rehearsal.yml

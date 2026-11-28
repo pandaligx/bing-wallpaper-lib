@@ -48,20 +48,8 @@ fn system_region() -> Option<String> {
     (length > 1).then(|| String::from_utf16_lossy(&buf[..length as usize - 1]))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn system_region() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    let locale = {
-        let cmd = std::process::Command::new("/usr/bin/defaults")
-            .args(["read", "-g", "AppleLocale"])
-            .output()
-            .ok()?;
-        if !cmd.status.success() {
-            return None;
-        }
-        String::from_utf8(cmd.stdout).ok()?
-    };
-    #[cfg(target_os = "linux")]
     let locale = ["LC_ALL", "LC_ADDRESS", "LANG"]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))?;
@@ -75,19 +63,24 @@ fn system_region() -> Option<String> {
         .map(str::to_owned)
 }
 
-pub fn selected() -> Result<Option<Source>> {
+pub fn preference() -> Result<String> {
     let path = paths::config_dir()?.join("update-region");
     match std::fs::read_to_string(path) {
         Ok(s) => match s.trim() {
-            "cn" => return Ok(Some(Source::GitCode)),
-            "international" => return Ok(Some(Source::GitHub)),
-            "auto" => (),
+            value @ ("auto" | "cn" | "international") => Ok(value.to_owned()),
             _ => anyhow::bail!("无法读取已保存的更新地区"),
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-        Err(e) => return Err(e.into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("auto".to_owned()),
+        Err(e) => Err(e.into()),
     }
-    Ok(system_region().as_deref().and_then(source_for_region))
+}
+
+pub fn selected() -> Result<Option<Source>> {
+    Ok(match preference()?.as_str() {
+        "cn" => Some(Source::GitCode),
+        "international" => Some(Source::GitHub),
+        _ => system_region().as_deref().and_then(source_for_region),
+    })
 }
 
 pub fn select(value: &str) -> Result<()> {

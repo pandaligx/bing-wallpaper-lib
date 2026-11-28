@@ -1,6 +1,7 @@
+import { smoothWheel } from "../preferences";
 import { computed, effect, Image, keymap, List, Text, View, windowSize } from "nsh";
 import type { ListRef, ViewRef } from "nsh";
-import { Button, Dialog, Progress } from "nsh/base";
+import { Button, Dialog, Progress, Toolbar } from "nsh/base";
 import {
   active,
   download,
@@ -34,33 +35,45 @@ export function columns(sidebarWidth: number) {
   return Math.max(1, Math.floor((windowSize().width - sidebarWidth - 40) / 230));
 }
 const section = () => (page() === "month" ? month() : page());
-function CardActions(props: { photo: Photo }) {
+function CardActions(props: { photo: Photo; featured?: boolean }) {
+  let previewButton: ViewRef | undefined;
   const busy = () => active().includes(props.photo.date);
   const progress = () => transfers().find((tr) => tr.date === props.photo.date && tr.state === "active");
   return (
     <View class="gap-1">
-      <View class="flex-row flex-wrap gap-1">
+      <Toolbar class="gap-1" accessibilityLabel={props.photo.headline || props.photo.date}>
+        <If when={props.featured}>
+          <Action
+            icon="eye"
+            label={t("Preview")}
+            buttonRef={(node) => {
+              previewButton = node;
+            }}
+            press={() => openPreview(props.photo, previewButton)}
+          />
+        </If>
         <Action
-          compact
+          icon="monitor"
           id={"card-apply-" + props.photo.date}
           label={t("Set as wallpaper")}
           disabled={busy() || !canApply()}
           press={() => download(props.photo, true)}
         />
         <Action
-          compact
+          icon="download"
           id={"card-download-" + props.photo.date}
           label={t("Download")}
           disabled={busy()}
           press={() => download(props.photo, false)}
         />
         <Action
-          compact
+          icon="heart"
           id={"card-favorite-" + props.photo.date}
+          filled={saved().includes(props.photo.date)}
           label={t(saved().includes(props.photo.date) ? "Cancel favorite" : "Favorite")}
           press={() => favorite(props.photo)}
         />
-      </View>
+      </Toolbar>
       <If when={progress()}>
         {(tr) => (
           <Progress
@@ -77,7 +90,6 @@ function CardActions(props: { photo: Photo }) {
 }
 function Featured(props: { photo: Photo }) {
   let imageButton: ViewRef | undefined;
-  let previewButton: ViewRef | undefined;
   const photo = () => props.photo;
   const wide = () => windowSize().width >= 700;
   return (
@@ -99,26 +111,16 @@ function Featured(props: { photo: Photo }) {
       >
         <Image src={photo().preview} style={{ width: "100%", aspectRatio: 16 / 9 }} />
       </Button>
-      <View class="flex-1 justify-center gap-2 p-4">
-        <Text class="text-sm text-muted-foreground">{photo().date}</Text>
-        <Text class="text-xl font-semibold text-foreground">{photo().headline || photo().date}</Text>
-        <Text class="text-sm text-muted-foreground">{photo().description}</Text>
-        <View class="flex-row flex-wrap gap-2">
-          <Action
-            primary
-            label={t("Preview")}
-            buttonRef={(node) => {
-              previewButton = node;
-            }}
-            press={() => openPreview(photo(), previewButton)}
-          />
-        </View>
-        <CardActions photo={photo()} />
+      <View class="flex-1 justify-center gap-1 p-3">
+        <Text class="text-xs text-muted-foreground">{photo().date}</Text>
+        <Text class="text-sm font-semibold text-foreground">{photo().headline || photo().date}</Text>
+        <Text class="text-xs text-muted-foreground">{photo().description}</Text>
+        <CardActions featured photo={photo()} />
       </View>
     </View>
   );
 }
-export function Gallery(props: { sidebarWidth: number }) {
+export function Gallery(props: { sidebarWidth: number; listRef: (node: ListRef) => void }) {
   let grid: ListRef | undefined;
   let previous = "";
   let version = 0;
@@ -138,31 +140,31 @@ export function Gallery(props: { sidebarWidth: number }) {
   });
   return (
     <View class="flex-1 gap-2">
-      <View class="flex-row items-center justify-between gap-2">
-        <Text class="text-muted-foreground">
-          {entries().length} {t("Wallpapers")}
-        </Text>
-        <Action label={t("Back to top")} press={() => grid?.scrollToOffset({ offset: 0, animated: true })} />
-      </View>
       <If when={page() === "favorites" && !entries().length}>
-        <Text class="text-muted-foreground">{t("No favorite wallpapers yet")}</Text>
+        <Text class="text-xs text-muted-foreground">{t("No favorite wallpapers yet")}</Text>
       </If>
       <List
+        smoothWheel={smoothWheel()}
         testID="wallpaper-grid"
         ref={(node) => {
           grid = node;
+          props.listRef(node);
         }}
         each={list()}
         keyExtractor={(p) => p.date}
         class="flex-1"
         header={<If when={page() === "home" ? photos()[0] : undefined}>{(p) => <Featured photo={p()} />}</If>}
         numColumns={columns(props.sidebarWidth)}
-        estimatedItemSize={275}
+        estimatedItemSize={
+          Math.round(
+            (((windowSize().width - props.sidebarWidth - 24) / columns(props.sidebarWidth)) * 9) / 16,
+          ) + 56
+        }
         initialScrollIndex={positions.get(section()) || undefined}
         onViewableItemsChange={({ viewableItems }) => {
           if (viewableItems.length) positions.set(section(), viewableItems[0].index);
         }}
-        contentStyle={{ gap: 10 }}
+        contentStyle={{ gap: 6 }}
       >
         {(photo) => {
           let opener: ViewRef | undefined;
@@ -178,15 +180,14 @@ export function Gallery(props: { sidebarWidth: number }) {
                 class="hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring active:opacity-80"
               >
                 <Thumbnail src={photo().thumbnail} />
-                <View class="gap-1 px-3 py-2">
-                  <Text class="font-semibold text-foreground line-clamp-2">
+                <View class="gap-1 px-2 pt-1">
+                  <Text class="text-xs font-semibold text-foreground line-clamp-2">
                     {photo().headline || photo().date}
                   </Text>
-                  <Text class="text-sm text-muted-foreground">{photo().date}</Text>
-                  <Text class="text-sm text-muted-foreground line-clamp-2">{photo().description}</Text>
                 </View>
               </Button>
-              <View class="px-2 pb-2">
+              <View class="flex-row items-center justify-between gap-1 px-2 pb-1">
+                <Text class="text-xs text-muted-foreground">{photo().date}</Text>
                 <CardActions photo={photo()} />
               </View>
             </View>
@@ -214,7 +215,7 @@ export function Preview(props: { photo: Photo }) {
     <Dialog
       open
       animation="fade"
-      class="m-auto rounded-xl bg-card"
+      class="m-auto rounded-lg bg-card"
       accessibilityLabel={item().headline ?? item().date}
       onOpen={() => closeButton?.focus()}
       onOpenChange={({ open }) => {
@@ -222,7 +223,7 @@ export function Preview(props: { photo: Photo }) {
       }}
     >
       <View
-        class="gap-3 rounded-xl bg-card p-4"
+        class="gap-3 rounded-lg bg-card p-4"
         style={{
           width: Math.max(
             248,
@@ -231,8 +232,8 @@ export function Preview(props: { photo: Photo }) {
         }}
       >
         <Image src={item().preview} style={{ width: "100%", aspectRatio: 16 / 9, borderRadius: 6 }} />
-        <Text class="text-xl font-semibold text-foreground">{item().headline || item().date}</Text>
-        <Text class="text-muted-foreground">
+        <Text class="text-sm font-semibold text-foreground">{item().headline || item().date}</Text>
+        <Text class="text-xs text-muted-foreground">
           {item().date} · {item().description}
         </Text>
         <If when={transfer()}>
@@ -246,26 +247,37 @@ export function Preview(props: { photo: Photo }) {
             />
           )}
         </If>
-        <View class="flex-row flex-wrap gap-2">
-          <Action id="previous-photo" label={t("Previous")} disabled={index() <= 0} press={() => step(-1)} />
+        <Toolbar class="gap-1" accessibilityLabel={t("Preview")}>
           <Action
+            icon="chevron-left"
+            id="previous-photo"
+            label={t("Previous")}
+            disabled={index() <= 0}
+            press={() => step(-1)}
+          />
+          <Action
+            icon="chevron-right"
             id="next-photo"
             label={t("Next")}
             disabled={index() + 1 >= list().length}
             press={() => step(1)}
           />
           <Action
+            icon="heart"
             id="toggle-favorite"
+            filled={saved().includes(item().date)}
             label={t(saved().includes(item().date) ? "Cancel favorite" : "Favorite")}
             press={() => favorite(item())}
           />
           <Action
+            icon="download"
             id="download-photo"
             label={t("Download")}
             disabled={active().includes(item().date)}
             press={() => download(item(), false)}
           />
           <Action
+            icon="monitor"
             id="apply-photo"
             primary
             label={t("Set as wallpaper")}
@@ -273,6 +285,7 @@ export function Preview(props: { photo: Photo }) {
             press={() => download(item(), true)}
           />
           <Action
+            icon="x"
             id="close-preview"
             label={t("Close")}
             buttonRef={(node) => {
@@ -280,7 +293,7 @@ export function Preview(props: { photo: Photo }) {
             }}
             press={closePreview}
           />
-        </View>
+        </Toolbar>
       </View>
     </Dialog>
   );

@@ -1,5 +1,30 @@
 # NSH 桌面版验收记录
 
+## 2026-11-27 本地紧凑界面
+
+Windows 11 Build 26300，170 Hz 显示器，系统“在 Windows 中显示动画”关闭。先前的 NSH 宿主在普通滚轮输入时直接跳到下一个位置，内置计数器仍可显示 170 FPS。当前宿主允许启用“平滑滚轮”的列表使用 NSH 原生滚动曲线。设置可随时关闭该选项。
+
+使用相同的壁纸归档、窗口大小和往返滚动轨迹，分别启动修订前后的便携 exe。每轮 12 秒，用 DXGI 在可见窗口内取 96 × 240 像素，按秒统计画面实际变化次数，取中间 10 秒的中位数。正常启动测量时关闭框架帧率监视器。以下精细滚动来自高精度计时器投递的 Windows 滚轮消息。
+
+| 画廊输入 | 修订前实际 FPS | 紧凑版实际 FPS |
+| --- | ---: | ---: |
+| 普通滚轮，每秒 9 格 | 9 | 169 |
+| 普通滚轮，每秒 24 格 | 24 | 168.5 |
+| 精细滚动，每秒 150 次 | 150 | 150 |
+| 精细滚动，每秒 240 次 | 170 | 170 |
+
+表内两版均使用普通启动。普通滚轮的变化来自两次输入之间的逐帧位移；高频精细输入的位移继续直接跟随输入。[逐秒采样记录](../docs/nsh-compact/windows-scroll.json)
+
+NSH 套件共 62 项，默认运行通过 61 项；另行联网执行的一项从 Bing 下载、解码并复用了同一张壁纸。回归包括一万条归档滚动与缩放、月份切换、键盘预览、下载失败后重试，以及带数量的删除确认。旧版 Rust 套件的 54 项通过。窗口与扩展通过严格 Clippy。深浅色原生窗口都校验了平滑滚轮设置从默认开启到关闭并保存。
+
+隔离配置连续迁移两次，通过了收藏变更、自定义目录、旧配置逐字节备份、原图摘要、跳过 aria2 半成品和确认删除测试。依次关闭 3 张 1080p 预览时，解码缓存分别从 22.35、16.50、16.50 MiB 回落到 12.00 MiB。
+
+本轮 Windows 测试包位于 `target/nsh-local/windows`，48,408,064 字节，SHA-256 为 `EEE17A52D0B135EFC910A5C3D8AF08DB7D10424AA51CAD8B3099B0BC1EAC5C3C`。将该文件单独复制、阻断其网络后，原生窗口仍可读出多个壁纸日期，同目录只有一个 exe。已检查系统 DLL 导入和 Authenticode 状态 `NotSigned`；本地发布脚本遇到未签 exe 会在访问密钥或网站之前退出。
+
+六种语言分别用原生窗口核验了侧栏的图库操作和月份名称。660 点宽的俄语设置页中，长标签可换行，右侧开关仍对齐。[中文首页](../docs/nsh-compact/windows-home-light.png) · [英文首页](../docs/nsh-compact/windows-home-en.png) · [浅色设置](../docs/nsh-compact/windows-settings-light.png) · [深色设置](../docs/nsh-compact/windows-settings-dark.png) · [俄语窄屏设置](../docs/nsh-compact/windows-settings-ru.png) · [深色预览](../docs/nsh-compact/windows-preview-dark.png)
+
+下表含此前原型的跨平台原生结果。当前布局的 macOS 双架构、GNOME 和 KDE 原生复验、Windows 10 1809、实体混合 DPI 双屏及实际睡眠恢复列入下一轮验收。[按平台验收与签名顺序](README.md)
+
 ## 旧版功能对照
 
 | 0.2.37 用户操作 | NSH 验证方式 | 本机结果 |
@@ -90,4 +115,4 @@ macOS 15 在「应用程序」下的独立测试目录中，还演练了系统�
 
 国内公开仓库 `gcw_qWIjmve7/bing-wallpaper-lib` 已建立并启用自动拉取。两端 main 的归档都有 3,000 个日期，截止 2026-11-27，字节数均为 1,785,998，SHA-256 均为 `919eb7e779019aca2f11030c994e2fd7e37e3b490eb521685756e33a121b6fec`。从 GitCode 的匿名 Release API 返回的附件中，按完整文件名筛出旧版 exe，再经 file-cdn.gitcode.com 读回，23,737,856 字节与 GitHub 原件一致。[国内旧版下载](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37)
 
-GitHub 的三个公开 RC1 附件已经匿名下载，长度及摘要均与上表一致。双站演练按文件名筛选三端附件，两站六次匿名下载均匹配后才生成测试用的 `signed-release.json`。每站附带的 `test-public-key.txt` 用于复核本次 Ed25519 签名。可用 `scripts/test-public-update.mjs` 通过原生更新服务重跑两端下载、验签和暂存文件校验。正式版由发布方配置独立的公钥、签名密钥和 GitCode 仓库写权限。[GitHub 测试发行页](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.3.0-rc.1) · [GitCode 测试发行页](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.3.0-rc.1)
+RC1 历史演练中，两站的三个安装包均已匿名下载，六份文件与上表逐项相符。测试前驱客户端从 GitCode 和 GitHub 各下载、验签并暂存了 45,545,984 字节的 Windows exe。维护者要求撤下测试发行页，两站匿名发行接口随后均返回 404，稳定版本均为 0.2.37。上述原生记录与历史截图对应旧 RC1，新界面的本地验收另记。

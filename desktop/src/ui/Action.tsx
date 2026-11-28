@@ -1,31 +1,73 @@
 import { Text } from "nsh";
 import type { ViewRef } from "nsh";
-import { Button } from "nsh/base";
+import { Button, Tooltip } from "nsh/base";
+import { Icon, type IconName } from "./Icon";
+
 interface ActionProps {
   id?: string;
   label: string;
+  shortLabel?: string;
   press: () => void;
+  icon?: IconName;
+  row?: boolean;
   primary?: boolean;
-  compact?: boolean;
+  filled?: boolean;
   disabled?: boolean;
   buttonRef?: (button: ViewRef) => void;
 }
+
 export function Action(props: ActionProps) {
+  const hasText = !props.icon || !!props.row;
+  const base =
+    "flex-row items-center rounded focus-visible:ring-2 focus-visible:ring-ring active:opacity-70 disabled:opacity-40 ";
   return (
     <Button
       ref={props.buttonRef}
       testID={props.id}
       accessibilityLabel={props.label}
+      selected={props.row ? props.primary : props.filled}
       disabled={props.disabled}
       onPress={props.press}
+      tooltip={
+        !hasText ? (
+          <Tooltip class="rounded border border-border bg-popover px-2 py-1">
+            <Text class="text-xs text-popover-foreground">{props.label}</Text>
+          </Tooltip>
+        ) : undefined
+      }
       class={
-        (props.compact ? "px-2 py-1 " : "px-4 py-2 ") +
+        base +
+        (props.row
+          ? "h-7 min-w-0 gap-2 px-2 "
+          : hasText
+            ? "min-h-7 justify-center px-2 "
+            : "h-7 w-7 justify-center ") +
         (props.primary
-          ? "rounded-lg bg-primary hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring active:opacity-70 disabled:opacity-40"
-          : "rounded-lg border border-border bg-card hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring active:opacity-70 disabled:opacity-40")
+          ? props.row
+            ? "bg-sidebar-accent"
+            : "bg-primary"
+          : props.row || !hasText
+            ? "hover:bg-accent"
+            : "border border-border bg-card hover:bg-accent")
       }
     >
-      <Text class={props.primary ? "text-primary-foreground" : "text-foreground"}>{props.label}</Text>
+      {props.icon ? (
+        <Icon
+          name={props.icon}
+          filled={props.filled}
+          ink={props.primary && !props.row ? "primary-foreground" : props.filled ? "primary" : "foreground"}
+        />
+      ) : null}
+      {hasText ? (
+        <Text
+          class={
+            (props.primary && !props.row ? "text-primary-foreground" : "text-foreground") +
+            " min-w-0 shrink text-xs line-clamp-1"
+          }
+        >
+          {props.shortLabel ?? props.label}
+        </Text>
+      ) : null}
     </Button>
   );
 }

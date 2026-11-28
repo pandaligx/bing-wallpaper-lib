@@ -49,7 +49,7 @@ test("acts directly on individual photos in the gallery, favorites and local fol
   await app.press("card-favorite-" + date);
   await app.press("nav-favorites");
   await app.waitFor("card-favorite-" + date);
-  expect(app.texts()).toContain("Cancel favorite");
+  expect(app.accessibility("card-favorite-" + date)?.name).toBe("Cancel favorite");
   await app.press("nav-local");
   await app.waitFor("1920 × 1080 · 1.00 MiB");
   await app.press("apply-local-" + file);

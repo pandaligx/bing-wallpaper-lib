@@ -61,16 +61,6 @@ pub fn monitors() -> Result<String> {
         ).collect();
         Ok(serde_json::to_string(&list)?)
     }
-    #[cfg(target_os = "macos")]
-    return run(
-        "/usr/bin/osascript",
-        &[
-            "-l",
-            "JavaScript",
-            "-e",
-            r#"ObjC.import('AppKit'); function run() { const out=[]; const screens=$.NSScreen.screens; for(let i=0;i<screens.count;i++){const screen=screens.objectAtIndex(i);out.push({id:String(ObjC.unwrap(screen.deviceDescription.objectForKey('NSScreenNumber'))),label:ObjC.unwrap(screen.localizedName)});} return JSON.stringify(out); }"#,
-        ],
-    );
     #[cfg(target_os = "linux")]
     {
         if std::env::var("XDG_CURRENT_DESKTOP")
@@ -105,19 +95,6 @@ pub fn apply(path: &Path, target: &WallpaperTarget) -> Result<()> {
         WallpaperTarget::All => windows::set_wallpaper_for_all_monitors(&image),
         WallpaperTarget::Monitor(id) => windows::set_wallpaper_for_monitor(&image, id),
     };
-    #[cfg(target_os = "macos")]
-    return run(
-        "/usr/bin/osascript",
-        &[
-            "-l",
-            "JavaScript",
-            "-e",
-            MAC_SET,
-            image.to_str().context("无法读取路径")?,
-            target.monitor_id().unwrap_or(""),
-        ],
-    )
-    .map(drop);
     #[cfg(target_os = "linux")]
     return linux_apply(&image, target);
 }
@@ -135,25 +112,6 @@ fn run(command: &str, args: &[&str]) -> Result<String> {
     );
     Ok(String::from_utf8(result.stdout)?.trim().to_owned())
 }
-
-#[cfg(target_os = "macos")]
-const MAC_SET: &str = r#"ObjC.import('AppKit');
-function run(argv) {
-  const screens = $.NSScreen.screens;
-  const file = $.NSURL.fileURLWithPath(argv[0]);
-  let matched = 0;
-  for (let i = 0; i < screens.count; i++) {
-    const screen = screens.objectAtIndex(i);
-    const id = String(ObjC.unwrap(screen.deviceDescription.objectForKey('NSScreenNumber')));
-    if (argv[1] && id !== argv[1]) continue;
-    const error = Ref();
-    if (!$.NSWorkspace.sharedWorkspace.setDesktopImageURLForScreenOptionsError(file, screen, $.NSDictionary.dictionary, error)) {
-      throw Error(ObjC.unwrap(error[0].localizedDescription));
-    }
-    matched++;
-  }
-  if (!matched) throw Error('显示器已断开');
-}"#;
 
 #[cfg(target_os = "linux")]
 fn plasma(script: &str) -> Result<String> {

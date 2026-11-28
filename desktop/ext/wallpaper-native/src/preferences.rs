@@ -33,6 +33,7 @@ pub fn update(patch: &str) -> Result<String> {
                     | "wallpaper_target"
                     | "download_dir"
                     | "theme_preference"
+                    | "smooth_wheel"
                     | "startup_enabled"
                     | "background_resident_enabled"
                     | "auto_wallpaper_exit_after_done"

@@ -161,6 +161,9 @@ pub struct AppSettings {
     /// 主题偏好；默认跟随 Windows 系统深色/浅色模式。
     #[serde(default)]
     pub theme_preference: ThemePreference,
+    /// Use the display-paced wheel curve in the NSH desktop gallery.
+    #[serde(default = "default_smooth_wheel")]
+    pub smooth_wheel: bool,
     /// 界面语言；默认跟随 Windows，无法识别时回退到英文。
     #[serde(default)]
     pub language: LanguagePreference,
@@ -210,11 +213,16 @@ pub struct AppSettings {
     pub last_periodic_latest_date: Option<NaiveDate>,
 }
 
+fn default_smooth_wheel() -> bool {
+    true
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             download_dir: None,
             theme_preference: ThemePreference::default(),
+            smooth_wheel: default_smooth_wheel(),
             language: LanguagePreference::default(),
             wallpaper_target: WallpaperTarget::default(),
             download_resolution: DownloadResolution::default(),

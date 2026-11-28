@@ -53,6 +53,7 @@ for (const path of [
   "ico",
   "src",
   "assets/data",
+  "vendor/nsh-platform-windows",
   "desktop/windows/Cargo.toml",
   "desktop/windows/Cargo.lock",
   "desktop/windows/build.rs",

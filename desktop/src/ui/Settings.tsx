@@ -1,23 +1,39 @@
+import { smoothWheel } from "../preferences";
 import { Scroll, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
+import { Input, Toolbar } from "nsh/base";
 import { Library } from "wallpaper-native";
-import { checking, checkUpdate, load, refresh, setSource, source } from "../library";
-import { configure, preferences, run, startup, status, t } from "../preferences";
+import { checking, checkUpdate, load, refresh, setSource, source, sourcePreference } from "../library";
+import { configure, preferences, run, startup, notify, reportError, t } from "../preferences";
 import type { Preferences } from "../preferences";
+import { Icon, type IconName } from "./Icon";
 import { Action } from "./Action";
-import { ChoiceField, Toggle } from "./WallpaperOptions";
+import { ChoiceField, FieldLabel, Toggle } from "./WallpaperOptions";
 
 export function Region() {
   return (
     <View class="gap-2">
-      <Text class="font-semibold text-foreground">
+      <Text class="text-xs font-semibold text-foreground">
         {t("Region")}
         {source() ? " · " + source() : ""}
       </Text>
       <View class="flex-row flex-wrap gap-2">
-        <Action label={t("Follow system")} press={() => setSource("auto")} />
-        <Action id="region-cn" label="GitCode · CN" press={() => setSource("cn")} />
-        <Action id="region-other" label="GitHub" press={() => setSource("international")} />
+        <Action
+          label={t("Follow system")}
+          primary={sourcePreference() === "auto"}
+          press={() => setSource("auto")}
+        />
+        <Action
+          id="region-cn"
+          label="GitCode · CN"
+          primary={sourcePreference() === "cn"}
+          press={() => setSource("cn")}
+        />
+        <Action
+          id="region-other"
+          label="GitHub"
+          primary={sourcePreference() === "international"}
+          press={() => setSource("international")}
+        />
       </View>
     </View>
   );
@@ -39,10 +55,15 @@ const sources = [
 function choices(pairs: string[][]) {
   return pairs.map(([value, title]) => ({ value, title: t(title) }));
 }
-function Heading(props: { label: string }) {
-  return <Text class="border-b border-border pb-2 text-lg font-semibold text-foreground">{props.label}</Text>;
+function Heading(props: { label: string; icon: IconName }) {
+  return (
+    <View class="flex-row items-center gap-2 border-b border-border pb-1 pt-2">
+      <Icon name={props.icon} ink="muted-foreground" />
+      <Text class="text-xs font-semibold text-foreground">{props.label}</Text>
+    </View>
+  );
 }
-const inputClass = "min-w-24 rounded-lg border border-border bg-card px-3 py-2 text-foreground";
+const inputClass = "h-7 min-w-20 rounded border border-input bg-card px-2 text-xs text-foreground";
 
 export function Settings() {
   const s = () => preferences()!;
@@ -54,7 +75,7 @@ export function Settings() {
     try {
       displays.set(JSON.parse(Library.monitors()));
     } catch (e) {
-      status.set(String(e));
+      reportError(e);
     }
   }
   getDisplays();
@@ -80,13 +101,13 @@ export function Settings() {
     return options;
   };
   return (
-    <Scroll testID="settings-content" class="flex-1">
-      <View class="gap-4 pb-5 pr-2">
-        <Heading label={t("Appearance")} />
-        <View class="flex-row flex-wrap gap-4">
+    <Scroll smoothWheel={smoothWheel()} testID="settings-content" class="flex-1">
+      <View class="gap-2 pb-4 pr-2" style={{ width: "100%", maxWidth: 650 }}>
+        <Heading icon="palette" label={t("Appearance")} />
+        <View class="gap-1">
           <ChoiceField
             id="theme"
-            label={t("Appearance")}
+            label={t("Theme")}
             value={s().theme_preference}
             items={choices([
               ["system", "System"],
@@ -103,47 +124,63 @@ export function Settings() {
             choose={(v) => save({ language: v })}
           />
         </View>
-        <Heading label={t("Wallpaper download folder")} />
-        <Input
-          testID="folder-path"
-          accessibilityLabel={t("Wallpaper download folder")}
-          class={inputClass}
-          value={path()}
-          onChange={({ value }) => path.set(value)}
+        <Toggle
+          id="smooth-wheel"
+          label={t("Smooth mouse wheel")}
+          value={smoothWheel()}
+          change={(enabled) => save({ smooth_wheel: enabled })}
         />
-        <View class="flex-row flex-wrap gap-2">
-          <Action
-            label={t("Choose and save")}
-            press={() =>
-              run(async () => {
-                const result = await Library.chooseFolder();
-                if (result) {
-                  await configure({ download_dir: result });
-                  path.set(result);
-                }
-              })
-            }
+        <Heading icon="hard-drive" label={t("Storage")} />
+        <View class="flex-row items-center gap-1">
+          <Input
+            style={{ flex: 1 }}
+            testID="folder-path"
+            accessibilityLabel={t("Wallpaper download folder")}
+            class={inputClass}
+            value={path()}
+            onChange={({ value }) => path.set(value)}
           />
-          <Action
-            label={t("Save")}
-            press={() =>
-              run(async () => {
-                await configure({ download_dir: path().trim() || null });
-                path.set(await Library.downloadFolder());
-              })
-            }
-          />
-          <Action
-            id="default-folder"
-            label={t("Default")}
-            press={() =>
-              run(async () => {
-                await configure({ download_dir: null });
-                path.set(await Library.downloadFolder());
-              })
-            }
-          />
-          <Action label={t("Open folder")} press={() => run(() => Library.openLocation("folder"))} />
+          <Toolbar accessibilityLabel={t("Wallpaper download folder")} class="gap-1">
+            <Action
+              icon="folder-search"
+              label={t("Choose and save")}
+              press={() =>
+                run(async () => {
+                  const result = await Library.chooseFolder();
+                  if (result) {
+                    await configure({ download_dir: result });
+                    path.set(result);
+                  }
+                })
+              }
+            />
+            <Action
+              icon="save"
+              label={t("Save")}
+              press={() =>
+                run(async () => {
+                  await configure({ download_dir: path().trim() || null });
+                  path.set(await Library.downloadFolder());
+                })
+              }
+            />
+            <Action
+              icon="rotate-ccw"
+              id="default-folder"
+              label={t("Default")}
+              press={() =>
+                run(async () => {
+                  await configure({ download_dir: null });
+                  path.set(await Library.downloadFolder());
+                })
+              }
+            />
+            <Action
+              icon="folder-open"
+              label={t("Open folder")}
+              press={() => run(() => Library.openLocation("folder"))}
+            />
+          </Toolbar>
         </View>
         <ChoiceField
           id="resolution"
@@ -157,10 +194,11 @@ export function Settings() {
           ])}
           choose={(v) => save({ download_resolution: v })}
         />
-        <Heading label={t("Multi-monitor wallpaper")} />
+        <Heading icon="monitor" label={t("Display")} />
         <View class="flex-row flex-wrap items-center gap-2">
           <ChoiceField
             id="monitor-target"
+            hideLabel
             label={t("Multi-monitor wallpaper")}
             items={monitorOptions()}
             value={s().wallpaper_target.monitor_id ?? ""}
@@ -168,9 +206,9 @@ export function Settings() {
               save({ wallpaper_target: v ? { type: "monitor", monitor_id: v } : { type: "all" } })
             }
           />
-          <Action label={t("Refresh")} press={getDisplays} />
+          <Action icon="refresh-cw" label={t("Refresh")} press={getDisplays} />
         </View>
-        <Heading label={t("Automatic wallpaper")} />
+        <Heading icon="clock-3" label={t("Automatic wallpaper")} />
         <Toggle
           label={t("Run in background / show tray icon")}
           value={s().background_resident_enabled}
@@ -195,14 +233,16 @@ export function Settings() {
           choose={(v) => save({ auto_wallpaper_source: v }, true)}
         />
         <View class="flex-row flex-wrap items-center gap-2">
-          <Text>{t("Execution time")}</Text>
+          <FieldLabel label={t("Execution time")} />
           <Input
+            style={{ width: 84 }}
             class={inputClass}
             value={time() ?? clock()}
             accessibilityLabel={t("Execution time")}
             onChange={({ value }) => time.set(value)}
           />
           <Action
+            icon="save"
             label={t("Save")}
             disabled={!/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(time() ?? "")}
             press={() => {
@@ -211,15 +251,19 @@ export function Settings() {
             }}
           />
           <Action
+            icon="play"
             label={t("Change once now")}
             press={() =>
               run(async () => {
                 await Library.changeNow();
-                status.set(t("Applied"));
+                notify(t("Applied"));
               })
             }
           />
         </View>
+        <If when={time() !== null && !/^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(time()!)}>
+          <Text class="text-xs text-destructive">{t("Use HH:mm")}</Text>
+        </If>
         <Toggle
           label={t("Exit after automatic wallpaper")}
           value={s().auto_wallpaper_exit_after_done}
@@ -254,14 +298,16 @@ export function Settings() {
           choose={(v) => save({ periodic_wallpaper_source: v }, true)}
         />
         <View class="flex-row flex-wrap items-center gap-2">
-          <Text>{t("Repeat interval")} (1–1439 min)</Text>
+          <FieldLabel label={t("Repeat interval") + " (min)"} />
           <Input
+            style={{ width: 84 }}
             class={inputClass}
             accessibilityLabel={t("Repeat interval")}
             value={interval() ?? String(s().periodic_interval_minutes)}
             onChange={({ value }) => interval.set(value)}
           />
           <Action
+            icon="save"
             label={t("Save")}
             disabled={
               !/^\d{1,4}$/.test(interval() ?? "") || Number(interval()) < 1 || Number(interval()) > 1439
@@ -269,11 +315,25 @@ export function Settings() {
             press={() => save({ periodic_interval_minutes: Number(interval()) }, true)}
           />
         </View>
-        <Heading label={t("Maintenance")} />
+        <If
+          when={
+            interval() !== null &&
+            (!/^\d{1,4}$/.test(interval()!) || Number(interval()) < 1 || Number(interval()) > 1439)
+          }
+        >
+          <Text class="text-xs text-destructive">{t("Enter 1–1439 minutes")}</Text>
+        </If>
+        <Heading icon="globe" label={t("Maintenance")} />
         <Region />
-        <View class="flex-row flex-wrap gap-2">
-          <Action label={t("Refresh wallpaper list")} disabled={!source()} press={() => void refresh()} />
+        <Toolbar class="gap-1" accessibilityLabel={t("Maintenance")}>
           <Action
+            icon="refresh-cw"
+            label={t("Refresh wallpaper list")}
+            disabled={!source()}
+            press={() => void refresh()}
+          />
+          <Action
+            icon="trash-2"
             label={t("Clear wallpaper cache")}
             press={() =>
               run(async () => {
@@ -284,26 +344,31 @@ export function Settings() {
             }
           />
           <Action
+            icon="arrow-down-to-line"
             id="check-update"
             label={t("Check for updates")}
             disabled={!source() || checking()}
             press={() => void checkUpdate()}
           />
           <Action
+            icon="external-link"
             label={t("View release notes")}
             disabled={!source()}
             press={() => run(() => Library.openLocation("releases"))}
           />
+        </Toolbar>
+        <Heading icon="info" label={t("About")} />
+        <View class="flex-row items-center gap-2">
+          <Text class="text-xs text-muted-foreground">
+            {t("Version")} {Library.appVersion()} · © 2023-2026 小南瓜
+          </Text>
+          <Action
+            icon="external-link"
+            label={t("Project home")}
+            disabled={!source()}
+            press={() => run(() => Library.openLocation("project"))}
+          />
         </View>
-        <Heading label={t("About")} />
-        <Text class="text-muted-foreground">
-          {t("Version")} {Library.appVersion()} · © 2023-2026 小南瓜
-        </Text>
-        <Action
-          label={t("Project home")}
-          disabled={!source()}
-          press={() => run(() => Library.openLocation("project"))}
-        />
       </View>
     </Scroll>
   );

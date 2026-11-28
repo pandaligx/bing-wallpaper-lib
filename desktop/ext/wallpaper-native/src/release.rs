@@ -116,7 +116,6 @@ fn platform_package() -> Result<(&'static str, &'static str, &'static str)> {
     Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => ("windows", "x64", "windows-x64.exe"),
         ("linux", "x86_64") => ("linux", "x86_64", "linux-x86_64.AppImage"),
-        ("macos", "x86_64" | "aarch64") => ("macos", "universal", "macos-universal.dmg"),
         _ => bail!("当前平台没有更新包"),
     })
 }

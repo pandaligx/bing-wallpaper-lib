@@ -1,4 +1,5 @@
 // Upload one already-built distribution to existing releases, publishing the signed manifest last.
+import { execFileSync } from "node:child_process";
 import { createPrivateKey } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -9,6 +10,27 @@ const [directory, version, keyFile] = process.argv.slice(2);
 if (!directory || !version || !keyFile)
   throw Error("Usage: node scripts/publish-desktop-assets.mjs ARTIFACT_DIR VERSION ED25519_PRIVATE_PEM");
 const manifest = await makeManifest(directory, version);
+const windows = manifest.artifacts.find((file) => file.os === "windows");
+const executable = join(directory, windows.filename);
+// The publishing job receives the digest verified by its prerequisite Windows job.
+// Standalone invocations verify the local executable before making any network request.
+if (process.env.GITHUB_ACTIONS === "true") {
+  if (windows.sha256 !== process.env.VERIFIED_WINDOWS_SHA256?.toLowerCase())
+    throw Error("The Windows executable differs from the Authenticode-verified artifact");
+} else if (process.platform === "win32") {
+  const verify = [
+    "$ErrorActionPreference = 'Stop'",
+    "Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1')",
+    "$s = Get-AuthenticodeSignature -LiteralPath $env:WALLPAPER_SIGNED_EXE",
+    "if ($s.Status -ne 'Valid' -or $s.SignatureType -ne 'Authenticode') { throw ('Windows signature: ' + $s.Status) }",
+  ].join("; ");
+  execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", verify], {
+    env: { ...process.env, WALLPAPER_SIGNED_EXE: executable },
+    stdio: "inherit",
+  });
+} else {
+  execFileSync("osslsigncode", ["verify", "-in", executable], { stdio: "inherit" });
+}
 const privateKey = createPrivateKey(await readFile(keyFile));
 const tag = "v" + version;
 const releases = [
@@ -91,4 +113,4 @@ for (const site of releases) {
       throw Error(site.name + " already has a different signed manifest");
   } else await upload(site, "signed-release.json", envelope.length, () => envelope);
 }
-console.log("Published and compared all three platform files on GitHub and GitCode for " + tag);
+console.log("Published and compared both platform files on GitHub and GitCode for " + tag);

@@ -33,14 +33,7 @@ fn target() -> Result<PathBuf> {
                 .canonicalize()?,
         )
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::env::current_exe()?
-            .ancestors()
-            .find(|p| p.extension().is_some_and(|e| e == "app"))
-            .map(Path::to_owned)
-            .context("请从已安装的 .app 更新")
-    }
+
 }
 fn marker(child: &mut Child, expected: &str, timeout: Duration) -> Result<()> {
     let expected = expected.to_owned();
@@ -69,9 +62,6 @@ pub fn begin(version: &str) -> Result<()> {
     semver::Version::parse(version)?;
     let mut guard = PIPE.lock().map_err(|_| anyhow::anyhow!("更新正在运行"))?;
     ensure!(guard.is_none(), "更新正在运行");
-    #[cfg(target_os = "macos")]
-    let helper = target()?.join("Contents/Helpers/bing-wallpaper-task");
-    #[cfg(not(target_os = "macos"))]
     let helper = target()?;
     let mut child = command(&helper)
         .args(["--install-wallpaper-update", version])
@@ -95,88 +85,11 @@ pub fn acknowledge() {
         let _ = out.flush();
     }
 }
-#[cfg(target_os = "macos")]
-fn checked(cmd: &mut Command) -> Result<()> {
-    let out = cmd.output()?;
-    ensure!(
-        out.status.success(),
-        "{}: {}",
-        cmd.get_program().to_string_lossy(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(())
-}
 fn prepare(version: &str, work: &Path, current: &Path) -> Result<PathBuf> {
     let payload = work.join("download");
     crate::release::copy_verified(version, &payload)?;
-    #[cfg(target_os = "macos")]
-    {
-        let mount = work.join("mount");
-        fs::create_dir(&mount)?;
-        checked(
-            Command::new("/usr/bin/hdiutil")
-                .args(["attach", "-readonly", "-nobrowse", "-mountpoint"])
-                .arg(&mount)
-                .arg(&payload),
-        )?;
-        let next = work.join("BingWallpaperLib.app");
-        let result = checked(
-            Command::new("/usr/bin/ditto")
-                .arg(mount.join("BingWallpaperLib.app"))
-                .arg(&next),
-        );
-        let detached = checked(Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount));
-        result?;
-        detached?;
-        checked(
-            Command::new("/usr/bin/codesign")
-                .args([
-                    "--verify",
-                    "--deep",
-                    "--strict",
-                    "--test-requirement",
-                    "=identifier \"cn.lgxng.bingwallpaperlib\" and anchor apple generic",
-                ])
-                .arg(&next),
-        )?;
-        checked(
-            Command::new("/usr/sbin/spctl")
-                .args(["--assess", "--type", "execute"])
-                .arg(&next),
-        )?;
-        let _ = current;
-        Ok(next)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        fs::set_permissions(&payload, fs::metadata(current)?.permissions())?;
-        Ok(payload)
-    }
-}
-fn executable(path: &Path) -> Result<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("/usr/libexec/PlistBuddy")
-            .args(["-c", "Print CFBundleExecutable"])
-            .arg(path.join("Contents/Info.plist"))
-            .output()?;
-        ensure!(out.status.success(), "无法读取程序入口");
-        let name = String::from_utf8(out.stdout)?;
-        let name = Path::new(name.trim());
-        ensure!(
-            name.components().count() == 1
-                && matches!(
-                    name.components().next(),
-                    Some(std::path::Component::Normal(_))
-                ),
-            "无效的程序入口"
-        );
-        Ok(path.join("Contents/MacOS").join(name))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Ok(path.to_owned())
-    }
+    fs::set_permissions(&payload, fs::metadata(current)?.permissions())?;
+    Ok(payload)
 }
 fn activate(
     current: &Path,
@@ -215,7 +128,7 @@ fn run(version: &str) -> Result<()> {
     std::thread::sleep(Duration::from_millis(500));
     let backup = staging.path().join("previous");
     let result = activate(&current, &next, &backup, |p| {
-        let mut child = command(&executable(p)?)
+        let mut child = command(p)
             .env("BING_WALLPAPER_CONFIRM_WINDOW", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -243,7 +156,7 @@ fn run(version: &str) -> Result<()> {
             anyhow::bail!("{error:#} · {}", recovery.display());
         }
         if current.try_exists()? {
-            command(&executable(&current)?).spawn()?;
+            command(&current).spawn()?;
         }
         return Err(error);
     }

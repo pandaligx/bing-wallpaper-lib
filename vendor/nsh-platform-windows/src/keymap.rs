@@ -1,0 +1,145 @@
+//! The app's keyboard shortcuts (`nsh/keymap`): the table the engine
+//! mounts ([`MountItem::Keymap`](nsh_core::MountItem::Keymap)), matched on
+//! every key down the window gets ([`crate::input::key`]): after the dialogs
+//! the surface shows, before the focused field, selectable text, navigation
+//! and scroll views. A key that fires a binding is consumed and reported to
+//! JS with the root's `KeyCommand` event; JS runs the handler afterwards.
+//! Only a key whose message `TranslateMessage` actually translated has
+//! characters to remove ([`KeyEvent::translated`]): an untranslated key (a
+//! captured private message, input synthesized inside the backend) made
+//! none, and none are taken for it.
+//!
+//! Keys are matched by virtual key code: letters and digits are the same
+//! on every layout (a Cyrillic layout's keys have the US layout's codes),
+//! punctuation by the US layout's `VK_OEM_*` keys.
+
+use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+use nsh_core::{
+    EventKind, EventPayload, PayloadValue, ROOT_ID,
+    keymap::{Key, Keymap, Keystroke, Modifiers},
+    platform::Os,
+};
+use windows::Win32::UI::{
+    Input::KeyboardAndMouse::GetFocus,
+    WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_CHAR, WM_SYSCHAR},
+};
+
+use crate::{input::KeyEvent, surface::Surface};
+
+/// A surface's table, while it has bindings.
+#[derive(Default)]
+pub(crate) struct KeymapState {
+    table: RefCell<Option<Arc<Keymap>>>,
+}
+
+/// `MountItem::Keymap`: replaces the surface's table.
+pub(crate) fn set(surface: &Surface, keymap: Arc<Keymap>) {
+    *surface.keymap.table.borrow_mut() = (!keymap.is_empty()).then_some(keymap);
+}
+
+/// Drops the table (the app stopped).
+pub(crate) fn clear(surface: &Surface) {
+    surface.keymap.table.borrow_mut().take();
+}
+
+/// A key down: whether one of the bindings consumes it (it fired one, or,
+/// held, repeats one). A binding passing the key through fires and leaves
+/// it to the window.
+pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    let Some(table) = surface.keymap.table.borrow().clone() else {
+        return false;
+    };
+    let Some(keystroke) = keystroke(event) else {
+        return false;
+    };
+    // The dev host's Ctrl+R reloads, whatever the app binds.
+    if cfg!(feature = "dev") && keystroke.reloads(Os::Windows) {
+        return false;
+    }
+    let editing = crate::text_input::focused(surface).is_some();
+    // Only the bindings of the window the key is in (and JS's) take it.
+    let window = surface.input_root().id();
+    // Return and Space press a focused control: a binding of the focus
+    // takes them first, any other leaves them to the control
+    // (`crate::keyboard::activate`).
+    let control = crate::keyboard::focused_control(surface).is_some();
+    let found = table.find_at(window, keystroke, editing, control, event.repeat);
+    if let Some(id) = found.fired() {
+        surface.event(
+            ROOT_ID,
+            EventKind::KeyCommand,
+            EventPayload::Value(PayloadValue::Number(id as f64)),
+        );
+    }
+    if found.consumed() && event.translated {
+        // Only characters this key's translation made may go: a key that
+        // was never translated (a captured private message, input
+        // synthesized in the backend) queued none, and anything found
+        // would be someone else's.
+        drop_char(surface);
+    }
+    found.consumed()
+}
+
+/// Removes the characters `TranslateMessage` queued for the consumed key:
+/// in the window that has the keyboard (the main one or a window of the
+/// app's own; every window's keys go through the app's keymap).
+fn drop_char(surface: &Surface) {
+    let hwnd = keyboard_window(surface);
+    let mut msg = MSG::default();
+    for kind in [WM_CHAR, WM_SYSCHAR] {
+        // SAFETY: a plain call with a local out value, for a window of
+        // this thread.
+        unsafe {
+            let _ = PeekMessageW(&mut msg, Some(hwnd), kind, kind, PM_REMOVE);
+        }
+    }
+}
+
+/// The window whose queue `TranslateMessage` queued the character in: the
+/// window that has the keyboard, else the surface's.
+fn keyboard_window(surface: &Surface) -> windows::Win32::Foundation::HWND {
+    // SAFETY: a plain query of this thread's focus.
+    let focus = unsafe { GetFocus() };
+    if focus.is_invalid() {
+        surface.hwnd()
+    } else {
+        focus
+    }
+}
+
+/// The keystroke of a key down.
+fn keystroke(event: &KeyEvent) -> Option<Keystroke> {
+    let m = event.modifiers;
+    let modifiers = Modifiers {
+        ctrl: m.ctrl,
+        alt: m.alt,
+        shift: m.shift,
+        cmd: m.meta,
+        alt_graph: false,
+    };
+    Some(Keystroke {
+        modifiers,
+        key: key_of(event.vk)?,
+    })
+}
+
+/// The key of virtual key code `vk` (`VK_*`).
+fn key_of(vk: u16) -> Option<Key> {
+    Key::from_virtual_key(vk)
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::keymap::Key;
+
+    #[test]
+    fn virtual_keys() {
+        assert_eq!(super::key_of(0x4B), Some(Key::Char('k')));
+        assert_eq!(super::key_of(0x31), Some(Key::Char('1')));
+        assert_eq!(super::key_of(0x74), Some(Key::F(5)));
+        assert_eq!(super::key_of(0xBF), Some(Key::Char('/')));
+        assert_eq!(super::key_of(0x10), None);
+    }
+}

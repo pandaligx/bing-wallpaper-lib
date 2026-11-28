@@ -24,6 +24,27 @@ Changing a legacy setting preserves unknown keys and saves the original bytes on
 
 The Windows executable accepts `--daily-wallpaper` and `--scheduled-wallpaper`. The AppImage dispatches the same flags to its bundled helper. The macOS LaunchAgent runs `Contents/Helpers/bing-wallpaper-task` in the installed application. Each job takes a cross-process lock and records success after applying the image. Registration uses Windows Task Scheduler, launchd or the user's systemd instance.
 
+## 当前验收和交付顺序
+
+| 顺序 | 验收内容 | 交付条件 |
+| --- | --- | --- |
+| 1 | 固定 NSH CLI、运行时和项目内两份技能。用 Windows 单 exe、通用 Mac 应用与 AppImage 走通离线首页 → 1080p 预览 → Rust 下载 → 设置桌面 | 对照 0.2.37 的归档、纠错、收藏、分辨率与定时规则。用旧用户目录副本重复迁移，保留原图并排除 aria2 半成品 |
+| 2 | 用官方 Gallery、Desktop、Tasks 的导航与工具栏模式复核五个页面 | 12 号正文、图标提示、键盘焦点、删除数量、失败重试、六种语言和窄屏 |
+| 3 | Windows 以同一显示器和归档分别测普通滚轮与精细滚轮 | 记录显示器 Hz、NSH 帧数和画廊像素变化帧数，保存前后记录。另验 1809、混合 DPI 双屏和实际睡眠恢复 |
+| 4 | 比较单连接、进程内下载和旧 aria2；覆盖忽略 Range、断线续传、磁盘写入失败和文件校验 | 每组跑五轮取中位数并验哈希。受控的大文件要求达到旧引擎吞吐的 90%；真实 Bing 整月样本单列，复查已记录的约 53% 差距 |
+| 5 | 重新打包当前界面并在两个 Mac 架构、GNOME 和 KDE 运行 | 检查同一 DMG、AppImage 的首页/预览/设置、菜单、托盘、定时与真实桌面；按平台存明暗截图 |
+| 6 | 交付本地未签名 Windows 文件给维护者，保留签名前副本 | 维护者签名后核验 Authenticode；macOS 校验 Developer ID、公证和装入「应用程序」后的升级 |
+| 7 | 在本地用临时密钥演练失败回滚。维护者明确批准公开发布后，使用最终签名文件计算长度和 SHA-256 | 两站上传同一批文件，匿名回读并验证，再发布更新清单。分别验证大陆只访问 GitCode、海外只访问 GitHub 的发行链路 |
+
+仓库手动发布工作流接受维护者提供的已签 Windows 附件 SHA-256，使用 Windows 验证 Authenticode 后才继续。签名之前的测试摘要仅用于本地比对。普通构建与界面验收使用本地输出目录或 CI 构建产物。
+
+在仓库根目录执行以下命令可构建独立的本地 Windows 测试版，并测量正常启动后的画廊滚动。屏幕采样需要可见的原生窗口。指定 `-InputMode precision` 可改测细粒度滚动输入。
+
+```powershell
+./scripts/build-nsh-windows.ps1 -OutputDirectory target/nsh-local/windows
+./scripts/measure-windows-scroll.ps1 -Exe target/nsh-local/windows/BingWallpaperLib-v0.3.0-windows-x64.exe -OutputDir target/nsh-validation/scroll -NoFrameMonitor
+```
+
 ## Release integrity
 
 The client reads the selected provider's public release API. Before staging a newer package, it authenticates `signed-release.json`, checks the platform filename, and verifies the downloaded size and SHA-256. On installation a supervisor from the running version verifies a second copy on the installation volume. It keeps the previous executable or bundle until the new process opens its offline library. A startup failure restores the old installation. macOS also checks the bundle signature and Gatekeeper assessment. Real distribution-channel upgrade and rollback results belong in the validation record.
@@ -57,4 +78,4 @@ On macOS and Linux the periodic job uses wall-clock calendar events. A short hea
 
 For CI distribution builds, dispatch **NSH native desktop acceptance** on the matching version tag with **distribution** enabled. Configure the repository variable `BING_WALLPAPER_UPDATE_PUBLIC_KEY` for all three platforms. In the protected `desktop-release` environment provide `MACOS_CERTIFICATE_BASE64` (Developer ID Application PKCS#12), `MACOS_CERTIFICATE_PASSWORD` and `MACOS_NOTARY_KEY` (App Store Connect private key) as secrets. Set the environment variables `MACOS_DEVELOPER_ID`, `MACOS_NOTARY_KEY_ID` and `MACOS_NOTARY_ISSUER`. The publishing workflow takes the resulting acceptance run ID and redistributes those tested artifacts.
 
-For existing public release tags on both sites, `node scripts/publish-desktop-assets.mjs ARTIFACT_DIR VERSION PRIVATE_KEY_FILE` uploads the same three files, verifies anonymous downloads, then publishes the signed manifest last. It reads `GH_TOKEN` and `GITCODE_TOKEN` on the publishing machine. Re-running it compares existing artifacts before signing. Keep private keys and publishing tokens outside the project.
+Once the maintainer has approved both release pages, `node scripts/publish-desktop-assets.mjs ARTIFACT_DIR VERSION PRIVATE_KEY_FILE` verifies the Windows signature before its first network request. Local runs use Authenticode on Windows or `osslsigncode verify` on macOS and Linux. The protected workflow uses the digest from its Windows verification job. The script then uploads the same three files, verifies anonymous downloads, and publishes the signed manifest last. It reads `GH_TOKEN` and `GITCODE_TOKEN` on the publishing machine.

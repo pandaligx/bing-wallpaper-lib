@@ -6,6 +6,21 @@ mod elevate;
 use nsh_platform_windows::{AppOptions, AppSource, Bundle, run_app, set_ui_sets};
 use std::process::ExitCode;
 
+struct FrameLog;
+
+impl log::Log for FrameLog {
+    fn enabled(&self, meta: &log::Metadata<'_>) -> bool {
+        meta.target() == nsh_engine::perf::LOG_TARGET && meta.level() == log::Level::Info
+    }
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), "{}", record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("--install-wallpaper-update") {
         return if std::env::args()
@@ -30,6 +45,10 @@ fn main() -> ExitCode {
     if std::env::var_os("BING_WALLPAPER_CONFIRM_WINDOW").is_none() && !elevate::ensure_elevated() {
         return ExitCode::SUCCESS;
     }
+    let fps = std::env::args().any(|arg| arg == "--fps");
+    if fps && log::set_logger(&FrameLog).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     wallpaper_native::mark_portable();
     set_ui_sets(vec![nsh_base::registry(), wallpaper_native::registry()]);
     // SAFETY: Cargo embeds our own bundle built by the explicitly version-matched NSH CLI.
@@ -46,6 +65,7 @@ fn main() -> ExitCode {
             title: format!("必应每日壁纸库 v{}", env!("CARGO_PKG_VERSION")),
             size: (1160, 780),
             single_instance: true,
+            fps,
             limits: nsh_platform_windows::Limits::standalone(),
             ..Default::default()
         },

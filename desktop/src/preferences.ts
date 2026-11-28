@@ -1,10 +1,10 @@
 import { localeSettings, setColorScheme, signal } from "nsh";
 import { setLocale } from "nsh/i18n";
-import { Application } from "nsh/desktop";
 import { Library } from "wallpaper-native";
 
 export interface Preferences {
   language: string;
+  smooth_wheel?: boolean;
   theme_preference: "system" | "light" | "dark";
   download_dir: string | null;
   download_resolution: string;
@@ -24,7 +24,21 @@ export interface Preferences {
 }
 
 export const preferences = signal<Preferences | null>(null);
+export const smoothWheel = () => preferences()?.smooth_wheel ?? true;
 export const status = signal("");
+export const isError = signal(false);
+export const retryNotice = signal<(() => void) | null>(null);
+export function notify(message: string) {
+  retryNotice.set(null);
+  isError.set(false);
+  status.set(message);
+}
+export function reportError(error: unknown, retry?: () => void) {
+  retryNotice.set(retry ?? null);
+  isError.set(true);
+  const reason = error instanceof Error ? error.message : String(error);
+  status.set(reason.replace(/^(?:Error:\s*)+/, "").trim() || t("Failed"));
+}
 export const applied = signal(false);
 export const canApply = signal(false);
 const labels = signal<Record<string, string>>({});
@@ -34,10 +48,54 @@ const keys =
   );
 keys.push("Speed", "Remaining");
 const extras: Record<string, string[]> = {
+  "Smooth mouse wheel": [
+    "平滑滚轮",
+    "ホイールを滑らかに",
+    "부드러운 휠 스크롤",
+    "Плавная прокрутка колеса",
+    "Défilement fluide à la molette",
+  ],
+  "Local photos": ["本地图库", "ローカル写真", "로컬 사진", "Локальные фото", "Photos locales"],
+  January: ["1月", "1月", "1월", "январь", "janvier"],
+  February: ["2月", "2月", "2월", "февраль", "février"],
+  March: ["3月", "3月", "3월", "март", "mars"],
+  April: ["4月", "4月", "4월", "апрель", "avril"],
+  May: ["5月", "5月", "5월", "май", "mai"],
+  June: ["6月", "6月", "6월", "июнь", "juin"],
+  July: ["7月", "7月", "7월", "июль", "juillet"],
+  August: ["8月", "8月", "8월", "август", "août"],
+  September: ["9月", "9月", "9월", "сентябрь", "septembre"],
+  October: ["10月", "10月", "10월", "октябрь", "octobre"],
+  November: ["11月", "11月", "11월", "ноябрь", "novembre"],
+  December: ["12月", "12月", "12월", "декабрь", "décembre"],
+  Theme: ["主题", "テーマ", "테마", "Тема", "Thème"],
+  Storage: [
+    "下载与存储",
+    "ダウンロードと保存先",
+    "다운로드 및 저장",
+    "Загрузка и хранение",
+    "Téléchargements et stockage",
+  ],
+  "Use HH:mm": [
+    "请输入 00:00–23:59",
+    "00:00–23:59 で入力",
+    "00:00–23:59로 입력",
+    "Введите время 00:00–23:59",
+    "Saisissez une heure de 00:00 à 23:59",
+  ],
+  "Enter 1–1439 minutes": [
+    "请输入 1–1439 分钟",
+    "1–1439 分で入力",
+    "1–1439분 입력",
+    "Введите от 1 до 1439 минут",
+    "Saisissez de 1 à 1439 minutes",
+  ],
   Display: ["显示器", "ディスプレイ", "디스플레이", "Монитор", "Écran"],
   Close: ["关闭", "閉じる", "닫기", "Закрыть", "Fermer"],
   Previous: ["上一张", "前へ", "이전", "Назад", "Précédent"],
   Next: ["下一张", "次へ", "다음", "Далее", "Suivant"],
+  Resume: ["继续", "再開", "계속", "Продолжить", "Reprendre"],
+  Cancelled: ["已取消", "キャンセル済み", "취소됨", "Отменено", "Annulé"],
   Pause: ["暂停", "一時停止", "일시 정지", "Пауза", "Pause"],
   Retry: ["重试", "再試行", "재시도", "Повторить", "Réessayer"],
   Save: ["保存", "保存", "저장", "Сохранить", "Enregistrer"],
@@ -90,11 +148,10 @@ export async function configure(patch: Partial<Preferences>, schedule = false) {
   accept(await (schedule ? Library.configureSchedule(raw) : Library.configure(raw)));
 }
 export function run(action: () => Promise<unknown>) {
-  void action().catch((error) => status.set(String(error)));
+  void action().catch((error) => reportError(error));
 }
 export async function startup(enabled: boolean) {
-  const sys = (v: boolean) =>
-    Library.hostOs() === "macos" ? Application.setLaunchAtLogin(v) : Library.configureStartup(v);
+  const sys = (v: boolean) => Library.configureStartup(v);
   await sys(enabled);
   try {
     await configure({ startup_enabled: enabled });

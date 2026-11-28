@@ -23,6 +23,8 @@ test("batches by month, favorite, history and inclusive calendar range and retri
         "Library.source": "",
         "Library.favorites": JSON.stringify([dates[2]]),
         "Library.downloadHistory": "[]",
+        "Library.beginDownload": null,
+        "Library.finishDownload": null,
         "Library.saveDownloadHistory": null,
         "Library.download": (date: string) => {
           calls.push(date);
@@ -39,6 +41,10 @@ test("batches by month, favorite, history and inclusive calendar range and retri
   await app.press("nav-downloads");
   await app.press("batch-month");
   await app.waitFor("retry-" + dates[0]);
+  expect(app.texts().some((line) => line.includes("test connection closed"))).toBe(true);
+  await app.press("dismiss-status");
+  await app.waitFor("dismiss-status", { state: "gone" });
+  expect(app.accessibility("retry-" + dates[0])?.name).toBe("Retry");
   expect(calls.slice().sort()).toEqual(dates.slice(0, 2).sort());
   await app.press("retry-" + dates[0]);
   await app.waitFor("fixture/" + dates[0] + ".jpg");

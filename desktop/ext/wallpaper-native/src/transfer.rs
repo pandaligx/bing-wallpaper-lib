@@ -113,6 +113,13 @@ pub async fn download_with_status(
     entry: WallpaperEntry,
     settings: AppSettings,
 ) -> Result<(PathBuf, bool)> {
+    controlled_download(entry, settings, tokio::sync::watch::channel(crate::queue::State::Running).0).await
+}
+
+pub async fn controlled_download(entry: WallpaperEntry, settings: AppSettings, control: tokio::sync::watch::Sender<crate::queue::State>) -> Result<(PathBuf, bool)> {
+    use crate::queue;
+    let mut receiver = control.subscribe();
+    queue::check(*receiver.borrow_and_update())?;
     let root = settings.effective_download_dir()?;
     let staging = root.join(".bing-downloads");
     std::fs::create_dir_all(&staging)?;
@@ -131,6 +138,7 @@ pub async fn download_with_status(
     })
     .await??;
     if existing {
+        queue::commit(&control)?;
         return Ok((final_path, true));
     }
     let url = entry.download_url(settings.download_resolution);
@@ -161,8 +169,11 @@ pub async fn download_with_status(
                 .build()
         });
     let client = BING.as_ref().map_err(|e| anyhow!(e.to_string()))?;
-    let origin = probe(client, &url, None).await?;
-    let partial = fetch(&origin, &staging, &temporary).await?;
+    let origin = tokio::select! {
+        result = probe(client, &url, None) => result?,
+        _ = receiver.changed() => { queue::check(*receiver.borrow())?; anyhow::bail!("任务已结束"); }
+    };
+    let partial = fetch_controlled(&origin, &staging, &temporary, &mut receiver).await?;
     tokio::task::spawn_blocking(move || {
         let temporary = tempfile::TempPath::try_from_path(partial)?;
         if let Some(bytes) = origin.length {
@@ -173,6 +184,7 @@ pub async fn download_with_status(
         }
         verify_download_ending(&temporary)?;
         validate_image(&temporary)?;
+        queue::commit(&control)?;
         temporary
             .persist_noclobber(&final_path)
             .context("无法保存下载的壁纸")?;
@@ -183,6 +195,12 @@ pub async fn download_with_status(
 }
 
 pub(crate) async fn fetch(origin: &Origin, staging: &Path, temporary: &str) -> Result<PathBuf> {
+    let (_control, mut receiver) = tokio::sync::watch::channel(crate::queue::State::Running);
+    fetch_controlled(origin, staging, temporary, &mut receiver).await
+}
+
+async fn fetch_controlled(origin: &Origin, staging: &Path, temporary: &str, control: &mut tokio::sync::watch::Receiver<crate::queue::State>) -> Result<PathBuf> {
+    use crate::queue::{self, State};
     use std::{
         collections::BTreeMap,
         sync::{LazyLock, Mutex},
@@ -197,7 +215,11 @@ pub(crate) async fn fetch(origin: &Origin, staging: &Path, temporary: &str) -> R
         .entry(host.to_owned())
         .or_insert_with(|| Arc::new(Semaphore::new(16)))
         .clone();
-    let _permit = slots.acquire_many(origin.connections as u32).await?;
+    queue::check(*control.borrow_and_update())?;
+    let _permit = tokio::select! {
+        permit = slots.acquire_many(origin.connections as u32) => permit?,
+        _ = control.changed() => { queue::check(*control.borrow())?; anyhow::bail!("任务已结束"); }
+    };
     let url = origin.url.as_str();
     let engine = engine().await?;
     let previous = engine.list().into_iter().find(|s| {
@@ -229,12 +251,20 @@ pub(crate) async fn fetch(origin: &Origin, staging: &Path, temporary: &str) -> R
         }
     };
     loop {
+        let requested = *control.borrow_and_update();
+        if requested == State::Cancelled {
+            engine.cancel(id, true).await?;
+            queue::check(requested)?;
+        } else if requested == State::Paused {
+            if !engine.status(id).is_some_and(|s| s.state == DownloadState::Completed) { engine.pause(id).await?; }
+            queue::check(requested)?;
+        }
         let status = engine.status(id).ok_or_else(|| anyhow!("下载已取消"))?;
         match status.state {
             DownloadState::Completed => break,
             DownloadState::Error { message, .. } => return Err(anyhow!(message)),
             DownloadState::Paused => return Err(anyhow!("下载已暂停")),
-            _ => tokio::time::sleep(Duration::from_millis(250)).await,
+            _ => tokio::select! { _ = tokio::time::sleep(Duration::from_millis(250)) => (), _ = control.changed() => () },
         }
     }
     Ok(staging.join(temporary))
@@ -320,6 +350,20 @@ pub fn progress() -> Result<String> {
         }
     }
     Ok(serde_json::to_string(&rows)?)
+}
+
+pub async fn discard_paused(date: &str) -> Result<()> {
+    let parsed: chrono::NaiveDate = date.parse()?;
+    let prefix = format!("{parsed}-");
+    let engine = engine().await?;
+    for task in engine.list() {
+        if matches!(task.state, DownloadState::Paused | DownloadState::Error { .. })
+            && task.metadata.save_dir.ends_with(".bing-downloads")
+            && task.metadata.filename.as_deref().is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".part")) {
+            engine.cancel(task.id, true).await?;
+        }
+    }
+    Ok(())
 }
 
 pub async fn pause(id: &str) -> Result<()> {

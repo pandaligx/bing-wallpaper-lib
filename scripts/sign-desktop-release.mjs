@@ -25,7 +25,6 @@ export async function makeManifest(directory, version) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Expected a stable semantic version");
   const files = [
     ["windows", "x64", "10.0.17763", "windows-x64.exe"],
-    ["macos", "universal", "14.0", "macos-universal.dmg"],
     ["linux", "x86_64", "GTK 4.14 and WebKitGTK 6.0", "linux-x86_64.AppImage"],
   ];
   const artifacts = [];

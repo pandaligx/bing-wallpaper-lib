@@ -1,4 +1,5 @@
 import { computed, effect, mount, Scroll, signal, Text, View, windowSize } from "nsh";
+import type { ListRef } from "nsh";
 import { Dialog, Progress } from "nsh/base";
 import { Application, currentWindow, Tray, Window } from "nsh/desktop";
 import { Library } from "wallpaper-native";
@@ -8,6 +9,7 @@ import {
   checkUpdate,
   downloadingUpdate,
   flushHistory,
+  entries,
   installUpdate,
   load,
   month,
@@ -28,22 +30,29 @@ import {
   loadPreferences,
   preferences,
   run,
+  smoothWheel,
   startup,
   status,
+  isError,
+  notify,
+  reportError,
+  retryNotice,
   t,
 } from "./src/preferences";
+import { Icon } from "./src/ui/Icon";
 import { Action } from "./src/ui/Action";
 import { Gallery, Preview } from "./src/ui/Gallery";
 import { LocalGallery } from "./src/ui/LocalGallery";
 import { DownloadCenter } from "./src/ui/DownloadCenter";
 import { Region, Settings } from "./src/ui/Settings";
 
+const monthNames = "January February March April May June July August September October November December".split(" ");
 const destinations = [
-  { key: "home", label: "Home" },
-  { key: "favorites", label: "Favorites" },
-  { key: "local", label: "Downloaded wallpapers" },
-  { key: "downloads", label: "Download center" },
-  { key: "settings", label: "Settings" },
+  { key: "home", icon: "house", label: "Home" },
+  { key: "favorites", icon: "heart", label: "Favorites" },
+  { key: "local", icon: "images", label: "Downloaded wallpapers" },
+  { key: "downloads", icon: "arrow-down-to-line", label: "Download center" },
+  { key: "settings", icon: "settings-2", label: "Settings" },
 ] as const;
 const confirmingExit = signal(false);
 let requestWindowClose = () => confirmingExit.set(true);
@@ -63,7 +72,7 @@ function UpdateProgress(props: { bytes?: number }) {
         trackClass="h-2 rounded bg-muted"
         indicatorClass="h-2 rounded bg-primary"
       />
-      <Text class="text-sm text-muted-foreground">
+      <Text class="text-xs text-muted-foreground">
         {(received() / 1048576).toFixed(1)} / {(total() / 1048576).toFixed(1)} MiB
         {" · "}
         {t("Speed")} {Math.round(speed() / 1024)} KiB/s
@@ -76,6 +85,8 @@ function UpdateProgress(props: { bytes?: number }) {
 
 function App() {
   const win = currentWindow();
+  let galleryList: ListRef | undefined;
+  const inGallery = () => page() === "home" || page() === "month" || page() === "favorites";
   const temporaryTray = signal(false);
   const show = () => {
     win.show();
@@ -174,7 +185,7 @@ function App() {
         run(() => Library.repairTasks());
         run(async () => {
           const error = await Library.lastUpdateError();
-          if (error) status.set(error);
+          if (error) reportError(error);
         });
       }, 0);
     if (source()) {
@@ -204,7 +215,7 @@ function App() {
         const marker = await Library.tickDaily();
         if (marker && marker !== lastDaily && settings === preferences()) {
           lastDaily = marker;
-          status.set(t("Applied"));
+          notify(t("Applied"));
           if (preferences()?.auto_wallpaper_exit_after_done) Application.quit();
         }
       } finally {
@@ -221,7 +232,7 @@ function App() {
     return () => clearInterval(timer);
   });
   const narrow = () => windowSize().width < 800;
-  const sidebarWidth = () => (narrow() ? (drawer() ? 150 : 0) : sidebarCollapsed() ? 0 : 194);
+  const sidebarWidth = () => (narrow() ? (drawer() ? 154 : 0) : sidebarCollapsed() ? 0 : 170);
   const title = () =>
     page() === "month"
       ? month()
@@ -231,27 +242,36 @@ function App() {
             : destinations.find((d) => d.key === page())?.label || "Home",
         );
   return (
-    <View class="flex-row flex-1 bg-background">
+    <View class="flex-row flex-1 bg-background text-xs text-foreground">
       <If when={sidebarWidth() > 0}>
-        <Scroll testID="sidebar" class="border-r border-border bg-card" style={{ width: sidebarWidth() }}>
-          <View class="gap-2 p-3">
-            <Each of={destinations}>
+        <View class="border-r border-sidebar-border bg-sidebar" style={{ width: sidebarWidth() }}>
+          <View class="gap-1 px-2 py-2">
+            <Each of={destinations.slice(0, 4)}>
               {(entry) => (
                 <Action
+                  row
+                  icon={entry().icon}
                   id={"nav-" + entry().key}
                   primary={page() === entry().key}
                   label={t(entry().label)}
+                  shortLabel={entry().key === "local" ? t("Local photos") : undefined}
                   press={() => go(entry().key)}
                 />
               )}
             </Each>
-            <Text class="pt-3 text-sm font-semibold text-muted-foreground">{t("Archive")}</Text>
+          </View>
+          <Text class="border-t border-sidebar-border px-3 pt-2 pb-1 text-xs font-semibold text-muted-foreground">
+            {t("Archive")}
+          </Text>
+          <Scroll smoothWheel={smoothWheel()} testID="sidebar" class="flex-1 px-2">
             <Each of={index()}>
               {(group) => (
-                <View class="gap-1">
+                <View>
                   <Action
+                    row
+                    icon={expanded().includes(group()[0]) ? "chevron-down" : "chevron-right"}
                     id={"year-" + group()[0]}
-                    label={(expanded().includes(group()[0]) ? "▾ " : "▸ ") + group()[0]}
+                    label={group()[0]}
                     press={() => {
                       const y = group()[0];
                       expanded.update((years) =>
@@ -260,12 +280,14 @@ function App() {
                     }}
                   />
                   <If when={expanded().includes(group()[0])}>
-                    <View class="gap-1 pl-3">
+                    <View class="ml-4 border-l border-sidebar-border pl-1">
                       <Each of={group()[1]}>
                         {(ym) => (
                           <Action
+                            row
                             id={"month-" + ym()}
                             label={ym()}
+                            shortLabel={t(monthNames[Number(ym().slice(5)) - 1])}
                             primary={page() === "month" && month() === ym()}
                             press={() => {
                               month.set(ym());
@@ -279,12 +301,23 @@ function App() {
                 </View>
               )}
             </Each>
+          </Scroll>
+          <View class="border-t border-sidebar-border p-2">
+            <Action
+              row
+              icon="settings-2"
+              id="nav-settings"
+              primary={page() === "settings"}
+              label={t("Settings")}
+              press={() => go("settings")}
+            />
           </View>
-        </Scroll>
+        </View>
       </If>
-      <View class="flex-1 gap-3 p-4">
-        <View class="flex-row flex-wrap items-center gap-3">
+      <View class="flex-1 gap-2 p-3">
+        <View class="flex-row items-center gap-2">
           <Action
+            icon="panel-left"
             id="navigation"
             label={t("Navigation")}
             press={() => {
@@ -292,18 +325,33 @@ function App() {
               else sidebarCollapsed.set(!sidebarCollapsed());
             }}
           />
-          <Text testID="page-title" class="text-2xl font-semibold text-foreground">
+          <Text testID="page-title" class="text-base font-semibold text-foreground">
             {title()}
           </Text>
+          <If when={inGallery()}>
+            <Text class="flex-1 text-xs text-muted-foreground">
+              {entries().length} {t("Wallpapers")}
+            </Text>
+            <Action
+              icon="arrow-up"
+              label={t("Back to top")}
+              press={() => galleryList?.scrollToOffset({ offset: 0, animated: true })}
+            />
+          </If>
         </View>
         <If when={!ready()}>
-          <Text>{t("Loading wallpaper list...")}</Text>
+          <Text class="text-xs">{t("Loading wallpaper list...")}</Text>
         </If>
         <If when={ready() && !source() && page() !== "settings"}>
           <Region />
         </If>
-        <If when={page() === "home" || page() === "month" || page() === "favorites"}>
-          <Gallery sidebarWidth={sidebarWidth()} />
+        <If when={inGallery()}>
+          <Gallery
+            sidebarWidth={sidebarWidth()}
+            listRef={(node) => {
+              galleryList = node;
+            }}
+          />
         </If>
         <If when={page() === "local"}>
           <LocalGallery sidebarWidth={sidebarWidth()} />
@@ -315,9 +363,36 @@ function App() {
           <Settings />
         </If>
         <If when={!!status()}>
-          <Text testID={applied() ? "applied" : "status"} class="text-sm text-muted-foreground">
-            {status()}
-          </Text>
+          <View
+            class="flex-row items-center gap-2 border-t border-border py-1"
+            accessibilityLiveRegion={isError() ? "assertive" : "polite"}
+          >
+            <Icon
+              name={isError() ? "circle-alert" : "circle-check"}
+              ink={isError() ? "destructive" : "muted-foreground"}
+            />
+            <Text
+              testID={applied() && status() === t("Applied") ? "applied" : "status"}
+              class="flex-1 text-xs text-foreground"
+            >
+              {status()}
+            </Text>
+            <If when={retryNotice()}>
+              {(retry) => (
+                <Action
+                  icon="rotate-ccw"
+                  id="retry-status"
+                  label={t("Retry")}
+                  press={() => {
+                    const action = retry();
+                    notify("");
+                    action();
+                  }}
+                />
+              )}
+            </If>
+            <Action id="dismiss-status" icon="x" label={t("Close")} press={() => notify("")} />
+          </View>
         </If>
       </View>
       <If when={selected()}>{(photo) => <Preview photo={photo()} />}</If>
@@ -325,16 +400,16 @@ function App() {
         {(item) => (
           <Dialog
             open
-            class="m-auto rounded-xl bg-card"
+            class="m-auto rounded-lg bg-card"
             onOpenChange={({ open }) => {
               if (!open) update.set(null);
             }}
           >
             <View class="gap-3 p-4">
-              <Text class="text-lg font-semibold text-foreground">
+              <Text class="text-sm font-semibold text-foreground">
                 {t("Update available")} · {item().version}
               </Text>
-              <Text class="text-muted-foreground">
+              <Text class="text-xs text-muted-foreground">
                 {item().path ||
                   [source(), item().minimum, ((item().bytes || 0) / 1048576).toFixed(1) + " MiB"].join(" · ")}
               </Text>
@@ -344,6 +419,7 @@ function App() {
               <View class="flex-row flex-wrap gap-2">
                 <Action label={t("Later")} press={() => update.set(null)} />
                 <Action
+                  icon="external-link"
                   label={t("View release notes")}
                   press={() => run(() => Library.openLocation("releases"))}
                 />
@@ -364,13 +440,13 @@ function App() {
       <If when={confirmingExit()}>
         <Dialog
           open
-          class="m-auto rounded-xl bg-card"
+          class="m-auto rounded-lg bg-card"
           onOpenChange={({ open }) => {
             if (!open) confirmingExit.set(false);
           }}
         >
           <View class="gap-3 p-4">
-            <Text class="font-semibold text-foreground">{t("Exit app prompt")}</Text>
+            <Text class="text-xs font-semibold text-foreground">{t("Exit app prompt")}</Text>
             <View class="flex-row gap-2">
               <Action label={t("Cancel")} press={() => confirmingExit.set(false)} />
               <If when={Library.trayAvailable()}>

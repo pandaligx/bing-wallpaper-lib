@@ -10,12 +10,46 @@ on:
         description: Successful desktop acceptance run for this release commit
         type: string
         required: true
+      signed_windows_sha256:
+        description: SHA-256 of the maintainer-signed Windows exe attached to the approved GitHub release
+        type: string
+        required: true
 permissions:
   contents: read
   actions: read
 jobs:
+  windows-signature:
+    runs-on: windows-2022
+    environment: desktop-release
+    outputs:
+      sha256: ${{ steps.verify.outputs.sha256 }}
+    steps:
+      - name: Verify the maintainer's signed Windows executable
+        id: verify
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          EXPECTED: ${{ inputs.signed_windows_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$' -or $env:GITHUB_REF -cne "refs/tags/v$env:VERSION" -or $env:EXPECTED -notmatch '^[0-9a-fA-F]{64}$') { throw 'Invalid tag or signed file digest' }
+          $name = "BingWallpaperLib-v$env:VERSION-windows-x64.exe"
+          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY --pattern $name --dir signed-windows
+          if ($LASTEXITCODE) { throw 'The signed Windows attachment is required' }
+          $file = Join-Path 'signed-windows' $name
+          if ((Get-FileHash -LiteralPath $file).Hash -ine $env:EXPECTED) { throw 'Signed Windows digest differs from the approved file' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $file
+          if ($signature.Status -ne 'Valid' -or $signature.SignatureType -ne 'Authenticode') { throw "Windows signature: $($signature.Status)" }
+          "sha256=$((Get-FileHash -LiteralPath $file).Hash)" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-signed-windows
+          path: signed-windows/*.exe
+          retention-days: 1
   publish:
-    runs-on: macos-15
+    needs: windows-signature
+    runs-on: ubuntu-24.04
     environment: desktop-release
     permissions:
       contents: write
@@ -43,19 +77,14 @@ jobs:
           pattern: desktop-*
           merge-multiple: true
           path: release-files
-      - name: Verify the notarized macOS distribution
-        shell: bash
-        run: |
-          set -euo pipefail
-          dmg="release-files/BingWallpaperLib-v$VERSION-macos-universal.dmg"
-          xcrun stapler validate "$dmg"
-          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/macos-release" "$dmg"
-          trap 'hdiutil detach "$RUNNER_TEMP/macos-release" -quiet' EXIT
-          app="$RUNNER_TEMP/macos-release/BingWallpaperLib.app"
-          codesign --verify --deep --strict "$app"
-          spctl --assess --type execute "$app"
+      - name: Use the Windows executable verified after maintainer signing
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-signed-windows
+          path: release-files
       - name: Upload distribution files and publish the signed manifest last
         env:
+          VERIFIED_WINDOWS_SHA256: ${{ needs.windows-signature.outputs.sha256 }}
           GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
           SIGNING_KEY: ${{ secrets.BING_WALLPAPER_UPDATE_SIGNING_KEY }}
           PUBLIC_KEY: ${{ vars.BING_WALLPAPER_UPDATE_PUBLIC_KEY }}

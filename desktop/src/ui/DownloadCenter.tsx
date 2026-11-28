@@ -1,6 +1,7 @@
+import { smoothWheel } from "../preferences";
 import { List, signal, Text, View } from "nsh";
 import { DatePicker, Progress } from "nsh/base";
-import { cancelPending, enqueue, jobs, month, pauseTransfer, photos, saved, transfers } from "../library";
+import { enqueue, jobs, month, stopJob, photos, saved, transfers } from "../library";
 import type { Job } from "../library";
 import { t } from "../preferences";
 import { Action } from "./Action";
@@ -12,13 +13,15 @@ function Task(props: { job: Job }) {
   return (
     <View class="gap-1 border-b border-border py-2">
       <View class="flex-row flex-wrap items-center justify-between gap-2">
-        <Text class="font-semibold text-foreground">{job().photo.headline || job().photo.date}</Text>
-        <Text class="text-muted-foreground">
+        <Text class="text-xs font-semibold text-foreground">{job().photo.headline || job().photo.date}</Text>
+        <Text class="text-xs text-muted-foreground">
           {job().photo.date} · {t(job().state)}
         </Text>
       </View>
       <If when={job().path || job().error}>
-        <Text class="text-sm text-muted-foreground">{job().error || job().path}</Text>
+        <Text class={job().error ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+          {job().error || job().path}
+        </Text>
       </If>
       <If when={transfer()}>
         {(tr) => (
@@ -31,24 +34,29 @@ function Task(props: { job: Job }) {
               trackClass="h-2 rounded bg-muted"
               indicatorClass="h-2 rounded bg-primary"
             />
-            <Text>
+            <Text class="text-xs">
               {(tr().received / 1048576).toFixed(1)} / {tr().total ? (tr().total! / 1048576).toFixed(1) : "?"}{" "}
               MiB · {Math.round(tr().speed / 1024)} KiB/s
             </Text>
-            <Action label={t("Pause")} press={() => void pauseTransfer(tr().id)} />
           </View>
         )}
       </If>
-      <If when={job().state === "Waiting"}>
-        <Action label={t("Cancel")} press={() => cancelPending(job().photo.date)} />
+      <View class="flex-row items-center gap-1">
+      <If when={job().state === "Waiting" || job().state === "Active"}>
+        <Action icon="pause" id={"pause-"+job().photo.date} label={t("Pause")} press={() => void stopJob(job(), false)} />
       </If>
-      <If when={job().state === "Failed" || job().state === "Pause"}>
+      <If when={job().state === "Waiting" || job().state === "Active" || job().state === "Pause"}>
+        <Action icon="x" id={"cancel-"+job().photo.date} label={t("Cancel")} press={() => void stopJob(job(), true)} />
+      </If>
+      <If when={job().state === "Failed" || job().state === "Pause" || job().state === "Cancelled"}>
         <Action
+          icon={job().state === "Pause" ? "play" : "rotate-ccw"}
           id={"retry-" + job().photo.date}
-          label={t("Retry")}
+          label={t(job().state === "Pause" ? "Resume" : "Retry")}
           press={() => enqueue([job().photo], job().apply)}
         />
       </If>
+      </View>
     </View>
   );
 }
@@ -60,16 +68,24 @@ export function DownloadCenter() {
   const valid = () =>
     !!(span()[0] && span()[1] && span()[0]! >= min() && span()[1]! <= max() && span()[0]! <= span()[1]!);
   return (
-    <View class="flex-1 gap-3">
+    <View class="flex-1 gap-2">
       <View class="flex-row flex-wrap gap-2">
-        <Action id="batch-all" label={t("All history")} disabled={!max()} press={() => enqueue(photos())} />
         <Action
+          icon="archive"
+          id="batch-all"
+          label={t("All history")}
+          disabled={!max()}
+          press={() => enqueue(photos())}
+        />
+        <Action
+          icon="calendar-days"
           id="batch-month"
           label={t("Current month") + " · " + currentMonth()}
           disabled={!max()}
           press={() => enqueue(photos().filter((p) => p.date.startsWith(currentMonth())))}
         />
         <Action
+          icon="heart"
           id="batch-favorites"
           label={t("Favorites") + " · " + saved().length}
           disabled={!saved().length}
@@ -90,29 +106,35 @@ export function DownloadCenter() {
           accessibilityLabel={t("Select a date range")}
           onChange={({ value }) => range.set(Array.isArray(value) ? value : [null, null])}
           trigger={
-            <Text class="rounded-lg border border-border p-2 text-foreground">
+            <Text class="text-xs rounded-lg border border-border p-2 text-foreground">
               {span()[0] ? span()[0] + " — " + (span()[1] || "…") : t("Select a date range")}
             </Text>
           }
         />
         <Action
+          icon="download"
           id="batch-range"
           label={t("Download date range")}
           disabled={!valid()}
           press={() => enqueue(photos().filter((p) => p.date >= span()[0]! && p.date <= span()[1]!))}
         />
       </View>
-      <Text class="text-sm text-muted-foreground">
-        {min()} — {max()}
-      </Text>
-      <Text class="text-sm text-muted-foreground">
+      <Text class="text-xs text-muted-foreground">
         {jobs().length
-          ? ["Waiting", "Active", "Done", "Skipped", "Failed", "Pause"]
-              .map((state) => t(state) + " " + jobs().filter((j) => j.state === state).length)
+          ? ["Waiting", "Active", "Done", "Skipped", "Failed", "Pause", "Cancelled"]
+              .map((state) => [state, jobs().filter((j) => j.state === state).length] as const)
+              .filter(([, count]) => count > 0)
+              .map(([state, count]) => t(state) + " " + count)
               .join("  ·  ")
           : t("Empty")}
       </Text>
-      <List each={jobs()} keyExtractor={(j) => j.photo.date} estimatedItemSize={75} class="flex-1">
+      <List
+        smoothWheel={smoothWheel()}
+        each={jobs()}
+        keyExtractor={(j) => j.photo.date}
+        estimatedItemSize={75}
+        class="flex-1"
+      >
         {(j) => <Task job={j()} />}
       </List>
     </View>
