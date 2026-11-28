@@ -53,3 +53,28 @@ test("centers the exit confirmation and restores the window on cancel", async ()
   await app.waitFor("cancel-exit", { state: "gone" });
   await app.waitFor("latest-photo");
 });
+
+test("copies the displayed diagnostic log and opens only the requested destination", async () => {
+  const destinations: string[] = [];
+  const report = "Bing Wallpaper Library 0.3.0 · windows x86_64\n2026-11-28 image decode failed";
+  const app = await open("./App.tsx", {
+    platform: "windows", width: 1100, height: 740,
+    modules: {"wallpaper-native": {
+      "Library.source": "", "Library.diagnosticReport": report,
+      "Library.openLocation": (which: string) => { destinations.push(which); },
+    }},
+  });
+  await app.waitFor("latest-photo");
+  await app.press("nav-settings");
+  await app.waitFor("folder-path");
+  await app.scroll("settings-content", 2000);
+  await app.press("diagnostics");
+  await app.waitFor("close-diagnostics");
+  expect(destinations).toEqual([]);
+  await app.press("label:Copy log");
+  expect(app.clipboardItem()?.text).toBe(report);
+  await app.press("label:Open log");
+  await app.press("label:Create issue");
+  expect(destinations).toEqual(["log","issue"]);
+  await app.press("close-diagnostics");
+});

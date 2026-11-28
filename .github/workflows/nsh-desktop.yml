@@ -169,10 +169,11 @@ jobs:
           set -euo pipefail
           mkdir -p target/nsh-validation
           if [[ "$RUNNER_OS" == Linux ]]; then
-            sudo apt-get install -y gsettings-desktop-schemas
+            sudo apt-get install -y gsettings-desktop-schemas python3-pil
             xvfb-run -a dbus-run-session -- bash -euc '
               export XDG_CURRENT_DESKTOP=GNOME
               nsh test desktop/App.tsx --target linux < scripts/test-nsh-appearance.mjs
+              /usr/bin/python3 scripts/test-preview-blur.py target/nsh-validation
               nsh test desktop/App.tsx --target linux < scripts/test-nsh-desktop.mjs
               for key in picture-uri picture-uri-dark; do
                 value=$(gsettings get org.gnome.desktop.background "$key")

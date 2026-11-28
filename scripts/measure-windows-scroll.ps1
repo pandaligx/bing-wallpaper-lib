@@ -2,7 +2,7 @@
 param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$OutputDir,
       [ValidateSet('notches','precision')][string]$InputMode = 'notches',
       [ValidateRange(1,60)][int]$NotchesPerSecond = 24,
-      [ValidateRange(30,1000)][int]$PrecisionEventsPerSecond = 150, [switch]$NoFrameMonitor, [string]$PresentMon)
+      [ValidateRange(30,1000)][int]$PrecisionEventsPerSecond = 150, [switch]$NoFrameMonitor, [string]$PresentMon, [switch]$TrackByName)
 $ErrorActionPreference = 'Stop'
 $binary = (Resolve-Path -LiteralPath $Exe).Path
 $out = (New-Item -ItemType Directory -Force $OutputDir).FullName
@@ -82,7 +82,8 @@ try {
     $initial = @(Get-Content $log).Count
     $inputRate = if ($InputMode -eq 'precision') { $PrecisionEventsPerSecond } else { $NotchesPerSecond }
     if ($PresentMon) {
-        $capture = Start-Process -FilePath (Resolve-Path $PresentMon) -ArgumentList @("--process_id", $window.Id, "--timed", 13, "--terminate_after_timed", "--output_file", ('"'+(Join-Path $out "presents.csv")+'"')) -WindowStyle Hidden -RedirectStandardError (Join-Path $out "presentmon.log") -RedirectStandardOutput (Join-Path $out "presentmon.stdout") -PassThru
+        $targetArgs = if ($TrackByName) { @("--process_name", [IO.Path]::GetFileName($binary)) } else { @("--process_id", $window.Id) }
+        $capture = Start-Process -FilePath (Resolve-Path $PresentMon) -ArgumentList ($targetArgs + @("--timed", 13, "--terminate_after_timed", "--output_file", ('"'+(Join-Path $out "presents.csv")+'"'))) -WindowStyle Hidden -RedirectStandardError (Join-Path $out "presentmon.log") -RedirectStandardOutput (Join-Path $out "presentmon.stdout") -PassThru
     }
     [WallpaperScrollInput]::Run($window.MainWindowHandle, $InputMode -eq 'precision', $inputRate)
     $samples = @($observer.StandardOutput.ReadToEnd().Trim() -split '\s+')

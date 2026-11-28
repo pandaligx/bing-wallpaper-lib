@@ -34,6 +34,7 @@ execFileSync("git", [
   "--",
   "src",
   "assets/data",
+  "desktop/icon.png",
   "desktop/ext/wallpaper-native",
 ]);
 execFileSync("tar", ["-xf", tar, "-C", run]);

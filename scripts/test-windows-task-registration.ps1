@@ -11,7 +11,7 @@ $periodic = "BingWallpaperLib-Test-$id-Periodic"
 $daily = "BingWallpaperLib-Test-$id-Daily"
 
 # Build a private copy of the real registrar with unique Task Scheduler names.
-foreach ($path in 'src','assets/data','desktop/ext/wallpaper-native/src','desktop/ext/wallpaper-native/Cargo.toml','desktop/ext/wallpaper-native/Cargo.lock') {
+foreach ($path in 'src','assets/data','desktop/icon.png','desktop/ext/wallpaper-native/src','desktop/ext/wallpaper-native/Cargo.toml','desktop/ext/wallpaper-native/Cargo.lock') {
     $to = Join-Path $source $path
     New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
     Copy-Item -LiteralPath (Join-Path $root $path) -Destination $to -Recurse

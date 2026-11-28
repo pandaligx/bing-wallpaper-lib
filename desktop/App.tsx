@@ -40,6 +40,7 @@ import {
   t,
 } from "./src/preferences";
 import { Icon } from "./src/ui/Icon";
+import { blurWindowContent } from "./src/ui/PhotoViewer";
 import { Action } from "./src/ui/Action";
 import { Gallery, Preview } from "./src/ui/Gallery";
 import { LocalGallery } from "./src/ui/LocalGallery";
@@ -269,7 +270,10 @@ function App() {
             : destinations.find((d) => d.key === page())?.label || "Home",
         );
   return (
-    <View class="flex-1 bg-background text-xs text-foreground">
+    <View
+      class="flex-1 bg-background text-xs text-foreground"
+      style={{ filter: blurWindowContent() ? "blur(18px)" : undefined }}
+    >
       <View
         class="flex-row items-center gap-1 px-2 bg-sidebar"
         style={{ height: 38, paddingRight: win.titleBar().right }}
@@ -347,7 +351,7 @@ function App() {
                 style={{ width: 30, height: 30, objectFit: "contain" }}
               />
               <If when={expandedRail()}>
-                <Text class="text-xs font-bold text-foreground shrink line-clamp-1">
+                <Text class="flex-1 text-xs font-bold text-foreground">
                   {t("Bing Wallpaper Library")}
                 </Text>
               </If>

@@ -54,6 +54,7 @@ for (const path of [
   "src",
   "assets/data",
   "vendor/nsh-platform-windows",
+  "desktop/icon.png",
   "desktop/windows/Cargo.toml",
   "desktop/windows/Cargo.lock",
   "desktop/windows/build.rs",

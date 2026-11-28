@@ -1,8 +1,11 @@
-import { effect, reduceMotion, signal, Text, View, windowSize } from "nsh";
+import { effect, platform, reduceMotion, signal, Text, View, windowSize } from "nsh";
 import type { ViewRef } from "nsh";
 import { Dialog, Slider } from "nsh/base";
 import { t } from "../preferences";
 import { Action } from "./Action";
+
+// GTK can blur a widget subtree, while the native dialog is drawn in a separate overlay.
+export const blurWindowContent = signal(false);
 
 interface ViewerProps {
   identity: string;
@@ -15,6 +18,11 @@ interface ViewerProps {
 }
 
 export function PhotoViewer(props: ViewerProps) {
+  effect(() => {
+    if (platform.os !== "linux") return;
+    blurWindowContent.set(true);
+    return () => blurWindowContent.set(false);
+  });
   let close: ViewRef | undefined;
   const zoom = signal(1),
     offset = signal({ x: 0, y: 0 });
