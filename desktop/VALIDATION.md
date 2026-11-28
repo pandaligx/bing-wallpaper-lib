@@ -1,6 +1,29 @@
 # NSH 桌面版验收记录
 
-## 2026-11-27 本地紧凑界面
+## 2026-11-28 Windows 与 Linux 候选版
+
+应用源码提交 `76385c7`。Windows 本地未签名单文件 SHA-256 为 `c4f68f7f9556f641693150f89fe4de772931b2b7525ce10eb11bc0643fbd601c`，大小 48,647,680 字节。在 Windows 11 Build 26300 上单独复制到空目录，用针对该副本的出站防火墙规则断网后，系统辅助功能树仍能读到多张壁纸的日期。
+
+| 170 Hz 实际窗口测试 | 可见 FPS 中位数 | 可见帧间隔 P50 / P95 / P99 | PresentMon 进程呈现间隔 P50 / P95 / P99 |
+| --- | ---: | --- | --- |
+| GPUI 0.2.37，每秒 24 格 | 24 | 41.181 / 47.078 / 47.276 ms | 此轮没有得到该进程的 CSV |
+| GPUI 0.2.37，每秒 240 次精细输入 | 164 | 5.882 / 6.098 / 11.880 ms | 此轮没有得到该进程的 CSV |
+| NSH，每秒 24 格 | 169.5 | 5.877 / 6.437 / 11.717 ms | 5.879 / 6.173 / 6.757 ms |
+| NSH，每秒 240 次精细输入 | 169 | 5.879 / 6.565 / 11.594 ms | 5.876 / 6.250 / 6.684 ms |
+
+对照文件来自 GitHub v0.2.37，SHA-256 为 `3467d0d3874f05428fc03b83fe2487807950f00b5a7cfc7d576239de0d5d4ee4`。每轮 12 秒往返滚动，关闭 NSH 自带帧率计。DXGI 取画廊固定区域实际改变的像素，统计中间 10 秒；PresentMon 2.6.0 按对应进程采样。最终 exe 两轮各记录到 1,688 次进程呈现。普通滚轮逐秒读数最低 145 FPS，精细输入最低 149 FPS。原始文件在本地 `target/nsh-validation/pace-legacy`、`handoff-notches` 和 `handoff-precision`。
+
+原生 Windows 窗口实测覆盖两种主题、图标侧栏、全窗模糊预览、滑块缩放、关闭焦点恢复、设置与诊断。诊断日志复制、打开日志和打开 Issue 草稿另有交互回归。NSH 交互测试另覆盖进退历史、退出框居中、1 万条归档虚拟化、收藏、本地图和下载任务重试。Rust 限速 HTTP 回归验证暂停、继续后的字节内容和取消后的临时文件清理。旧工程 54 项用例通过，Windows 原生扩展 59 项自动用例通过。Windows 临时任务注册、移动路径后触发以及旧用户目录重复迁移均通过。
+
+独立 Windows 用户目录中，实际工具栏菜单分别切换中、英、日、韩、俄、法并打开对应语言的诊断报告。三次关闭真实大图后，NSH 解码缓存分别从 28,053,824、26,986,880、26,986,880 字节回到 17,545,920 字节。另用 Bing 实图验证了下载、解码与文件复用。使用临时密钥及独立应用标识的 Windows 更新演练通过升级、启动确认与自动回滚，后台启动、关闭到托盘及重复启动唤回均通过。
+
+最终 Linux x86_64 AppImage 为 42,588,664 字节，SHA-256 为 `a98b4fd9ef1c7157c6cee94598f7f265c43a1f7c7ecf54ee3b1fa824a2e26d99`。Linux 原生窗口截图分别采样同一侧栏区域和前景图片。打开预览后，浅色侧栏的相邻像素灰度差均方根从 33.60 降至 0.54，深色从 33.40 降至 0.40，两种主题的前景照片均为 16.36。英文应用名在展开的侧栏中完整换行。AppImage 签名清单升级与启动失败回滚均通过。[最终源码的工作流与原生截图](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/46139813060)
+
+两台独立 Ubuntu 24.04 runner 分别运行上述最终 AppImage 的每日壁纸入口，解码实际下载的文件并读取桌面配置。GNOME Shell 有 42.6% 的采样像素改变，Plasma 有 83.0%。两个打包任务和两个桌面任务全部通过。工作流附件含换图前后的原生桌面截图。[GNOME 原生桌面](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/46139813060/job/140975956499) · [KDE Plasma 原生桌面](https://github.com/pandaligx/bing-wallpaper-lib/actions/runs/46139813060/job/140975956487)
+
+GitHub 和 GitCode 的 RC1 发行接口均已匿名核对为 404。
+
+## 2026-11-27 本地紧凑界面（历史记录）
 
 Windows 11 Build 26300，170 Hz 显示器，系统“在 Windows 中显示动画”关闭。先前的 NSH 宿主在普通滚轮输入时直接跳到下一个位置，内置计数器仍可显示 170 FPS。当前宿主允许启用“平滑滚轮”的列表使用 NSH 原生滚动曲线。设置可随时关闭该选项。
 
@@ -23,7 +46,7 @@ NSH 套件共 62 项，默认运行通过 61 项；另行联网执行的一项�
 
 六种语言分别用原生窗口核验了侧栏的图库操作和月份名称。660 点宽的俄语设置页中，长标签可换行，右侧开关仍对齐。[中文首页](../docs/nsh-compact/windows-home-light.png) · [英文首页](../docs/nsh-compact/windows-home-en.png) · [浅色设置](../docs/nsh-compact/windows-settings-light.png) · [深色设置](../docs/nsh-compact/windows-settings-dark.png) · [俄语窄屏设置](../docs/nsh-compact/windows-settings-ru.png) · [深色预览](../docs/nsh-compact/windows-preview-dark.png)
 
-下表含此前原型的跨平台原生结果。当前布局的 macOS 双架构、GNOME 和 KDE 原生复验、Windows 10 1809、实体混合 DPI 双屏及实际睡眠恢复列入下一轮验收。[按平台验收与签名顺序](README.md)
+下表含此前原型的跨平台原生结果。本轮交付 Windows 和 Linux。Windows 10 1809 干净机、实体混合 DPI 双屏及实际睡眠恢复待验。[按平台验收与签名顺序](README.md)
 
 ## 旧版功能对照
 
