@@ -8,10 +8,22 @@ on:
         default: false
   push:
     branches: [rewrite/nsh-desktop]
+    paths:
+      - "desktop/**"
+      - "!desktop/*.md"
+      - "src/**"
+      - "assets/**"
+      - "ico/**"
+      - "vendor/**"
+      - ".cargo/**"
+      - "scripts/**"
+      - "!scripts/test-gnome-session.sh"
+      - "!scripts/test-packaged-plasma.sh"
   pull_request:
     paths: ['desktop/**', 'src/**', 'assets/data/**', 'vendor/nsh-platform-windows/**', '.github/workflows/nsh-desktop.yml', 'scripts/build-nsh-windows.ps1']
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
@@ -191,6 +203,8 @@ jobs:
           path: target/nsh-validation/*.png
           if-no-files-found: error
 
-  gnome-session:
+  installed-desktops:
     needs: package
     uses: ./.github/workflows/gnome-session-rehearsal.yml
+    with:
+      package_run: ${{ github.run_id }}

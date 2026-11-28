@@ -1,34 +1,84 @@
-name: Verify wallpaper on a running GNOME desktop
-on: workflow_call
+name: Verify the packaged Linux desktops
+on:
+  workflow_call:
+    inputs:
+      package_run:
+        type: string
+        required: true
+  push:
+    branches: [rewrite/nsh-desktop]
+    paths:
+      - ".github/workflows/gnome-session-rehearsal.yml"
+      - "scripts/test-gnome-session.sh"
+      - "scripts/test-packaged-plasma.sh"
 permissions:
   contents: read
+  actions: read
 jobs:
   desktop:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        desktop: [gnome, plasma]
     env:
       GH_TOKEN: ${{ github.token }}
       DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare a nested GNOME Shell desktop
+        with:
+          fetch-depth: 0
+      - name: Locate the candidate built from these application sources
+        id: candidate
+        env:
+          PACKAGE_RUN: ${{ inputs.package_run }}
+          PREVIOUS: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          inputs=(desktop/App.tsx desktop/src desktop/ext desktop/icon.png desktop/nsh.json desktop/nsh.lock desktop/assets src assets ico .cargo scripts/nsh-appimagetool.sh scripts/package-nsh-unix.sh)
+          run="$PACKAGE_RUN"
+          if [[ -z "$run" ]]; then
+            if ! git diff --quiet "$PREVIOUS" HEAD -- "${inputs[@]}"; then
+              echo "The full acceptance build will test these new application sources."
+              exit 0
+            fi
+            run=$(gh run list --workflow nsh-desktop.yml --branch "$GITHUB_REF_NAME" --event push --limit 1 --json databaseId --jq ".[0].databaseId")
+          fi
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .head_sha)
+          git diff --exit-code "$sha" HEAD -- "${inputs[@]}"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Testing application source $sha from run $run"
+      - name: Prepare a nested desktop
+        if: steps.candidate.outputs.run
         run: |
           sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o Acquire::Retries=3 update -qq
-          sudo apt-get install -y --no-install-recommends gnome-shell gsettings-desktop-schemas dbus-x11 xvfb xauth imagemagick python3-pil libgl1-mesa-dri libwebkitgtk-6.0-4 libgtk-4-1
+          sudo apt-get install -y --no-install-recommends dbus-x11 xvfb xauth imagemagick python3-pil libgl1-mesa-dri libwebkitgtk-6.0-4 libgtk-4-1 x11-utils
+          if [[ "${{ matrix.desktop }}" == gnome ]]; then
+            sudo apt-get install -y --no-install-recommends gnome-shell gsettings-desktop-schemas
+          else
+            sudo apt-get install -y --no-install-recommends plasma-desktop plasma-workspace kwin-x11 kactivitymanagerd
+          fi
       - uses: actions/download-artifact@v4
+        if: steps.candidate.outputs.run
         with:
           name: desktop-linux
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.candidate.outputs.run }}
           path: ${{ runner.temp }}/appimage
       - name: Set and observe the background with the tested AppImage
+        if: steps.candidate.outputs.run
         run: |
           set -euo pipefail
           images=("$RUNNER_TEMP"/appimage/*.AppImage)
           test "${#images[@]}" = 1
           chmod +x "${images[0]}"
-          xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX' dbus-run-session -- bash scripts/test-gnome-session.sh "${images[0]}"
+          script=scripts/test-gnome-session.sh
+          if [[ "${{ matrix.desktop }}" == plasma ]]; then script=scripts/test-packaged-plasma.sh; fi
+          xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX' dbus-run-session -- bash "$script" "${images[0]}"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.candidate.outputs.run
         with:
-          name: gnome-shell-wallpaper
-          path: ${{ runner.temp }}/gnome-evidence/
+          name: ${{ matrix.desktop }}-shell-wallpaper
+          path: ${{ runner.temp }}/${{ matrix.desktop }}-evidence/
           if-no-files-found: ignore
