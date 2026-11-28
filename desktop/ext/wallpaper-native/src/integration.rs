@@ -64,6 +64,10 @@ fn picked(command: &mut Command) -> Result<Option<PathBuf>> {
 pub fn open_location(kind: &str) -> Result<()> {
     let location = if kind == "folder" {
         AppSettings::load().effective_download_dir()?
+    } else if kind == "log" {
+        crate::diagnostics::path()?
+    } else if kind == "issue" {
+        crate::diagnostics::issue()?
     } else {
         let repo = match region::selected()?.context("请选择更新地区")? {
             region::Source::GitHub => "https://github.com/pandaligx/bing-wallpaper-lib",

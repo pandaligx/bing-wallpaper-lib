@@ -63,3 +63,38 @@ test("batches by month, favorite, history and inclusive calendar range and retri
   await app.waitUntil(() => calls.length === 9);
   expect(calls.slice(-2).sort()).toEqual(dates.slice(0, 2).sort());
 });
+
+test("restores interrupted transfers, cancels a paused task and retries it", async () => {
+  const date = "2024-01-26";
+  const stopped: string[] = [];
+  const app = await open("./App.tsx", {
+    width: 1000,
+    height: 700,
+    modules: {
+      "wallpaper-native": {
+        "Library.source": "",
+        "Library.catalog": JSON.stringify([
+          { date, headline: "Hawk owl", description: "", thumbnail: "", preview: "" },
+        ]),
+        "Library.downloadHistory": JSON.stringify([{ date, state: "Active", apply: false }]),
+        "Library.saveDownloadHistory": null,
+        "Library.stopDownload": (id: string, cancel: boolean) => {
+          if (cancel) stopped.push(id);
+        },
+        "Library.beginDownload": null,
+        "Library.finishDownload": null,
+        "Library.download": JSON.stringify({ path: "fixture/completed.jpg", reused: false }),
+      },
+    },
+  });
+  await app.waitFor("latest-photo");
+  await app.press("nav-downloads");
+  await app.waitFor("cancel-" + date);
+  expect(app.accessibility("retry-" + date)?.name).toBe("Resume");
+  await app.press("cancel-" + date);
+  await app.waitFor("cancel-" + date, { state: "gone" });
+  expect(stopped).toEqual([date]);
+  expect(app.accessibility("retry-" + date)?.name).toBe("Retry");
+  await app.press("retry-" + date);
+  await app.waitFor("fixture/completed.jpg");
+});

@@ -11,12 +11,42 @@ function Task(props: { job: Job }) {
   const job = () => props.job;
   const transfer = () => transfers().find((tr) => tr.date === job().photo.date && tr.state === "active");
   return (
-    <View class="gap-1 border-b border-border py-2">
-      <View class="flex-row flex-wrap items-center justify-between gap-2">
-        <Text class="text-xs font-semibold text-foreground">{job().photo.headline || job().photo.date}</Text>
-        <Text class="text-xs text-muted-foreground">
-          {job().photo.date} · {t(job().state)}
-        </Text>
+    <View class="gap-1 rounded-lg bg-card px-3 py-2">
+      <View class="flex-row items-center gap-2">
+        <View class="flex-1 gap-1">
+          <Text class="text-xs font-semibold text-foreground">
+            {job().photo.headline || job().photo.date}
+          </Text>
+          <Text class="text-xs text-muted-foreground">
+            {job().photo.date} · {t(job().state)}
+          </Text>
+        </View>
+        <View class="flex-row items-center gap-1">
+          <If when={job().state === "Waiting" || job().state === "Active"}>
+            <Action
+              icon="pause"
+              id={"pause-" + job().photo.date}
+              label={t("Pause")}
+              press={() => void stopJob(job(), false)}
+            />
+          </If>
+          <If when={job().state === "Waiting" || job().state === "Active" || job().state === "Pause"}>
+            <Action
+              icon="x"
+              id={"cancel-" + job().photo.date}
+              label={t("Cancel")}
+              press={() => void stopJob(job(), true)}
+            />
+          </If>
+          <If when={job().state === "Failed" || job().state === "Pause" || job().state === "Cancelled"}>
+            <Action
+              icon={job().state === "Pause" ? "play" : "rotate-ccw"}
+              id={"retry-" + job().photo.date}
+              label={t(job().state === "Pause" ? "Resume" : "Retry")}
+              press={() => enqueue([job().photo], job().apply)}
+            />
+          </If>
+        </View>
       </View>
       <If when={job().path || job().error}>
         <Text class={job().error ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
@@ -41,22 +71,6 @@ function Task(props: { job: Job }) {
           </View>
         )}
       </If>
-      <View class="flex-row items-center gap-1">
-      <If when={job().state === "Waiting" || job().state === "Active"}>
-        <Action icon="pause" id={"pause-"+job().photo.date} label={t("Pause")} press={() => void stopJob(job(), false)} />
-      </If>
-      <If when={job().state === "Waiting" || job().state === "Active" || job().state === "Pause"}>
-        <Action icon="x" id={"cancel-"+job().photo.date} label={t("Cancel")} press={() => void stopJob(job(), true)} />
-      </If>
-      <If when={job().state === "Failed" || job().state === "Pause" || job().state === "Cancelled"}>
-        <Action
-          icon={job().state === "Pause" ? "play" : "rotate-ccw"}
-          id={"retry-" + job().photo.date}
-          label={t(job().state === "Pause" ? "Resume" : "Retry")}
-          press={() => enqueue([job().photo], job().apply)}
-        />
-      </If>
-      </View>
     </View>
   );
 }
@@ -134,6 +148,7 @@ export function DownloadCenter() {
         keyExtractor={(j) => j.photo.date}
         estimatedItemSize={75}
         class="flex-1"
+        contentStyle={{ gap: 4 }}
       >
         {(j) => <Task job={j()} />}
       </List>

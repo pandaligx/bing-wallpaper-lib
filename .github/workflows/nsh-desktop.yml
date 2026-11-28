@@ -160,13 +160,15 @@ jobs:
             sudo apt-get install -y gsettings-desktop-schemas
             xvfb-run -a dbus-run-session -- bash -euc '
               export XDG_CURRENT_DESKTOP=GNOME
+              nsh test desktop/App.tsx --target linux < scripts/test-nsh-appearance.mjs
               nsh test desktop/App.tsx --target linux < scripts/test-nsh-desktop.mjs
               for key in picture-uri picture-uri-dark; do
                 value=$(gsettings get org.gnome.desktop.background "$key")
                 [[ "$value" == *BingWallpaperLib/Wallpapers/*.jpg* ]]
               done'
           else
-            nsh test desktop/App.tsx --target ${{ matrix.target }} --foreground < scripts/test-nsh-desktop.mjs
+            nsh test desktop/App.tsx --target windows --foreground < scripts/test-nsh-appearance.mjs
+            nsh test desktop/App.tsx --target windows --foreground < scripts/test-nsh-desktop.mjs
           fi
       - uses: actions/upload-artifact@v4
         if: always()

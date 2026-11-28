@@ -12,14 +12,15 @@ interface ActionProps {
   row?: boolean;
   primary?: boolean;
   filled?: boolean;
+  tint?: boolean;
   disabled?: boolean;
   buttonRef?: (button: ViewRef) => void;
 }
 
 export function Action(props: ActionProps) {
-  const hasText = !props.icon || !!props.row;
+  const hasText = () => !props.icon || !!props.row;
   const base =
-    "flex-row items-center rounded focus-visible:ring-2 focus-visible:ring-ring active:opacity-70 disabled:opacity-40 ";
+    "flex-row items-center rounded-lg transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring active:opacity-70 disabled:opacity-40 ";
   return (
     <Button
       ref={props.buttonRef}
@@ -29,7 +30,7 @@ export function Action(props: ActionProps) {
       disabled={props.disabled}
       onPress={props.press}
       tooltip={
-        !hasText ? (
+        !hasText() ? (
           <Tooltip class="rounded border border-border bg-popover px-2 py-1">
             <Text class="text-xs text-popover-foreground">{props.label}</Text>
           </Tooltip>
@@ -39,14 +40,14 @@ export function Action(props: ActionProps) {
         base +
         (props.row
           ? "h-7 min-w-0 gap-2 px-2 "
-          : hasText
+          : hasText()
             ? "min-h-7 justify-center px-2 "
             : "h-7 w-7 justify-center ") +
         (props.primary
           ? props.row
             ? "bg-sidebar-accent"
             : "bg-primary"
-          : props.row || !hasText
+          : props.row || !hasText()
             ? "hover:bg-accent"
             : "border border-border bg-card hover:bg-accent")
       }
@@ -55,10 +56,16 @@ export function Action(props: ActionProps) {
         <Icon
           name={props.icon}
           filled={props.filled}
-          ink={props.primary && !props.row ? "primary-foreground" : props.filled ? "primary" : "foreground"}
+          ink={
+            props.primary && !props.row
+              ? "primary-foreground"
+              : props.filled || props.tint
+                ? "primary"
+                : "foreground"
+          }
         />
       ) : null}
-      {hasText ? (
+      {hasText() ? (
         <Text
           class={
             (props.primary && !props.row ? "text-primary-foreground" : "text-foreground") +

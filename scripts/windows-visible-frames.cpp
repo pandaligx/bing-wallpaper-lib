@@ -67,6 +67,9 @@ static int measure(HWND window) {
     check(device->CreateTexture2D(&texture, nullptr, &sample), "CreateTexture2D");
     std::vector<unsigned char> previous(stride * height);
     std::array<int, 12> distinct{};
+    std::vector<long long> timestamps;
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
     puts("ready");
     fflush(stdout);
     auto start = Clock::now();
@@ -94,12 +97,17 @@ static int measure(HWND window) {
                 memcpy(dst, src, stride);
             }
             context->Unmap(sample.Get(), 0);
-            if (havePrevious && changed) ++distinct[second];
+            if (havePrevious && changed) {
+                ++distinct[second];
+                if (second > 0 && second < 11) timestamps.push_back(info.LastPresentTime.QuadPart);
+            }
             havePrevious = true;
         }
         check(frames->ReleaseFrame(), "ReleaseFrame");
     }
     for (auto count : distinct) printf("%d\n", count);
+    for (size_t i = 1; i < timestamps.size(); ++i)
+        printf("%.3f\n", (timestamps[i] - timestamps[i - 1]) * 1000.0 / frequency.QuadPart);
     return havePrevious ? 0 : 1;
 }
 

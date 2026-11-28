@@ -9,10 +9,9 @@
 | 平台 | 开发包 | 运行环境 |
 | --- | --- | --- |
 | Windows x64 | `BingWallpaperLib-v0.3.0-windows-x64.exe` | 单文件便携版。目标系统为 Windows 10 1809 及以上，已在 Windows 11 运行。 |
-| macOS Intel 和 Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 及以上。将应用复制到「应用程序」。开发包使用临时签名。 |
 | Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | 宿主需安装 GTK 4.14+ 和 WebKitGTK 6.0，首次启动前赋予 AppImage 执行权限。 |
 
-桌面重写版正在本地验收。Windows 由维护者签名，macOS 完成 Developer ID 签名与公证后，再由维护者决定发布时间。[构建与验收计划](desktop/README.md) · [验收记录](desktop/VALIDATION.md)
+桌面重写版正在本地验收。Windows 由维护者签名，再由维护者决定发布时间。[构建与验收计划](desktop/README.md) · [验收记录](desktop/VALIDATION.md)
 
 较早的 Windows 系统可以继续使用 0.2.37。[国内旧版下载](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [海外旧版下载](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37)
 
@@ -36,6 +35,6 @@
 
 ## 开发与维护
 
-三端构建命令、原生测试、下载测速和发布校验见开发说明。仓库根目录保留旧版实现，便于逐项对照。[桌面开发说明](desktop/README.md) · [维护入口](AGENTS.md) · [旧版文档](https://github.com/pandaligx/bing-wallpaper-lib/blob/v0.2.37/README.zh-CN.md)
+Windows 与 Linux 构建命令、原生测试、下载测速和发布校验见开发说明。仓库根目录保留旧版实现，便于逐项对照。[桌面开发说明](desktop/README.md) · [维护入口](AGENTS.md) · [旧版文档](https://github.com/pandaligx/bing-wallpaper-lib/blob/v0.2.37/README.zh-CN.md)
 
 © 2023-2026 小南瓜 · [GPL-3.0](LICENSE)

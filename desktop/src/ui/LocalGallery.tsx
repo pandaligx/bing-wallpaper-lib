@@ -4,6 +4,7 @@ import type { ViewRef } from "nsh";
 import { Button, Dialog } from "nsh/base";
 import { Library } from "wallpaper-native";
 import { canApply, run, notify, reportError, t } from "../preferences";
+import { PhotoViewer } from "./PhotoViewer";
 import { columns } from "./Gallery";
 import { Action } from "./Action";
 import { releaseUnusedImages } from "./Thumbnail";
@@ -44,8 +45,15 @@ function LocalImage(props: {
     };
   });
   return (
-    <View class="bg-muted" style={{ width: "100%", aspectRatio: 16 / 9 }}>
-      <If when={src()}>{(url) => <Image src={url()} style={{ width: "100%", height: "100%" }} />}</If>
+    <View class={props.preview ? "" : "bg-muted"} style={{ width: "100%", aspectRatio: 16 / 9 }}>
+      <If when={src()}>
+        {(url) => (
+          <Image
+            src={url()}
+            style={{ width: "100%", height: "100%", objectFit: props.preview ? "contain" : "cover" }}
+          />
+        )}
+      </If>
     </View>
   );
 }
@@ -72,7 +80,6 @@ function FileDetails(props: { name: string; revision: number }) {
 }
 export function LocalGallery(props: { sidebarWidth: number }) {
   let previewOpener: ViewRef | undefined;
-  let closeButton: ViewRef | undefined;
   const closePreview = () => {
     preview.set("");
     const opener = previewOpener;
@@ -214,49 +221,29 @@ export function LocalGallery(props: { sidebarWidth: number }) {
       </List>
       <If when={preview()}>
         {(name) => (
-          <Dialog
-            open
-            onOpen={() => closeButton?.focus()}
-            class="m-auto rounded-lg bg-card"
-            onOpenChange={({ open }) => {
-              if (!open) closePreview();
-            }}
-          >
-            <View
-              class="gap-3 p-4"
-              style={{
-                width: Math.max(
-                  250,
-                  Math.min(860, windowSize().width - 32, ((windowSize().height - 196) * 16) / 9),
-                ),
-              }}
-            >
-              <LocalImage name={name()} preview cache={cache} />
-              <Text class="text-xs font-semibold text-foreground">{name()}</Text>
-              <FileDetails name={name()} revision={revision()} />
-              <View class="flex-row flex-wrap gap-2">
+          <PhotoViewer
+            identity={name()}
+            title={name()}
+            closeId="close-local"
+            close={closePreview}
+            photo={() => <LocalImage name={name()} preview cache={cache} />}
+            details={() => <FileDetails name={name()} revision={revision()} />}
+            actions={() => (
+              <View class="flex-row items-center">
+
                 <Action icon="chevron-left" label={t("Previous")} press={() => step(-1)} />
                 <Action icon="chevron-right" label={t("Next")} press={() => step(1)} />
                 <Action
                   icon="monitor"
-                  primary
+                  tint
                   disabled={!canApply()}
                   label={t("Set as wallpaper")}
                   press={() => applyLocal(name())}
                 />
                 <Action icon="trash-2" label={t("Delete")} press={() => confirm.set([name()])} />
-                <Action
-                  icon="x"
-                  id="close-local"
-                  label={t("Close")}
-                  buttonRef={(node) => {
-                    closeButton = node;
-                  }}
-                  press={closePreview}
-                />
               </View>
-            </View>
-          </Dialog>
+            )}
+          />
         )}
       </If>
       <If when={confirm().length > 0}>

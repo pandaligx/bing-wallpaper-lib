@@ -2,7 +2,7 @@
 param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string]$OutputDir,
       [ValidateSet('notches','precision')][string]$InputMode = 'notches',
       [ValidateRange(1,60)][int]$NotchesPerSecond = 24,
-      [ValidateRange(30,1000)][int]$PrecisionEventsPerSecond = 150, [switch]$NoFrameMonitor)
+      [ValidateRange(30,1000)][int]$PrecisionEventsPerSecond = 150, [switch]$NoFrameMonitor, [string]$PresentMon)
 $ErrorActionPreference = 'Stop'
 $binary = (Resolve-Path -LiteralPath $Exe).Path
 $out = (New-Item -ItemType Directory -Force $OutputDir).FullName
@@ -81,9 +81,15 @@ try {
     if ($observer.StandardOutput.ReadLine() -ne 'ready') { throw 'Cannot observe the benchmark window' }
     $initial = @(Get-Content $log).Count
     $inputRate = if ($InputMode -eq 'precision') { $PrecisionEventsPerSecond } else { $NotchesPerSecond }
+    if ($PresentMon) {
+        $capture = Start-Process -FilePath (Resolve-Path $PresentMon) -ArgumentList @("--process_id", $window.Id, "--timed", 13, "--terminate_after_timed", "--output_file", ('"'+(Join-Path $out "presents.csv")+'"')) -WindowStyle Hidden -RedirectStandardError (Join-Path $out "presentmon.log") -RedirectStandardOutput (Join-Path $out "presentmon.stdout") -PassThru
+    }
     [WallpaperScrollInput]::Run($window.MainWindowHandle, $InputMode -eq 'precision', $inputRate)
-    $visible = @($observer.StandardOutput.ReadToEnd().Trim() -split '\s+' | ForEach-Object { [int]$_ })
+    $samples = @($observer.StandardOutput.ReadToEnd().Trim() -split '\s+')
+    $visible = @($samples | Select-Object -First 12 | ForEach-Object { [int]$_ })
+    $intervals = @($samples | Select-Object -Skip 12 | ForEach-Object { [double]::Parse($_, [CultureInfo]::InvariantCulture) } | Sort-Object)
     $observer.WaitForExit()
+    if ($capture) { $capture.WaitForExit(20000) | Out-Null; if ($capture.ExitCode -ne 0) { throw "PresentMon capture failed" } }
     if ($observer.ExitCode -ne 0 -or $visible.Count -ne 12) { throw 'Incomplete visible-frame measurement' }
     $frames = @(Get-Content $log | Select-Object -Skip ($initial + 1) | Where-Object { $_ -match '^fps ' })
     if (!$NoFrameMonitor -and $frames.Count -lt 8) { throw "Too few native frame samples. See $log" }
@@ -92,6 +98,10 @@ try {
     if (!$NoFrameMonitor) {
         $result.displayHz = [int]($frames[0].Split(' ')[1].Split('/')[1])
         $result.medianFps = $rates[[int][Math]::Floor($rates.Count/2)]
+    }
+    if ($intervals.Count) {
+        foreach ($p in 50,95,99) { $result | Add-Member NoteProperty ("visibleFrameTimeP"+$p+"Ms") $intervals[[int][Math]::Ceiling($p*$intervals.Count/100)-1] }
+        $result | Add-Member NoteProperty visibleFrameIntervals $intervals.Count
     }
     $result | Add-Member NoteProperty visibleFps $visible
     $result | Add-Member NoteProperty inputEventsPerSecond $inputRate

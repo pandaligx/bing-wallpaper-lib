@@ -1,6 +1,6 @@
-import { computed, effect, mount, Scroll, signal, Text, View, windowSize } from "nsh";
+import { computed, effect, Image, mount, Scroll, signal, Text, View, windowSize } from "nsh";
 import type { ListRef } from "nsh";
-import { Dialog, Progress } from "nsh/base";
+import { Dialog, MenuButton, Progress } from "nsh/base";
 import { Application, currentWindow, Tray, Window } from "nsh/desktop";
 import { Library } from "wallpaper-native";
 import {
@@ -44,9 +44,10 @@ import { Action } from "./src/ui/Action";
 import { Gallery, Preview } from "./src/ui/Gallery";
 import { LocalGallery } from "./src/ui/LocalGallery";
 import { DownloadCenter } from "./src/ui/DownloadCenter";
-import { Region, Settings } from "./src/ui/Settings";
+import { languages, Region, Settings } from "./src/ui/Settings";
 
-const monthNames = "January February March April May June July August September October November December".split(" ");
+const monthNames =
+  "January February March April May June July August September October November December".split(" ");
 const destinations = [
   { key: "home", icon: "house", label: "Home" },
   { key: "favorites", icon: "heart", label: "Favorites" },
@@ -82,6 +83,11 @@ function UpdateProgress(props: { bytes?: number }) {
     </View>
   );
 }
+
+type Route = { key: ReturnType<typeof page>; month: string };
+const history: Route[] = [{ key: "home", month: "" }];
+const cursor = signal(0),
+  latest = signal(0);
 
 function App() {
   const win = currentWindow();
@@ -120,9 +126,26 @@ function App() {
     }
     return [...byYear.entries()];
   });
-  function go(key: ReturnType<typeof page>) {
-    page.set(key);
+  function visit(route: Route) {
+    month.set(route.month);
+    page.set(route.key);
     drawer.set(false);
+  }
+  function go(key: Route["key"], ym = month()) {
+    if (key === page() && (key !== "month" || ym === month())) {
+      drawer.set(false);
+      return;
+    }
+    history.splice(cursor() + 1, history.length, { key, month: ym });
+    cursor.set(history.length - 1);
+    latest.set(cursor());
+    visit(history[cursor()]);
+  }
+  function travel(delta: number) {
+    const next = cursor() + delta;
+    if (next < 0 || next >= history.length) return;
+    cursor.set(next);
+    visit(history[next]);
   }
   Application.on("reopen", show);
   run(async () => canApply.set(await Library.canApplyWallpaper()));
@@ -232,7 +255,11 @@ function App() {
     return () => clearInterval(timer);
   });
   const narrow = () => windowSize().width < 800;
-  const sidebarWidth = () => (narrow() ? (drawer() ? 154 : 0) : sidebarCollapsed() ? 0 : 170);
+  const expandedRail = () => (narrow() ? drawer() : !sidebarCollapsed());
+  const sidebarWidth = () => (expandedRail() ? 166 : 46);
+  const brand = Library.brandIcon();
+  const menuClass =
+    "h-7 w-7 items-center justify-center rounded-lg hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";
   const title = () =>
     page() === "month"
       ? month()
@@ -242,158 +269,234 @@ function App() {
             : destinations.find((d) => d.key === page())?.label || "Home",
         );
   return (
-    <View class="flex-row flex-1 bg-background text-xs text-foreground">
-      <If when={sidebarWidth() > 0}>
-        <View class="border-r border-sidebar-border bg-sidebar" style={{ width: sidebarWidth() }}>
-          <View class="gap-1 px-2 py-2">
-            <Each of={destinations.slice(0, 4)}>
-              {(entry) => (
-                <Action
-                  row
-                  icon={entry().icon}
-                  id={"nav-" + entry().key}
-                  primary={page() === entry().key}
-                  label={t(entry().label)}
-                  shortLabel={entry().key === "local" ? t("Local photos") : undefined}
-                  press={() => go(entry().key)}
-                />
-              )}
-            </Each>
-          </View>
-          <Text class="border-t border-sidebar-border px-3 pt-2 pb-1 text-xs font-semibold text-muted-foreground">
-            {t("Archive")}
-          </Text>
-          <Scroll smoothWheel={smoothWheel()} testID="sidebar" class="flex-1 px-2">
-            <Each of={index()}>
-              {(group) => (
-                <View>
+    <View class="flex-1 bg-background text-xs text-foreground">
+      <View
+        class="flex-row items-center gap-1 px-2 bg-sidebar"
+        style={{ height: 38, paddingRight: win.titleBar().right }}
+      >
+        <Action
+          icon="chevron-left"
+          id="nav-back"
+          label={t("Back")}
+          disabled={cursor() === 0}
+          press={() => travel(-1)}
+        />
+        <Action
+          icon="chevron-right"
+          id="nav-forward"
+          label={t("Forward")}
+          disabled={cursor() >= latest()}
+          press={() => travel(1)}
+        />
+        <Action
+          icon="panel-left"
+          id="navigation"
+          label={t("Navigation")}
+          press={() => (narrow() ? drawer.set(!drawer()) : sidebarCollapsed.set(!sidebarCollapsed()))}
+        />
+        <MenuButton
+          testID="toolbar-theme"
+          class={menuClass}
+          accessibilityLabel={t("Theme")}
+          items={[
+            ...(["system", "light", "dark"] as const).map((id) => ({
+              id,
+              label: t(id === "system" ? "System" : id === "light" ? "Light" : "Dark"),
+              checked: preferences()?.theme_preference === id,
+            })),
+            ...["Blue", "Purple", "Green"].map((id) => ({
+              id,
+              label: t(id),
+              checked: (preferences()?.accent_color || "Blue") === id,
+            })),
+          ]}
+          onSelect={({ id }) =>
+            run(() =>
+              configure(
+                ["Blue", "Purple", "Green"].includes(id)
+                  ? { accent_color: id }
+                  : { theme_preference: id as "light" | "dark" | "system" },
+              ),
+            )
+          }
+        >
+          <Icon name="palette" />
+        </MenuButton>
+        <MenuButton
+          testID="toolbar-language"
+          class={menuClass}
+          accessibilityLabel={t("Language")}
+          items={languages.map(([id, label]) => ({
+            id,
+            label: t(label),
+            checked: preferences()?.language === id,
+          }))}
+          onSelect={({ id }) => run(() => configure({ language: id }))}
+        >
+          <Icon name="globe" />
+        </MenuButton>
+        <View class="flex-1 h-full" desktop={{ windowDrag: true }} />
+      </View>
+      <View class="flex-1 flex-row">
+        <If when={sidebarWidth() > 0}>
+          <View class="border-r border-sidebar-border bg-sidebar" style={{ width: sidebarWidth() }}>
+            <View class="flex-row items-center gap-2 px-2 py-2">
+              <Image
+                src={brand}
+                accessibilityLabel={t("Bing Wallpaper Library")}
+                style={{ width: 30, height: 30, objectFit: "contain" }}
+              />
+              <If when={expandedRail()}>
+                <Text class="text-xs font-bold text-foreground shrink line-clamp-1">
+                  {t("Bing Wallpaper Library")}
+                </Text>
+              </If>
+            </View>
+            <View class="gap-1 px-2 py-1">
+              <Each of={destinations.slice(0, 4)}>
+                {(entry) => (
                   <Action
-                    row
-                    icon={expanded().includes(group()[0]) ? "chevron-down" : "chevron-right"}
-                    id={"year-" + group()[0]}
-                    label={group()[0]}
-                    press={() => {
-                      const y = group()[0];
-                      expanded.update((years) =>
-                        years.includes(y) ? years.filter((v) => v !== y) : [...years, y],
-                      );
-                    }}
+                    row={expandedRail()}
+                    icon={entry().icon}
+                    id={"nav-" + entry().key}
+                    primary={page() === entry().key}
+                    label={t(entry().label)}
+                    shortLabel={entry().key === "local" ? t("Local photos") : undefined}
+                    press={() => go(entry().key)}
                   />
-                  <If when={expanded().includes(group()[0])}>
-                    <View class="ml-4 border-l border-sidebar-border pl-1">
-                      <Each of={group()[1]}>
-                        {(ym) => (
-                          <Action
-                            row
-                            id={"month-" + ym()}
-                            label={ym()}
-                            shortLabel={t(monthNames[Number(ym().slice(5)) - 1])}
-                            primary={page() === "month" && month() === ym()}
-                            press={() => {
-                              month.set(ym());
-                              go("month");
-                            }}
-                          />
-                        )}
-                      </Each>
+                )}
+              </Each>
+            </View>
+            <If when={expandedRail()}>
+              <Text class="border-t border-sidebar-border px-3 pt-2 pb-1 text-xs font-semibold text-muted-foreground">
+                {t("Archive")}
+              </Text>
+              <Scroll smoothWheel={smoothWheel()} testID="sidebar" class="flex-1 px-2">
+                <Each of={index()}>
+                  {(group) => (
+                    <View>
+                      <Action
+                        row
+                        icon={expanded().includes(group()[0]) ? "chevron-down" : "chevron-right"}
+                        id={"year-" + group()[0]}
+                        label={group()[0]}
+                        press={() => {
+                          const y = group()[0];
+                          expanded.update((years) =>
+                            years.includes(y) ? years.filter((v) => v !== y) : [...years, y],
+                          );
+                        }}
+                      />
+                      <If when={expanded().includes(group()[0])}>
+                        <View class="ml-4 border-l border-sidebar-border pl-1">
+                          <Each of={group()[1]}>
+                            {(ym) => (
+                              <Action
+                                row
+                                id={"month-" + ym()}
+                                label={ym()}
+                                shortLabel={t(monthNames[Number(ym().slice(5)) - 1])}
+                                primary={page() === "month" && month() === ym()}
+                                press={() => {
+                                  go("month", ym());
+                                }}
+                              />
+                            )}
+                          </Each>
+                        </View>
+                      </If>
                     </View>
-                  </If>
-                </View>
-              )}
-            </Each>
-          </Scroll>
-          <View class="border-t border-sidebar-border p-2">
-            <Action
-              row
-              icon="settings-2"
-              id="nav-settings"
-              primary={page() === "settings"}
-              label={t("Settings")}
-              press={() => go("settings")}
-            />
+                  )}
+                </Each>
+              </Scroll>
+            </If>
+            <If when={!expandedRail()}>
+              <View class="flex-1" />
+            </If>
+            <View class="border-t border-sidebar-border p-2">
+              <Action
+                row={expandedRail()}
+                icon="settings-2"
+                id="nav-settings"
+                primary={page() === "settings"}
+                label={t("Settings")}
+                press={() => go("settings")}
+              />
+            </View>
           </View>
-        </View>
-      </If>
-      <View class="flex-1 gap-2 p-3">
-        <View class="flex-row items-center gap-2">
-          <Action
-            icon="panel-left"
-            id="navigation"
-            label={t("Navigation")}
-            press={() => {
-              if (narrow()) drawer.set(!drawer());
-              else sidebarCollapsed.set(!sidebarCollapsed());
-            }}
-          />
-          <Text testID="page-title" class="text-base font-semibold text-foreground">
-            {title()}
-          </Text>
-          <If when={inGallery()}>
-            <Text class="flex-1 text-xs text-muted-foreground">
-              {entries().length} {t("Wallpapers")}
+        </If>
+        <View class="flex-1 gap-2 p-3">
+          <View class="flex-row items-center gap-2">
+            <Text testID="page-title" class="text-base font-semibold text-foreground">
+              {title()}
             </Text>
-            <Action
-              icon="arrow-up"
-              label={t("Back to top")}
-              press={() => galleryList?.scrollToOffset({ offset: 0, animated: true })}
+            <If when={inGallery()}>
+              <Text class="flex-1 text-xs text-muted-foreground">
+                {entries().length} {t("Wallpapers")}
+              </Text>
+              <Action
+                icon="arrow-up"
+                label={t("Back to top")}
+                press={() => galleryList?.scrollToOffset({ offset: 0, animated: true })}
+              />
+            </If>
+          </View>
+          <If when={!ready()}>
+            <Text class="text-xs">{t("Loading wallpaper list...")}</Text>
+          </If>
+          <If when={ready() && !source() && page() !== "settings"}>
+            <Region />
+          </If>
+          <If when={inGallery()}>
+            <Gallery
+              sidebarWidth={sidebarWidth()}
+              listRef={(node) => {
+                galleryList = node;
+              }}
             />
           </If>
-        </View>
-        <If when={!ready()}>
-          <Text class="text-xs">{t("Loading wallpaper list...")}</Text>
-        </If>
-        <If when={ready() && !source() && page() !== "settings"}>
-          <Region />
-        </If>
-        <If when={inGallery()}>
-          <Gallery
-            sidebarWidth={sidebarWidth()}
-            listRef={(node) => {
-              galleryList = node;
-            }}
-          />
-        </If>
-        <If when={page() === "local"}>
-          <LocalGallery sidebarWidth={sidebarWidth()} />
-        </If>
-        <If when={page() === "downloads"}>
-          <DownloadCenter />
-        </If>
-        <If when={page() === "settings" && !!preferences()}>
-          <Settings />
-        </If>
-        <If when={!!status()}>
-          <View
-            class="flex-row items-center gap-2 border-t border-border py-1"
-            accessibilityLiveRegion={isError() ? "assertive" : "polite"}
-          >
-            <Icon
-              name={isError() ? "circle-alert" : "circle-check"}
-              ink={isError() ? "destructive" : "muted-foreground"}
-            />
-            <Text
-              testID={applied() && status() === t("Applied") ? "applied" : "status"}
-              class="flex-1 text-xs text-foreground"
+          <If when={page() === "local"}>
+            <LocalGallery sidebarWidth={sidebarWidth()} />
+          </If>
+          <If when={page() === "downloads"}>
+            <DownloadCenter />
+          </If>
+          <If when={page() === "settings" && !!preferences()}>
+            <Settings />
+          </If>
+          <If when={!!status()}>
+            <View
+              class="flex-row items-center gap-2 border-t border-border py-1"
+              accessibilityLiveRegion={isError() ? "assertive" : "polite"}
             >
-              {status()}
-            </Text>
-            <If when={retryNotice()}>
-              {(retry) => (
-                <Action
-                  icon="rotate-ccw"
-                  id="retry-status"
-                  label={t("Retry")}
-                  press={() => {
-                    const action = retry();
-                    notify("");
-                    action();
-                  }}
-                />
-              )}
-            </If>
-            <Action id="dismiss-status" icon="x" label={t("Close")} press={() => notify("")} />
-          </View>
-        </If>
+              <Icon
+                name={isError() ? "circle-alert" : "circle-check"}
+                ink={isError() ? "destructive" : "muted-foreground"}
+              />
+              <Text
+                testID={applied() && status() === t("Applied") ? "applied" : "status"}
+                class="flex-1 text-xs text-foreground"
+              >
+                {status()}
+              </Text>
+              <If when={retryNotice()}>
+                {(retry) => (
+                  <Action
+                    icon="rotate-ccw"
+                    id="retry-status"
+                    label={t("Retry")}
+                    press={() => {
+                      const action = retry();
+                      notify("");
+                      action();
+                    }}
+                  />
+                )}
+              </If>
+              <Action id="dismiss-status" icon="x" label={t("Close")} press={() => notify("")} />
+            </View>
+          </If>
+        </View>
       </View>
       <If when={selected()}>{(photo) => <Preview photo={photo()} />}</If>
       <If when={update()}>
@@ -440,15 +543,18 @@ function App() {
       <If when={confirmingExit()}>
         <Dialog
           open
-          class="m-auto rounded-lg bg-card"
+          class="m-auto rounded-xl bg-card"
+          role="alertdialog"
+          style={{ width: Math.min(360, windowSize().width - 32), alignSelf: "center" }}
+          backdropStyle={{ backgroundColor: "rgba(32,36,42,0.24)", backdropFilter: "blur(8px)" }}
           onOpenChange={({ open }) => {
             if (!open) confirmingExit.set(false);
           }}
         >
-          <View class="gap-3 p-4">
+          <View testID="exit-prompt" class="gap-3 p-4">
             <Text class="text-xs font-semibold text-foreground">{t("Exit app prompt")}</Text>
             <View class="flex-row gap-2">
-              <Action label={t("Cancel")} press={() => confirmingExit.set(false)} />
+              <Action id="cancel-exit" label={t("Cancel")} press={() => confirmingExit.set(false)} />
               <If when={Library.trayAvailable()}>
                 <Action
                   label={t("Minimize to tray")}
@@ -468,7 +574,13 @@ function App() {
   );
 }
 mount(() => (
-  <Window id="main" title="必应每日壁纸库" closeOnPress={false} onClosePress={() => requestWindowClose()}>
+  <Window
+    id="main"
+    title="必应每日壁纸库"
+    titleBar={{ style: "hidden", height: 38 }}
+    closeOnPress={false}
+    onClosePress={() => requestWindowClose()}
+  >
     {App}
   </Window>
 ));

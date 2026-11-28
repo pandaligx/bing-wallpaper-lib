@@ -34,6 +34,7 @@ pub fn update(patch: &str) -> Result<String> {
                     | "download_dir"
                     | "theme_preference"
                     | "smooth_wheel"
+                    | "accent_color"
                     | "startup_enabled"
                     | "background_resident_enabled"
                     | "auto_wallpaper_exit_after_done"

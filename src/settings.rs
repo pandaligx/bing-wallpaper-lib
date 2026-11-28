@@ -164,6 +164,8 @@ pub struct AppSettings {
     /// Use the display-paced wheel curve in the NSH desktop gallery.
     #[serde(default = "default_smooth_wheel")]
     pub smooth_wheel: bool,
+    #[serde(default)]
+    pub accent_color: Option<String>,
     /// 界面语言；默认跟随 Windows，无法识别时回退到英文。
     #[serde(default)]
     pub language: LanguagePreference,
@@ -223,6 +225,7 @@ impl Default for AppSettings {
             download_dir: None,
             theme_preference: ThemePreference::default(),
             smooth_wheel: default_smooth_wheel(),
+            accent_color: None,
             language: LanguagePreference::default(),
             wallpaper_target: WallpaperTarget::default(),
             download_resolution: DownloadResolution::default(),

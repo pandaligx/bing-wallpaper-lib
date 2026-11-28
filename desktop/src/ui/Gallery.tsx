@@ -1,7 +1,8 @@
 import { smoothWheel } from "../preferences";
 import { computed, effect, Image, keymap, List, Text, View, windowSize } from "nsh";
 import type { ListRef, ViewRef } from "nsh";
-import { Button, Dialog, Progress, Toolbar } from "nsh/base";
+import { PhotoViewer } from "./PhotoViewer";
+import { Button, Progress, Toolbar } from "nsh/base";
 import {
   active,
   download,
@@ -198,7 +199,6 @@ export function Gallery(props: { sidebarWidth: number; listRef: (node: ListRef) 
   );
 }
 export function Preview(props: { photo: Photo }) {
-  let closeButton: ViewRef | undefined;
   effect(() => () => {
     setTimeout(releaseUnusedImages, 0);
   });
@@ -212,42 +212,35 @@ export function Preview(props: { photo: Photo }) {
   keymap.bind({ left: () => step(-1), right: () => step(1), escape: closePreview });
   const transfer = () => transfers().find((tr) => tr.date === item().date && tr.state === "active");
   return (
-    <Dialog
-      open
-      animation="fade"
-      class="m-auto rounded-lg bg-card"
-      accessibilityLabel={item().headline ?? item().date}
-      onOpen={() => closeButton?.focus()}
-      onOpenChange={({ open }) => {
-        if (!open) closePreview();
-      }}
-    >
-      <View
-        class="gap-3 rounded-lg bg-card p-4"
-        style={{
-          width: Math.max(
-            248,
-            Math.min(900, windowSize().width - 32, ((windowSize().height - 230) * 16) / 9),
-          ),
-        }}
-      >
-        <Image src={item().preview} style={{ width: "100%", aspectRatio: 16 / 9, borderRadius: 6 }} />
-        <Text class="text-sm font-semibold text-foreground">{item().headline || item().date}</Text>
-        <Text class="text-xs text-muted-foreground">
-          {item().date} · {item().description}
-        </Text>
-        <If when={transfer()}>
-          {(tr) => (
-            <Progress
-              value={(100 * tr().received) / (tr().total || 1)}
-              indeterminate={!tr().total}
-              accessibilityLabel={t("Download progress")}
-              trackClass="h-2 rounded bg-muted"
-              indicatorClass="h-2 rounded bg-primary"
-            />
-          )}
-        </If>
-        <Toolbar class="gap-1" accessibilityLabel={t("Preview")}>
+    <PhotoViewer
+      identity={item().date}
+      title={item().headline || item().date}
+      closeId="close-preview"
+      close={closePreview}
+      photo={() => (
+        <Image src={item().preview} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+      )}
+      details={() => (
+        <View>
+          <Text class="text-xs text-muted-foreground line-clamp-2">
+            {item().date} · {item().description}
+          </Text>
+          <If when={transfer()}>
+            {(tr) => (
+              <Progress
+                value={(100 * tr().received) / (tr().total || 1)}
+                indeterminate={!tr().total}
+                accessibilityLabel={t("Download progress")}
+                trackClass="h-2 rounded bg-muted"
+                indicatorClass="h-2 rounded bg-primary"
+              />
+            )}
+          </If>
+        </View>
+      )}
+      actions={() => (
+        <View class="flex-row items-center">
+
           <Action
             icon="chevron-left"
             id="previous-photo"
@@ -279,22 +272,13 @@ export function Preview(props: { photo: Photo }) {
           <Action
             icon="monitor"
             id="apply-photo"
-            primary
+            tint
             label={t("Set as wallpaper")}
             disabled={!canApply() || active().includes(item().date)}
             press={() => download(item(), true)}
           />
-          <Action
-            icon="x"
-            id="close-preview"
-            label={t("Close")}
-            buttonRef={(node) => {
-              closeButton = node;
-            }}
-            press={closePreview}
-          />
-        </Toolbar>
-      </View>
-    </Dialog>
+        </View>
+      )}
+    />
   );
 }

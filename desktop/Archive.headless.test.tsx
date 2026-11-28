@@ -20,6 +20,8 @@ test("acts directly on individual photos in the gallery, favorites and local fol
         "Library.favorites": "[]",
         "Library.source": "",
         "Library.canApplyWallpaper": true,
+        "Library.beginDownload": null,
+        "Library.finishDownload": null,
         "Library.downloadHistory": "[]",
         "Library.saveDownloadHistory": null,
         "Library.favorite": JSON.stringify([photos[1].date]),

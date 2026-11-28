@@ -113,10 +113,19 @@ pub async fn download_with_status(
     entry: WallpaperEntry,
     settings: AppSettings,
 ) -> Result<(PathBuf, bool)> {
-    controlled_download(entry, settings, tokio::sync::watch::channel(crate::queue::State::Running).0).await
+    controlled_download(
+        entry,
+        settings,
+        tokio::sync::watch::channel(crate::queue::State::Running).0,
+    )
+    .await
 }
 
-pub async fn controlled_download(entry: WallpaperEntry, settings: AppSettings, control: tokio::sync::watch::Sender<crate::queue::State>) -> Result<(PathBuf, bool)> {
+pub async fn controlled_download(
+    entry: WallpaperEntry,
+    settings: AppSettings,
+    control: tokio::sync::watch::Sender<crate::queue::State>,
+) -> Result<(PathBuf, bool)> {
     use crate::queue;
     let mut receiver = control.subscribe();
     queue::check(*receiver.borrow_and_update())?;
@@ -199,7 +208,22 @@ pub(crate) async fn fetch(origin: &Origin, staging: &Path, temporary: &str) -> R
     fetch_controlled(origin, staging, temporary, &mut receiver).await
 }
 
-async fn fetch_controlled(origin: &Origin, staging: &Path, temporary: &str, control: &mut tokio::sync::watch::Receiver<crate::queue::State>) -> Result<PathBuf> {
+async fn fetch_controlled(
+    origin: &Origin,
+    staging: &Path,
+    temporary: &str,
+    control: &mut tokio::sync::watch::Receiver<crate::queue::State>,
+) -> Result<PathBuf> {
+    fetch_with_engine(engine().await?, origin, staging, temporary, control).await
+}
+
+async fn fetch_with_engine(
+    engine: &DownloadEngine,
+    origin: &Origin,
+    staging: &Path,
+    temporary: &str,
+    control: &mut tokio::sync::watch::Receiver<crate::queue::State>,
+) -> Result<PathBuf> {
     use crate::queue::{self, State};
     use std::{
         collections::BTreeMap,
@@ -221,7 +245,6 @@ async fn fetch_controlled(origin: &Origin, staging: &Path, temporary: &str, cont
         _ = control.changed() => { queue::check(*control.borrow())?; anyhow::bail!("任务已结束"); }
     };
     let url = origin.url.as_str();
-    let engine = engine().await?;
     let previous = engine.list().into_iter().find(|s| {
         s.metadata.url.as_deref() == Some(url)
             && s.metadata.save_dir == staging
@@ -256,7 +279,12 @@ async fn fetch_controlled(origin: &Origin, staging: &Path, temporary: &str, cont
             engine.cancel(id, true).await?;
             queue::check(requested)?;
         } else if requested == State::Paused {
-            if !engine.status(id).is_some_and(|s| s.state == DownloadState::Completed) { engine.pause(id).await?; }
+            if !engine
+                .status(id)
+                .is_some_and(|s| s.state == DownloadState::Completed)
+            {
+                engine.pause(id).await?;
+            }
             queue::check(requested)?;
         }
         let status = engine.status(id).ok_or_else(|| anyhow!("下载已取消"))?;
@@ -264,7 +292,9 @@ async fn fetch_controlled(origin: &Origin, staging: &Path, temporary: &str, cont
             DownloadState::Completed => break,
             DownloadState::Error { message, .. } => return Err(anyhow!(message)),
             DownloadState::Paused => return Err(anyhow!("下载已暂停")),
-            _ => tokio::select! { _ = tokio::time::sleep(Duration::from_millis(250)) => (), _ = control.changed() => () },
+            _ => {
+                tokio::select! { _ = tokio::time::sleep(Duration::from_millis(250)) => (), _ = control.changed() => () }
+            }
         }
     }
     Ok(staging.join(temporary))
@@ -341,7 +371,11 @@ pub(crate) async fn probe(
 pub fn progress() -> Result<String> {
     let mut rows = Vec::new();
     if let Some(engine) = ENGINE.get() {
-        for job in engine.list() {
+        for job in engine
+            .list()
+            .into_iter()
+            .filter(|job| job.state.is_active())
+        {
             rows.push(
                 serde_json::json!({"id":job.id.to_string(), "date":job.metadata.filename.as_deref().and_then(|s| s.get(..10)), "update":job.metadata.filename.as_deref() == Some("update.partial"), "name":job.metadata.name,
                 "received":job.progress.completed_size, "total":job.progress.total_size,
@@ -357,9 +391,16 @@ pub async fn discard_paused(date: &str) -> Result<()> {
     let prefix = format!("{parsed}-");
     let engine = engine().await?;
     for task in engine.list() {
-        if matches!(task.state, DownloadState::Paused | DownloadState::Error { .. })
-            && task.metadata.save_dir.ends_with(".bing-downloads")
-            && task.metadata.filename.as_deref().is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".part")) {
+        if matches!(
+            task.state,
+            DownloadState::Paused | DownloadState::Error { .. }
+        ) && task.metadata.save_dir.ends_with(".bing-downloads")
+            && task
+                .metadata
+                .filename
+                .as_deref()
+                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".part"))
+        {
             engine.cancel(task.id, true).await?;
         }
     }
@@ -380,6 +421,81 @@ pub async fn pause(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pauses_resumes_and_cancels_a_running_http_transfer() {
+        use crate::queue::State;
+        use tokio::{
+            io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+            net::TcpListener,
+            sync::watch,
+        };
+        const SIZE: usize = 1024 * 1024;
+        crate::runtime().unwrap().block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = Origin { url: format!("http://{}/photo",listener.local_addr().unwrap()).parse().unwrap(),
+                length: Some(SIZE as u64), connections: 1 };
+            let server = tokio::spawn(async move {
+                while let Ok((socket,_)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let (input,mut output) = socket.into_split();
+                        let mut lines = BufReader::new(input).lines();
+                        let head = lines.next_line().await?.unwrap_or_default().starts_with("HEAD");
+                        let mut range = None;
+                        while let Some(line) = lines.next_line().await? {
+                            if line.is_empty() { break; }
+                            if let Some(spec) = line.to_ascii_lowercase().strip_prefix("range: bytes=")
+                                && let Some((a,b)) = spec.split_once('-') {
+                                range = Some((a.parse::<usize>().unwrap_or(0),b.parse::<usize>().unwrap_or(SIZE-1)));
+                            }
+                        }
+                        let (start,end) = range.unwrap_or((0,SIZE-1));
+                        let length = end-start+1;
+                        let status = if range.is_some() { format!("206 Partial Content\r\nContent-Range: bytes {start}-{end}/{SIZE}") } else { "200 OK".into() };
+                        output.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {length}\r\nAccept-Ranges: bytes\r\nETag: \"fixture\"\r\nConnection: close\r\n\r\n").as_bytes()).await?;
+                        if !head {
+                            for offset in (0..length).step_by(4096) {
+                                output.write_all(&[0x5a;4096][..4096.min(length-offset)]).await?;
+                                tokio::time::sleep(Duration::from_millis(5)).await;
+                            }
+                        }
+                        Ok::<(),std::io::Error>(())
+                    });
+                }
+            });
+            let root = tempfile::tempdir().unwrap();
+            let engine = DownloadEngine::new(EngineConfig::default().database_path(root.path().join("db"))).await.unwrap();
+            let fetch = |name: &'static str, mut rx: watch::Receiver<State>| {
+                let engine = engine.clone(); let dir = root.path().to_owned(); let url = origin.url.clone();
+                tokio::spawn(async move {
+                    fetch_with_engine(&engine,&Origin { url, length:Some(SIZE as u64), connections:1 },&dir,name,&mut rx).await
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(30),async {
+                for (name,stop) in [("resume.part",State::Paused),("cancel.part",State::Cancelled)] {
+                    let (control,rx) = watch::channel(State::Running);
+                    let task = fetch(name,rx);
+                    loop {
+                        if engine.list().iter().any(|s| s.metadata.filename.as_deref()==Some(name) && s.progress.completed_size>0) { break }
+                        tokio::time::sleep(Duration::from_millis(15)).await;
+                    }
+                    control.send_replace(stop);
+                    let error = task.await.unwrap().unwrap_err().to_string();
+                    if stop == State::Paused {
+                        assert_eq!(error,"queue:paused");
+                        assert!(engine.list().iter().any(|s| s.state==DownloadState::Paused));
+                        control.send_replace(State::Running);
+                        let file = fetch(name,control.subscribe()).await.unwrap().unwrap();
+                        assert_eq!(std::fs::read(file).unwrap(),vec![0x5a;SIZE]);
+                    } else {
+                        assert_eq!(error,"queue:cancelled");
+                        assert!(!root.path().join(name).exists());
+                    }
+                }
+            }).await.expect("transfer controls timed out");
+            engine.shutdown().await.unwrap();
+            server.abort();
+        });
+    }
     #[test]
     fn detects_real_range_support_and_changed_content() {
         use std::io::{BufRead, BufReader, Write};

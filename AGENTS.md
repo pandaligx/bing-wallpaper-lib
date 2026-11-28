@@ -6,7 +6,7 @@ NSH 开发交付默认落在本地。维护者保管 Windows Authenticode 签名
 
 新宿主位于 `desktop/`。从 `.agents/skills/nsh/SKILL.md` 和 `.agents/skills/nsh-design-guides/SKILL.md` 开始，开发 CLI、代码生成和原生宿主统一使用 NSH 0.7.2，来源提交 `0c29b5e3351128f489fe53bfb167160801707191`。项目内两份技能保留该提交的原始内容。使用 `desktop/DESIGN.md` 核对界面，使用 `desktop/README.md` 的命令运行测试和打包。
 
-迁移基线为 `e6ce419fa63b89cb94ac94b78857e94cbe69b528`。以下 GPUI、aria2 和 Gitee 章节记录现有 0.2.37 的行为，供迁移对照。NSH 端的下载由进程内 gosh-dl 提供，归档和发行源按系统地区或用户选择决定。保留旧程序以进行 Windows 兼容测试，正式切换前分别验收三端产物。
+迁移基线为 `e6ce419fa63b89cb94ac94b78857e94cbe69b528`。以下 GPUI、aria2 和 Gitee 章节记录现有 0.2.37 的行为，供迁移对照。NSH 端的下载由进程内 gosh-dl 提供，归档和发行源按系统地区或用户选择决定。保留旧程序以进行 Windows 兼容测试，正式切换前分别验收 Windows 和 Linux 产物。
 
 本文件面向后续维护本项目的开发者 / AI Agent，说明项目目标、架构设计、关键实现决策、构建与发布流程，以及已知的注意事项。
 

@@ -1,10 +1,11 @@
-import { localeSettings, setColorScheme, signal } from "nsh";
+import { localeSettings, setColorScheme, setTheme, signal } from "nsh";
 import { setLocale } from "nsh/i18n";
 import { Library } from "wallpaper-native";
 
 export interface Preferences {
   language: string;
   smooth_wheel?: boolean;
+  accent_color?: string | null;
   theme_preference: "system" | "light" | "dark";
   download_dir: string | null;
   download_resolution: string;
@@ -37,6 +38,7 @@ export function reportError(error: unknown, retry?: () => void) {
   retryNotice.set(retry ?? null);
   isError.set(true);
   const reason = error instanceof Error ? error.message : String(error);
+  void Library.logError(reason).catch(() => {});
   status.set(reason.replace(/^(?:Error:\s*)+/, "").trim() || t("Failed"));
 }
 export const applied = signal(false);
@@ -94,6 +96,36 @@ const extras: Record<string, string[]> = {
   Close: ["关闭", "閉じる", "닫기", "Закрыть", "Fermer"],
   Previous: ["上一张", "前へ", "이전", "Назад", "Précédent"],
   Next: ["下一张", "次へ", "다음", "Далее", "Suivant"],
+  "Bing Wallpaper Library": [
+    "必应每日壁纸库",
+    "Bing 毎日の壁紙",
+    "Bing 일일 배경 화면",
+    "Библиотека обоев Bing",
+    "Photothèque Bing",
+  ],
+  Diagnostics: [
+    "问题反馈与诊断",
+    "フィードバックと診断",
+    "피드백 및 진단",
+    "Отзывы и диагностика",
+    "Retours et diagnostic",
+  ],
+  "Copy log": ["复制日志", "ログをコピー", "로그 복사", "Копировать журнал", "Copier le journal"],
+  "Open log": ["打开日志", "ログを開く", "로그 열기", "Открыть журнал", "Ouvrir le journal"],
+  "Create issue": [
+    "提交 GitHub 问题",
+    "GitHub で報告",
+    "GitHub에 문제 보고",
+    "Сообщить в GitHub",
+    "Signaler sur GitHub",
+  ],
+  Copied: ["已复制", "コピーしました", "복사됨", "Скопировано", "Copié"],
+  Back: ["后退", "戻る", "뒤로", "Назад", "Retour"],
+  Forward: ["前进", "進む", "앞으로", "Вперёд", "Avancer"],
+  Blue: ["蓝色", "ブルー", "파랑", "Синий", "Bleu"],
+  Purple: ["紫色", "パープル", "보라", "Фиолетовый", "Violet"],
+  Green: ["绿色", "グリーン", "초록", "Зелёный", "Vert"],
+  Zoom: ["缩放", "ズーム", "확대/축소", "Масштаб", "Zoom"],
   Resume: ["继续", "再開", "계속", "Продолжить", "Reprendre"],
   Cancelled: ["已取消", "キャンセル済み", "취소됨", "Отменено", "Annulé"],
   Pause: ["暂停", "一時停止", "일시 정지", "Пауза", "Pause"],
@@ -125,6 +157,12 @@ const extras: Record<string, string[]> = {
 export function t(key: string) {
   return labels()[key] ?? key;
 }
+const accents: Record<string, [string, string]> = {
+  Blue: ["#0065cd", "#1378df"],
+  Purple: ["#7045bc", "#8254c9"],
+  Green: ["#157149", "#117849"],
+};
+let currentAccent = "";
 function accept(raw: string) {
   const value: Preferences = JSON.parse(raw);
   if (value.language !== preferences()?.language || !preferences()) {
@@ -136,6 +174,35 @@ function accept(raw: string) {
       translated.labels[key] = ix < 0 ? key : variants[ix];
     labels.set(translated.labels);
     setLocale(value.language === "system" ? null : translated.locale);
+  }
+  const accent = value.accent_color || "Blue";
+  if (currentAccent !== accent) {
+    const [light, dark] = accents[accent] ?? accents.Blue;
+    setTheme({
+      cssVars: {
+        light: {
+          background: "#f6f7f9",
+          foreground: "#17191c",
+          card: "#ffffff",
+          sidebar: "#eef0f4",
+          "sidebar-accent": "#dce2eb",
+          primary: light,
+          ring: light,
+          "primary-foreground": "#ffffff",
+        },
+        dark: {
+          background: "#151619",
+          foreground: "#f2f3f5",
+          card: "#222429",
+          sidebar: "#1b1d21",
+          "sidebar-accent": "#363b44",
+          primary: dark,
+          ring: dark,
+          "primary-foreground": "#ffffff",
+        },
+      },
+    });
+    currentAccent = accent;
   }
   setColorScheme(value.theme_preference);
   preferences.set(value);

@@ -2,6 +2,7 @@
 #[path = "../../../../src/archive.rs"]
 pub mod archive;
 mod catalog;
+mod diagnostics;
 #[path = "../../../../src/i18n.rs"]
 pub mod i18n;
 mod installer;
@@ -20,7 +21,11 @@ mod region;
 mod registration;
 mod release;
 mod schedule;
-pub use schedule::run as run_scheduled;
+pub fn run_scheduled(argument: &str) -> anyhow::Result<()> {
+    diagnostics::install_hook();
+    schedule::run(argument)
+        .inspect_err(|error| diagnostics::record(&format!("{argument}: {error:#}")))
+}
 #[path = "../../../../src/settings.rs"]
 pub mod settings;
 mod transfer;
@@ -74,6 +79,7 @@ fn favorites() -> AppResult<BTreeSet<chrono::NaiveDate>> {
 
 #[native_module("wallpaper-native")]
 fn native(registry: &mut Registry) {
+    diagnostics::install_hook();
     registry.module::<Library>();
 }
 
@@ -83,6 +89,27 @@ pub struct Library;
 
 #[module]
 impl Library {
+    /// Record a UI operation failure in the local rotating log.
+    pub async fn log_error(text: String) -> Result<(), String> {
+        disk(move || {
+            diagnostics::record(&text);
+            Ok(())
+        })
+        .await
+    }
+    /// Text shown to the user before sharing a diagnostic report.
+    pub async fn diagnostic_report() -> Result<String, String> {
+        disk(diagnostics::report).await
+    }
+    /// Original high-resolution application icon, including in the standalone executable.
+    pub fn brand_icon() -> String {
+        use base64::Engine;
+        let png = include_bytes!("../../../icon.png");
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png)
+        )
+    }
     /// Detect a desktop provider that can set the wallpaper for this session.
     pub async fn can_apply_wallpaper() -> Result<bool, String> {
         disk(|| Ok(platform::available())).await
@@ -293,8 +320,15 @@ impl Library {
             .spawn(async move {
                 let settings = settings::AppSettings::load();
                 let target = settings.wallpaper_target.clone();
-                let (path, reused) =
-                    transfer::controlled_download(entry, settings, queue::control(&date)).await?;
+                let result =
+                    transfer::controlled_download(entry, settings, queue::control(&date)).await;
+                if result
+                    .as_ref()
+                    .is_err_and(|e| e.to_string() == "queue:cancelled")
+                {
+                    transfer::discard_paused(&date).await?;
+                }
+                let (path, reused) = result?;
                 if apply {
                     let file = path.clone();
                     tokio::task::spawn_blocking(move || platform::apply(&file, &target)).await??;

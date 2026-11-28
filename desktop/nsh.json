@@ -6,7 +6,7 @@
   "singleInstance": true,
   "window": { "title": "必应每日壁纸库" },
   "icon": "icon.png",
-  "capabilities": { "application": true, "network": { "hosts": ["bing.com", "*.bing.com"] }, "windows": { "kinds": ["normal", "dialog"] } },
+  "capabilities": { "application": true, "clipboard": true, "network": { "hosts": ["bing.com", "*.bing.com"] }, "windows": { "kinds": ["normal", "dialog"] } },
   "dependencies": {
     "wallpaper-native": {
       "path": "ext/wallpaper-native"

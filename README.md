@@ -9,10 +9,9 @@ Browse daily Bing photography by year and month, keep favorites, and set a photo
 | Platform | Development artifact | Runtime |
 | --- | --- | --- |
 | Windows x64 | `BingWallpaperLib-v0.3.0-windows-x64.exe` | One portable file. The target is Windows 10 1809 or newer. Windows 11 has been exercised. |
-| macOS Intel and Apple Silicon | `BingWallpaperLib-v0.3.0-macos-universal.dmg` | macOS 14 or newer. Copy the app to Applications. Development builds use ad-hoc signing. |
 | Linux x86_64 | `BingWallpaperLib-v0.3.0-linux-x86_64.AppImage` | GTK 4.14+ and WebKitGTK 6.0. Make the AppImage executable before starting it. |
 
-The desktop rewrite is undergoing local testing. Windows Authenticode signing and macOS notarization precede public distribution. [Build and test plan](desktop/README.md) · [Validation records](desktop/VALIDATION.md)
+The desktop rewrite is undergoing local testing. The maintainer signs the final Windows executable before public distribution. [Build and test plan](desktop/README.md) · [Validation records](desktop/VALIDATION.md)
 
 Windows 0.2.37 is available for older systems. [GitCode](https://gitcode.com/gcw_qWIjmve7/bing-wallpaper-lib/releases/v0.2.37) · [GitHub](https://github.com/pandaligx/bing-wallpaper-lib/releases/tag/v0.2.37)
 

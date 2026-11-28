@@ -26,7 +26,30 @@ test("opens a dated preview, archive month, favorites, downloads, local gallery 
   await app.scroll("sidebar", 500);
   await app.press("month-2018-09");
   expect(app.texts()).toContain("2018-09");
-  await app.scroll("sidebar", -2000);
+  await app.press("nav-back");
+  await app.waitFor("folder-path");
+  await app.press("nav-forward");
+  expect(app.texts()).toContain("2018-09");
   await app.press("nav-home");
   await app.waitFor("latest-photo", { timeout: 30000 });
+});
+
+test("centers the exit confirmation and restores the window on cancel", async () => {
+  const app = await open("./App.tsx", {
+    platform: "windows",
+    width: 900,
+    height: 660,
+    modules: {
+      "wallpaper-native": { "Library.trayAvailable": false, "Library.source": "" },
+    },
+  });
+  await app.waitFor("latest-photo");
+  await app.window("main").pressClose();
+  await app.waitFor("cancel-exit");
+  const box = app.layout("exit-prompt")!;
+  expect(Math.abs(box.x + box.width / 2 - 450)).toBeLessThan(3);
+  expect(Math.abs(box.y + box.height / 2 - 330)).toBeLessThan(3);
+  await app.press("cancel-exit");
+  await app.waitFor("cancel-exit", { state: "gone" });
+  await app.waitFor("latest-photo");
 });

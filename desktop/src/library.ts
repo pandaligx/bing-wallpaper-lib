@@ -242,7 +242,7 @@ export function enqueue(items: Photo[], apply = false) {
   );
   const add: Job[] = [];
   for (const photo of items)
-    if (!busy.has(photo.date)) {
+    if (!busy.has(photo.date) && !stopping.has(photo.date)) {
       busy.add(photo.date);
       add.push({ photo, apply, state: "Waiting" });
     }
@@ -254,17 +254,24 @@ export function enqueue(items: Photo[], apply = false) {
   pending.push(...add);
   while (workers < 4 && pending.length) void worker();
 }
+const stopping = new Set<string>();
 export async function stopJob(job: Job, cancel: boolean) {
   const date = job.photo.date;
+  if (stopping.has(date)) return;
+  stopping.add(date);
   const index = pending.findIndex((queued) => queued.photo.date === date);
   if (index >= 0) {
     pending.splice(index, 1);
-    change(date, { state: cancel ? "Cancelled" : "Pause" });
   }
   try {
     await Library.stopDownload(date, cancel);
-    if (index < 0 && job.state === "Pause" && cancel) change(date, { state: "Cancelled" });
-  } catch (error) { reportError(error); }
+    if (index >= 0 || job.state === "Pause") change(date, { state: cancel ? "Cancelled" : "Pause" });
+  } catch (error) {
+    if (index >= 0) change(date, { state: "Failed", error: String(error) });
+    reportError(error);
+  } finally {
+    stopping.delete(date);
+  }
 }
 export function download(photo: Photo, apply: boolean) {
   enqueue([photo], apply);
